@@ -137,6 +137,7 @@ def cmd_init(args):
             "briefing_chars": dict(config_mod.DEFAULTS["briefing_chars"]),
             "journal": dict(config_mod.DEFAULTS["journal"]),
             "gate": dict(config_mod.DEFAULTS["gate"]),
+            "plan": dict(config_mod.DEFAULTS["plan"]),
             "auto_load": [],
             "redact": [],
             "verify": accepted or config_mod.PROFILES.get(profile, []),

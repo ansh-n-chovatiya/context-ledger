@@ -414,6 +414,19 @@ class TestInit(Fixture):
         self.assertTrue(self.layout.context_index.is_file())
         self.assertEqual(self.config["level"], "0")
 
+    def test_generated_config_exposes_every_tunable(self):
+        """A default that only lives in Python is a default nobody can find."""
+        from ctx import miniyaml
+
+        written = miniyaml.loads(self.layout.config.read_text(encoding="utf-8"))
+        for key in config_mod.DEFAULTS:
+            self.assertIn(key, written, f"`{key}` is missing from the generated ctx.yaml")
+
+    def test_config_header_does_not_quote_a_stale_cost(self):
+        text = self.layout.config.read_text(encoding="utf-8")
+        self.assertNotIn("~55 tokens", text)
+        self.assertIn("claude plugin details ctx", text)
+
     def test_refuses_a_newer_schema(self):
         self.layout.config.write_text("schema: 99\n", encoding="utf-8")
         with self.assertRaises(SystemExit):

@@ -1,110 +1,475 @@
 # Context Ledger
 
-A Claude Code plugin that keeps specs, plans, decisions and memory **on disk**
-instead of in the context window. Sessions become disposable, compaction stops
-losing state, and work can be handed to a subagent, a fresh session or a
-teammate without re-explaining anything.
+**Durable project state for Claude Code.** Specs, plans, decisions and memory live
+on disk instead of in the context window — so sessions become disposable,
+compaction stops losing your work, and "done" becomes something a gate can refuse
+to sign off on.
 
 Python 3 standard library only. Nothing is added to your project's dependency
-tree, and the plugin is silent in any project that has not run `/ctx:init`.
+tree, and the plugin is completely silent in any project that hasn't opted in.
 
 ---
 
-## Install
+## Contents
+
+- [Why this exists](#why-this-exists)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [The three levels](#the-three-levels) — the one concept to understand
+- [Walkthrough: a small change](#walkthrough-a-small-change) (L1)
+- [Walkthrough: a large change](#walkthrough-a-large-change) (L2)
+- [Memory that survives sessions](#memory-that-survives-sessions)
+- [Command reference](#command-reference)
+- [Configuration reference](#configuration-reference)
+- [Verification reference](#verification-reference)
+- [What lives on disk](#what-lives-on-disk)
+- [Continuous integration](#continuous-integration)
+- [Operations](#operations)
+- [What it costs](#what-it-costs)
+- [Troubleshooting](#troubleshooting)
+- [How it works](#how-it-works)
+- [Uninstalling](#uninstalling)
+- [Development](#development)
+
+---
+
+## Why this exists
+
+Four common complaints about working with an AI coding agent have one shared
+cause — **project state lives in a conversation instead of in a repository**:
+
+| What you experience | What's actually wrong |
+|---|---|
+| It assumes things and misunderstands scope | No spec contract. Gaps get filled silently instead of surfaced. |
+| It reports done, but criteria are unmet | No machine-checkable definition of done, so nothing can fail. |
+| Long sessions burn context; work happens one item at a time | No retrieval discipline or delegation policy. |
+| `/compact` loses everything | State lives in the context window, which compaction destroys. |
+
+Context Ledger's governing constraint:
+
+> **The context window is a scratchpad, not a database.** Intent, plans, decisions
+> and progress live on disk as reviewable files. A session is disposable; the
+> ledger is not.
+
+Three consequences follow, and they are the whole system:
+
+1. **Ambiguity becomes an artifact.** Unanswered questions are written to a file
+   that blocks planning. The agent can't assume past a file it must clear.
+2. **Done becomes executable.** Acceptance criteria carry a verification command.
+   A hook runs it and refuses to let the session end on failure.
+3. **Work becomes shippable in units.** If a task is described completely enough
+   to hand to a stranger, it can be handed to a subagent, a fresh session, a
+   teammate, or CI — identically.
+
+---
+
+## Requirements
+
+| | |
+|---|---|
+| **Claude Code** | any recent version with plugin support |
+| **Python 3** | 3.8+. Pre-installed on macOS and every Linux. No packages needed. |
+| **Git** | required only for the worktree tier and the `diff` verify kind. Levels 0 and 1 work fine without it. |
+| **OS** | macOS, Linux. Windows via WSL or Git Bash. |
+
+Nothing is installed into your project. No `node_modules`, no `requirements.txt`
+entry, no `package.json` edit.
+
+---
+
+## Installation
 
 ```bash
-/plugin marketplace add /path/to/context-ledger
+git clone https://github.com/<your-org>/context-ledger.git ~/tools/context-ledger
+```
+
+Then in Claude Code:
+
+```
+/plugin marketplace add ~/tools/context-ledger
 /plugin install ctx@context-ledger
 ```
 
-Then, in a project you want to track:
+Verify it:
+
+```bash
+claude plugin list                 # ctx@context-ledger  0.1.0  ✔ enabled
+claude plugin details ctx          # component inventory + token cost
+claude plugin validate ~/tools/context-ledger --strict
+```
+
+### Choosing an install scope
+
+```
+/plugin install ctx@context-ledger --scope project   # this project only
+```
+
+| Scope | Available in | Trade-off |
+|---|---|---|
+| `user` (default) | every project | Convenient. Its always-on context cost applies everywhere, including projects with no `.ctx/`. |
+| `project` | one project | Zero cost elsewhere. Install again per project. |
+| `local` | one project, not committed | Same as project, but kept out of shared settings. |
+
+The **hooks** are free everywhere either way — they're harness-side and add no
+model context. It's the command descriptions that cost tokens. See
+[What it costs](#what-it-costs).
+
+### A note on updating
+
+If you added the marketplace from a local directory, the plugin loads **live from
+that directory**. Edits take effect in the next session with no reinstall — and
+`claude plugin update ctx` will report `not found`, because there's no snapshot to
+update. That's expected. Pull the repo instead:
+
+```bash
+git -C ~/tools/context-ledger pull
+```
+
+---
+
+## Quick start
+
+In any project you want to track:
 
 ```
 /ctx:init
 ```
 
-That is the whole setup. You are now at **L0**, which asks nothing of you.
+```
+initialised .ctx  profile=code  level=L0
+  verify  npm run typecheck  (available; not yet run)
+  verify  npm test  (available; not yet run)
+L0 is active: work is journalled to disk, and the hook briefing costs
+~30 tokens per session (cap 61). See `claude plugin details ctx` for the
+plugin's own always-on footprint, which is separate and larger.
+```
+
+That's the whole setup. `init` detects your project type, proposes verification
+commands it can actually find on your PATH, and creates `.ctx/`.
+
+**You are now at level 0, and it asks nothing of you.** Work normally. Edits are
+recorded to disk, nothing is injected per turn, and no gate can block you.
+
+Then, whenever you want it:
+
+```
+/ctx:resume      # what was I doing? — expands prior state on demand
+/ctx:status      # level, active work, budget, recent activity
+```
+
+Commit `.ctx/` — it's designed to be reviewed in pull requests.
 
 ---
 
-## Engagement levels
+## The three levels
 
-The single most important design decision: **ceremony is opt-in, and the floor
-costs nothing.** A system that demands a spec for a two-line fix gets abandoned.
+**This is the one concept worth understanding.** Ceremony is something you opt
+*up* into. The default costs almost nothing, because a system that demands a spec
+for a two-line fix gets abandoned — and abandonment is the only failure mode that
+actually matters here.
 
-| Level | You write | Gates | Briefing | Use when |
+| Level | You write | Gates active | Briefing | Reach for it when |
 |---|---|---|---|---|
-| **L0 trace** | nothing | none | ~30 tok (cap 61) | default — anything you'd finish in one sitting |
-| **L1 tracked** | one task file | done-gate | ~96 tok (cap 250) | criteria worth writing down |
-| **L2 planned** | spec + plan + units | ambiguity + done | cap 722 tok | independent pieces, parallel work |
-
-**Total session cost.** The briefing above is what the *hooks* inject. The plugin
-itself also adds **~557 tokens** of always-on context in every session — the
-descriptions Claude reads to know these commands exist. So a real L0 session costs
-roughly **587 tokens**, L1 about 655, and L2 up to ~1,280.
-
-Measure it yourself, don't trust this number as it ages:
-
-```bash
-claude plugin details ctx     # component inventory + projected token cost
-```
-
-That always-on cost applies in *every* project when installed at user scope, even
-ones with no `.ctx/`. Install with `--scope project` if you only want it where you
-opt in. The hooks themselves are harness-only and cost nothing.
+| **L0 · trace** *(default)* | nothing | none | ~30 tok | Anything you'd finish in one sitting without a checklist. |
+| **L1 · tracked** | one task file | done-gate | ~96 tok | Criteria worth writing down; still one agent's work. |
+| **L2 · planned** | spec + plan + units | ambiguity + done | ≤722 tok | Several pieces that could genuinely run independently. |
 
 ```
 /ctx:task fix-token-refresh     # L0 → L1
-/ctx:drop                       # back to L0, nothing deleted
+/ctx:spec billing-migration     # L0/L1 → L2
+/ctx:drop                       # back to L0 — deletes nothing
 ```
 
-At L0 the plugin only journals to disk. It injects a single line at session
-start and nothing at all per turn.
+### When to escalate
+
+Stay at **L0** unless one of these is true:
+
+- The user stated acceptance criteria you'd otherwise have to remember.
+- The work spans more than one session, or you expect compaction mid-task.
+- Verification is worth automating because you'll run it repeatedly.
+
+Go to **L2** only when the pieces have **disjoint write scopes**. Sequential steps
+in one file are L1 with a numbered criteria list — not a plan.
+
+De-escalate with `/ctx:drop` the moment ceremony stops paying for itself. Nothing
+on disk is deleted; you just stop being gated.
 
 ---
 
-## Commands
+## Walkthrough: a small change
 
-| Command | Does |
-|---|---|
-| `/ctx:init` | Scaffold `.ctx/`, detect profile, propose verify commands |
-| `/ctx:status` | Level, active work, briefing budget, recent journal |
-| `/ctx:resume` | Expanded prior state, on demand |
-| `/ctx:task «name»` | Escalate to L1 with one task file |
-| `/ctx:drop` | Return to L0 |
-| `/ctx:save «name»` | Write a portable context bundle |
-| `/ctx:load «name»` | Load a bundle: project → global → path |
-| `/ctx:list` | Saved bundles, project and global |
-| `/ctx:promote «name»` | Copy a bundle to the global store |
-| `/ctx:doctor [--verify]` | Check layout, budgets, verify commands, gate |
-| `/ctx:spec «name»` | Escalate to L2: intent → checkable criteria → questions |
-| `/ctx:ask [name]` | Show what must be answered before building, and ask it |
-| `/ctx:decide «title»` | Record an ADR so a settled choice is not re-argued |
-| `/ctx:verify` | Run the done-gate by hand; `--sign-off rubric\|human` |
-| `/ctx:plan «name»` | Decompose a ready spec into dispatchable units |
-| `/ctx:start [--wave N]` | Dispatch brief for the next wave |
-| `/ctx:handoff [name]` | Resume packet for another session, person or model |
-| `/ctx:merge «unit»` | Land a unit's worktree branch after its gate passes |
+You want a bug fixed, with criteria you care about.
 
-Plus CLI-only helpers the commands above drive: `ctx question`, `ctx resolve`,
-`ctx spec-ready` (Gate 1 as an exit code, for CI), `ctx plan-unit`,
-`ctx plan-check`, `ctx unit`, `ctx worktree list|remove`, `ctx digest`,
-`ctx level`, `ctx journal`, and the phase-7 additions below.
+**1 · Open a task.**
 
-All of it is also a CLI, which is what makes the same checks runnable in CI:
+```
+/ctx:task fix-token-refresh
+```
+
+Creates `.ctx/tasks/fix-token-refresh.md` and switches to L1. Claude fills in the
+objective and criteria, then confirms the `verify` block actually proves them:
+
+```markdown
+---
+ctx_schema: 1
+task: fix-token-refresh
+status: active
+verify:
+  - kind: cmd
+    run: npm test -- auth/refresh
+---
+
+## Objective
+Renew an expiring access token without interrupting an in-flight request.
+
+## Acceptance criteria
+1. A token expiring in under 60s triggers exactly one refresh.
+2. Concurrent requests during a refresh share one in-flight promise.
+3. A failed refresh surfaces AuthExpiredError, never a raw network error.
+```
+
+Write criteria that are **checkable**. "Handles errors properly" is not a
+criterion; item 3 above is.
+
+**2 · Work normally.** Every session start now re-states the objective and
+criteria, so the agent can't drift off them across a compaction.
+
+**3 · The gate closes on incomplete work.** When the session tries to end:
+
+```
+The done-gate blocked completion of `fix-token-refresh` (attempt 1 of 3).
+
+cmd failed — npm test -- auth/refresh
+exit 1
+  ● refresh() shares an in-flight promise
+    Expected 1 call, received 2
+(full output: .ctx/runtime/verify/fix-token-refresh.log)
+
+Acceptance criteria:
+  1. A token expiring in under 60s triggers exactly one refresh.
+  2. Concurrent requests during a refresh share one in-flight promise.
+
+Fix what failed, then finish. After 3 attempts the gate stops and escalates
+to the user, so do not guess repeatedly.
+```
+
+Output is truncated to 40 head + 20 tail lines with the full log on disk, so a
+failing test suite can't flood the context.
+
+**4 · It's bounded.** After three blocked attempts the gate stops, marks the task
+`verify_failed`, and tells the agent to explain the problem rather than keep
+guessing. You'll never watch it grind.
+
+**5 · Check by hand any time:** `/ctx:verify`
+
+**6 · Done?** `/ctx:drop` returns you to L0.
+
+---
+
+## Walkthrough: a large change
+
+Work that splits into pieces which can run in parallel.
+
+### Step 1 — Specify, and answer questions before building
+
+```
+/ctx:spec billing-migration
+```
+
+Claude reads the repo, writes acceptance criteria and an **Out of scope** section,
+then records every question whose answer would change what gets built:
+
+```
+/ctx:ask
+```
+
+```
+BLOCKING (2) — these must be answered before planning:
+  1. Does the legacy /v1/invoices consumer still poll?
+  2. Must idempotency keys survive a replay after 24h?
+non-blocking (1) — proceed without if needed:
+  1. Any preference on log format?
+```
+
+Claude asks these interactively and records each answer with its date, giving you
+an audit trail of what was asked before work began.
+
+**This gate is load-bearing, not advice:**
+
+```
+$ ctx plan billing-migration
+refusing to plan: spec billing-migration has 2 unanswered
+blocking question(s). Answer them first — /ctx:ask
+  - Does the legacy /v1/invoices consumer still poll?
+```
+
+### Step 2 — Decompose into units
+
+```
+/ctx:plan billing-migration
+```
+
+Claude writes one file per unit. **The test each must pass: could an agent that
+has never seen this conversation execute it?** That property is what makes a unit
+dispatchable — and its absence is what produces half-finished work.
+
+```yaml
+---
+unit: 03-token-refresh
+plan: billing-migration
+tier: subagent                 # inline | subagent | session
+depends_on: [01-key-store]
+owns:  [src/auth/refresh.ts]   # exclusive write scope
+reads:                         # budgeted required reading
+  - path: src/auth/key-store.ts
+    symbols: [KeyStore, rotate]
+forbid: [src/auth/session.ts]  # a concurrent sibling owns this
+budget_tokens: 45000
+verify:
+  - kind: cmd
+    run: npm test -- auth/refresh
+---
+
+## Objective
+## Interfaces          ← exact signatures siblings code against
+                      ← enforce them with a `symbol` check
+## Acceptance criteria
+## Return contract
+```
+
+**Cut along file ownership, not along phases of thought.** Three units that own
+distinct files run in parallel; three that all edit one file are one unit with a
+numbered criteria list.
+
+### Step 3 — Check for collisions
 
 ```bash
-bin/ctx status
-bin/ctx doctor --verify
+ctx plan-check
+```
+
+Waves are **computed, never authored** — `depends_on` is the only place ordering
+lives. Two checks run, both scoped to a single wave:
+
+| Check | Catches |
+|---|---|
+| Disjoint ownership | two concurrent units writing the same path |
+| No read/write races | a unit reading a path a **concurrent** unit rewrites |
+
+The second matters because `owns` sets can be disjoint and the plan still be
+wrong. Nothing is written while problems remain, and each names the exact fix:
+
+```
+plan billing-migration: 2 problem(s) — nothing was written
+  - wave 1: 01-key-store and 03-rotate both own src/keys.ts
+            — add `depends_on: [01-key-store]` to 03-rotate or split the paths
+  - wave 1: 04-refresh reads src/clock.ts while 02-clock rewrites it
+            — add `depends_on: [02-clock]` to 04-refresh
+```
+
+Collisions are **never auto-repaired**. Rewriting your dependency graph silently
+isn't a favour. The same overlap across *different* waves is ordinary sequential
+work and is deliberately not flagged.
+
+Once clean:
+
+```
+plan billing-migration: 4 unit(s) in 2 wave(s) · graph r1
+  wave 1: 01-key-store, 02-clock
+  wave 2: 03-rotate, 04-refresh
+```
+
+### Step 4 — Dispatch a wave
+
+```
+/ctx:start
+```
+
+This prints a brief and **spawns nothing itself** — what to hand a subagent is
+the harness's decision. Claude then sends the whole wave in a single message with
+multiple Task calls, so the units genuinely run in parallel.
+
+The brief repeats the rule that makes large plans affordable: **the orchestrator
+reads unit files and unit reports, never source.** That's what keeps its context
+flat across a twenty-unit plan.
+
+Tiers:
+
+| Tier | Runs as | Use for |
+|---|---|---|
+| `inline` | this session | trivial work, or a result needed immediately |
+| `subagent` | own context window | analysis, review, research, most writing |
+| `session` | own git worktree + branch | writes you want physically isolated |
+
+For `session` units, `start` creates the worktree and prints the command to run:
+
+```
+cd .ctx/runtime/worktrees/03-rotate
+ctx unit 03-rotate          # arms the done-gate for this unit
+claude
+```
+
+A human stays in the loop on parallel writes by design. Use `--no-worktree` to
+skip preparation.
+
+### Step 5 — Land the work
+
+```
+/ctx:merge 03-rotate
+```
+
+Runs the done-gate **inside the unit's own worktree**, refuses to merge anything
+that touched a path outside `owns`, merges on success, and removes the worktree.
+A conflict here means an ownership contract was violated, so it stops and reports
+rather than resolving.
+
+```bash
+ctx worktree list            # what's outstanding
+ctx worktree remove 03-rotate --force   # discard a unit that went wrong
+```
+
+### Step 6 — Track and hand off
+
+```
+/ctx:status                  # wave board
+/ctx:handoff mid-migration   # resume packet for another session or person
+```
+
+```
+wave board — plan billing-migration:
+  wave 1
+     01-key-store             session   done
+     02-clock                 subagent  done
+  wave 2
+   → 03-rotate                subagent  running
+     04-refresh               subagent  pending
+   next: wave 2 — /ctx:start
 ```
 
 ---
 
-## Portable context bundles
+## Memory that survives sessions
 
-The memory convention is **plain markdown with a fixed section schema**. Nothing
-about it depends on this plugin — pasting a bundle into a different tool, or a
-different model entirely, is a supported path rather than a fallback.
+### Cross-session continuity is automatic
+
+You don't have to do anything. Hooks write state to disk as you work;
+`PreCompact` leaves a resumable snapshot **without making a model call**, so
+compaction stops being destructive. A new session reads a short briefing back.
+
+`/ctx:resume` expands it on demand when you want more than the briefing carries.
+
+### Context bundles — the portable convention
+
+A bundle is **plain markdown with a fixed section schema**. Nothing about it
+depends on this plugin: pasting one into a different tool, or a different model
+entirely, is a supported path rather than a fallback.
+
+```
+/ctx:save billing-migration      # snapshot current understanding
+/ctx:load billing-migration      # in any later session
+/ctx:list                        # what exists
+/ctx:promote billing-migration   # make it loadable from other projects
+```
 
 ```markdown
 ---
@@ -116,80 +481,92 @@ tags: [billing, stripe]
 
 # Context — billing-migration
 
-## Situation
-## Established facts
-## Decisions made
-## Open questions
-## Constraints
-## Artifacts
-## Resume here
+## Situation           ← 2–5 sentences, present tense
+## Established facts   ← only things you verified
+## Decisions made      ← with pointers to ADRs
+## Open questions      ← as `- [ ]` checkboxes
+## Constraints         ← what must not change
+## Artifacts           ← paths, diff ranges, tickets
+## Resume here         ← one concrete next action
 ```
 
-Bundles live in the repo, so they land in pull requests and can be reviewed.
+Bundles live in the repo, so they land in pull requests and get reviewed.
 `/ctx:promote` copies one to `~/.claude/ctx/` for cross-project recall — kept
-manual on purpose, because automatic cross-project memory is how you get a
+**manual on purpose**, because automatic cross-project memory is how you get a
 confident assertion sourced from an unrelated codebase.
+
+Resolution order for `/ctx:load`: project store → global store → treat the
+argument as a file path.
 
 ### Standing context
 
-Name bundles in `auto_load` and every session gets their content:
+Bundles named in `auto_load` have their content injected into every session:
 
 ```yaml
 auto_load: [house-conventions]
 ```
 
-Only **Constraints** and **Established facts** are injected. `Situation` and
-`Resume here` describe one piece of work, so they are noise as standing context.
+Only **Constraints** and **Established facts** are carried — `Situation` and
+`Resume here` describe one piece of work, so they're noise as standing context.
 
-It is emitted last in the briefing, so if there isn't room the cap truncates
-*this* rather than dropping your active task. At L0 the 220-char cap leaves almost
-none — raise `briefing_chars.l0` if you want house rules there, and check
-`ctx doctor` for truncation afterwards. A name that resolves to nothing is
-reported in the briefing rather than silently skipped.
+It's emitted last in the briefing, so if there isn't room the cap truncates
+*this* rather than dropping your active task. At L0's 220-character cap almost
+nothing fits; raise `briefing_chars.l0` if you want house rules there, then check
+`ctx doctor` for truncation. A name that resolves to no bundle is reported in the
+briefing rather than silently skipped.
 
----
-
-## What lives where
+### Decisions
 
 ```
-.ctx/
-  ctx.yaml            profile, budgets, gate policy, redaction
-  tasks/              L1 — one file per tracked change
-  specs/              L2 — intent and acceptance criteria
-  plans/              L2 — plan.json plus one prompt file per unit
-  contexts/           saved bundles + index
-  journal/            append-only, date-partitioned, plus DIGEST.md
-  decisions/          ADRs; immutable, superseded rather than edited
-  runtime/            gitignored: state pointers, hook errors, verify logs
+/ctx:decide "Idempotency keys over a dedupe table"
 ```
 
-Only `runtime/` is gitignored. Everything else is written to be reviewed.
+Writes a numbered ADR to `.ctx/decisions/`. ADRs are immutable — reverse one by
+writing a new ADR that supersedes it. The record of having changed your mind is
+the point.
 
 ---
 
-## Hooks
+## Command reference
 
-| Event | Does | On failure |
-|---|---|---|
-| `SessionStart` | Inject the budgeted briefing | open |
-| `UserPromptSubmit` | **Silent** unless drift was detected | open |
-| `PreToolUse` | Queue a nudge on out-of-scope edits (L2) | open |
-| `PostToolUse` | Append to the journal — injects nothing | open |
-| `PreCompact` | Flush state, write a mechanical autosave | open |
-| `SessionEnd` | Finalise journal and digest | open |
-| `Stop` / `SubagentStop` | **The done-gate** — refuses completion on a failing criterion | **closed** |
+### Slash commands
 
-Every hook except the gate **fails open**: an unexpected error is appended to
-`.ctx/runtime/hook-errors.log` and the hook exits 0. A bug here must never brick
-a session — including a bug in the gate itself, which also fails open when *our*
-code throws. It fails closed only on a criterion that genuinely did not pass.
+| Command | Does |
+|---|---|
+| `/ctx:init` | Scaffold `.ctx/`, detect profile, propose verify commands |
+| `/ctx:status` | Level, active work, briefing budget, wave board, recent journal |
+| `/ctx:resume` | Expanded prior state, on demand |
+| `/ctx:doctor` | Check layout, budgets, verify commands, gate state |
+| **Level 1** | |
+| `/ctx:task «name»` | Track one change at L1 with a done-gate |
+| `/ctx:verify` | Run the done-gate by hand; `--sign-off rubric\|human` |
+| `/ctx:drop` | Return to L0 trace, keeping the journal |
+| **Level 2** | |
+| `/ctx:spec «name»` | Intent → checkable criteria → blocking questions |
+| `/ctx:ask [name]` | Show and ask what's still blocking a spec |
+| `/ctx:plan «name»` | Decompose a ready spec into dispatchable units |
+| `/ctx:start [--wave N]` | Dispatch brief for the next wave |
+| `/ctx:merge «unit»` | Land a unit's worktree branch after its gate passes |
+| `/ctx:decide «title»` | Record an ADR |
+| **Memory** | |
+| `/ctx:save «name»` | Write a portable context bundle |
+| `/ctx:load «name»` | Load a bundle: project → global → path |
+| `/ctx:list` | Saved bundles, project and global |
+| `/ctx:promote «name»` | Copy a bundle to the global store |
+| `/ctx:handoff [name]` | Resume packet for another session, person or model |
 
----
+### CLI
 
-## CI, migration and measurement
+Everything above is also a CLI subcommand, which is what makes the same checks
+runnable in CI and in scripts. Run via `bin/ctx` in the plugin directory.
 
-Four CLI-only commands. None has a slash command, because none of them is a
-conversation — and every slash command costs always-on context.
+```bash
+ctx status
+ctx doctor --verify        # actually run the verify commands
+```
+
+These have **no slash command by design** — none is a conversation, and every
+slash command costs always-on context:
 
 | Command | Does | Exit |
 |---|---|---|
@@ -198,6 +575,196 @@ conversation — and every slash command costs always-on context.
 | `ctx migrate [--check]` | Upgrade ledger files; `--check` never writes | 0 / 1 |
 | `ctx budget [--plan X]` | Predicted **and measured** context cost | 0 |
 | `ctx telemetry` | Hook durations and injected briefing sizes | 0 |
+| `ctx spec-ready [name]` | Gate 1 as an exit code | 0 / 1 |
+| `ctx question «spec» «text»...` | Add questions; `--non-blocking` | 0 |
+| `ctx resolve --question X --answer Y` | Record an answer | 0 / 1 |
+| `ctx plan-unit «name»` | Scaffold one unit file | 0 |
+| `ctx plan-check [name]` | Compute waves, check collisions | 0 / 1 |
+| `ctx unit «name» [--status S]` | Focus a unit, or record its outcome | 0 / 1 |
+| `ctx worktree list\|remove` | Inspect or discard worktrees | 0 / 1 |
+| `ctx level «0\|1\|2»` | Set the level directly | 0 |
+| `ctx briefing` | Print exactly what SessionStart would inject | 0 |
+| `ctx digest` | Regenerate `journal/DIGEST.md` | 0 |
+| `ctx journal «kind» «target»` | Append one journal entry | 0 |
+
+Global flags: `--cwd PATH` resolves the ledger from elsewhere; `--version`.
+
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `CTX_GATE=off` | Disable the done-gate entirely. The escape hatch. |
+| `CTX_GLOBAL_ROOT` | Move the global bundle store (default `~/.claude/ctx`) |
+| `CLAUDE_PROJECT_DIR` | Where ledger discovery starts |
+
+---
+
+## Configuration reference
+
+`.ctx/ctx.yaml`, generated by `init` and safe to hand-edit. Comments survive
+migrations.
+
+```yaml
+schema: 1                     # managed by `ctx migrate` — don't edit
+profile: code                 # code | docs | research | infra | data
+level: 0                      # starting level for new sessions
+
+briefing_chars:               # hard cap on injected context, in characters
+  l0: 220                     # ~3.6 chars per token
+  l1: 900
+  l2: 2600
+
+journal:
+  enabled: true               # false disables journalling entirely
+  digest_lines: 12            # entries kept in DIGEST.md
+  max_line_chars: 200         # per-entry truncation
+
+gate:
+  enabled: true               # false disables the done-gate
+  max_attempts: 3             # blocks before it escalates to you
+  output_head: 40             # failure output: leading lines kept
+  output_tail: 20             # trailing lines kept
+  timeout_seconds: 240        # per verify command; stay under 300
+
+plan:
+  wave_budget_tokens: 250000  # a wave over this refuses to dispatch
+
+auto_load: []                 # bundles injected into every session
+redact: []                    # extra regexes scrubbed before any write
+
+verify:                       # default checks inherited by new tasks/units
+  - kind: cmd
+    run: npm run typecheck
+```
+
+**On raising `briefing_chars`:** when `ctx doctor` reports a briefing was
+truncated, the fix is to shorten the objective and criteria on disk. Raising the
+cap recreates the problem the ledger exists to solve.
+
+---
+
+## Verification reference
+
+For "any type of task" to hold, verification can't assume code. Six kinds,
+ordered by how much they're trusted:
+
+| Kind | Passes when | Trust | Typical use |
+|---|---|---|---|
+| `cmd` | Shell command exits 0 | objective | tests, typecheck, lint, build, `terraform validate` |
+| `exists` | Path exists, optionally matching `matches:` regex | objective | generated docs, migrations, exports |
+| `diff` | Changed files are a subset of `owns` | objective | scope enforcement on plan units |
+| `symbol` | Every name in `contains:` still appears in `path` | objective | **interface freeze** — see below |
+| `rubric` | The `verifier` subagent judges criteria against the diff | advisory | prose, research, design, API ergonomics |
+| `human` | You sign off explicitly | authoritative | irreversible or outward-facing steps |
+
+```yaml
+verify:
+  - kind: cmd
+    run: pytest -q tests/auth
+  - kind: exists
+    path: docs/api.md
+    matches: "## Authentication"
+  - kind: symbol
+    path: src/auth/refresh.ts
+    contains: ["export function refresh(", "AuthExpiredError"]
+  - kind: rubric
+    about: the migration guide covers every breaking change
+```
+
+### Interface freeze
+
+`symbol` is what turns "don't change a published interface" from advice into a
+check. List the signatures a sibling unit is coding against; if one is renamed or
+removed, the gate fails with:
+
+```
+symbol failed — src/auth/refresh.ts
+no longer provides: export function refresh( — a sibling unit is coding
+against this, so changing it is a planning decision. Report it instead of
+adjusting the check.
+```
+
+It's a substring match, deliberately: crude enough to need no parser per
+language, precise enough to catch the two dangerous cases (renamed, deleted) for
+one file read.
+
+**Checks run cheapest-first** — `diff` → `exists` → `symbol` → `cmd` → `rubric` — and
+short-circuit on the first failure. A scope violation costs zero model tokens to
+catch, because the model-based check never runs.
+
+**Judged checks are recorded, not re-judged.** `rubric` and `human` need a model
+or a person, so `/ctx:verify` evaluates them and records the sign-off in the work
+file. **Any subsequent edit clears it** — a sign-off can't outlive the code it
+signed off on. So verify last.
+
+### Profiles
+
+`init` detects a profile and proposes checks for it. `code` and `infra` get real
+commands detected from your toolchain; the others fall back to judged checks,
+because no command can decide whether prose is right.
+
+| Profile | Detected by | Fallback |
+|---|---|---|
+| `code` | `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `pom.xml` | none — commands are detected |
+| `infra` | `main.tf`, `terraform/` | `human` — review before applying |
+| `docs` | `mkdocs.yml`, `docusaurus.config.js`, `docs/` | `rubric` |
+| `research` | *(explicit `--profile`)* | `rubric` |
+| `data` | `dbt_project.yml`, `notebooks/` | `human` |
+
+`init` tells you when the only checks it configured are judged ones — otherwise a
+project looks gated when everything needs a model or a person.
+
+### Failure policy
+
+- The gate **fails closed** on a failing criterion and feeds back the exact check
+  plus truncated output.
+- **Infrastructure failure is not work failure.** A missing binary, exit 127, a
+  timeout, or output matching an absent-tool signature (`No module named …`,
+  `command not found`) warns and passes. Blocking on those would brick every
+  session in a project whose toolchain isn't installed.
+- Bounded at `gate.max_attempts`. Then it marks the work `verify_failed`, stops
+  blocking, and escalates to you.
+- `CTX_GATE=off` disables it outright.
+
+---
+
+## What lives on disk
+
+```
+.ctx/
+  ctx.yaml                    profile, budgets, gate policy, redaction
+  tasks/<slug>.md             L1 — one file per tracked change
+  specs/<slug>/
+      spec.md                 intent + acceptance criteria
+      questions.md            questions → answers → dates (audit trail)
+  plans/<slug>/
+      README.md               human-facing plan, regenerated by plan-check
+      plan.json               derived graph; prior revisions archived
+      units/NN-name.md        one self-contained prompt file per unit
+  contexts/
+      index.md                catalogue
+      <name>.ctx.md           portable bundles
+  journal/
+      YYYY-MM-DD.md           append-only, date-partitioned (merge-safe)
+      DIGEST.md               mechanical tail, O(1) to read
+  decisions/NNNN-slug.md      ADRs; immutable, superseded not edited
+  runtime/                    GITIGNORED — machine-local only
+      state.json              active level / spec / plan / unit
+      telemetry.jsonl         hook durations, size-capped
+      verify/*.log            full verify output
+      worktrees/              session-tier checkouts
+```
+
+**Only `runtime/` is gitignored.** Everything else is authored to be reviewed in
+a pull request.
+
+The layout is shaped by one hard requirement: **concurrent agents must never
+write the same file.** There's no central mutable state blob — unit status lives
+in per-unit frontmatter, and the journal is partitioned by date.
+
+---
+
+## Continuous integration
 
 ```yaml
 # .github/workflows/ledger.yml
@@ -208,237 +775,226 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: git clone --depth 1 https://github.com/…/context-ledger /tmp/ctx
-      - run: /tmp/ctx/bin/ctx migrate --check   # ledger schema is current
-      - run: /tmp/ctx/bin/ctx ci                # layout, budgets, spec, plan
+      - name: Get Context Ledger
+        run: git clone --depth 1 https://github.com/<your-org>/context-ledger /tmp/ctx
+      - name: Ledger schema is current
+        run: /tmp/ctx/bin/ctx migrate --check
+      - name: Ledger checks
+        run: /tmp/ctx/bin/ctx ci
 ```
 
-`ctx ci` fails on a stale schema, an unanswered blocking question, a plan with
-ownership collisions, or a briefing that has to truncate. `ctx verify --plan`
-runs each unit's mechanical checks and reports `rubric`/`human` as awaiting
-sign-off rather than pretending an unattended run can judge them.
+`ctx ci` fails on: a stale schema, a missing verify binary, an unanswered blocking
+question, a plan with ownership collisions, or a briefing that had to truncate.
 
-**On truncation rather than overflow.** `ctx doctor`, `ctx ci` and `ctx budget`
-report whether a briefing was *truncated*, not whether it exceeded its cap. The
-cap can never be exceeded — the fitting code clamps — so "within cap" is a
-tautology that always passes. Truncation is the actionable signal: it means state
-a session needed got dropped to fit.
+```
+## ledger
+  ok   layout complete
+  ok   schema current
+## budgets
+  ok   L0 briefing fits without truncation
+## spec
+  FAIL billing has no open blocking questions — 1 unanswered
 
-**Migration** stamps and upgrades every ledger file. It is idempotent, `--check`
-writes nothing, a ledger stamped *newer* than the plugin is refused rather than
-downgraded, and `ctx.yaml` is edited line-wise so your comments survive.
+1 check(s) failed: billing has no open blocking questions
+```
 
-**Measurement.** `ctx doctor` predicts what a briefing would cost; the hooks
-record what sessions actually paid, to `.ctx/runtime/telemetry.jsonl` (gitignored,
-size-capped). `ctx budget` shows both side by side, and points at
-`claude plugin details ctx` for the always-on cost it cannot measure itself.
+Add `ctx verify --plan <slug>` to run every unit's mechanical checks. Judged
+checks are reported as awaiting sign-off rather than pretending an unattended run
+can decide them.
 
 ---
 
-## Plans, waves and units
-
-`/ctx:plan` decomposes a **ready** spec — it refuses outright while any blocking
-question is open, which is what makes Gate 1 more than advice. The output is one
-file per unit, and the test each must pass is: *could an agent that has never seen
-the conversation execute this?* That property is what makes a unit dispatchable,
-and its absence is what produces half-finished work.
-
-```yaml
-unit: 03-token-refresh
-tier: subagent            # inline | subagent | session
-depends_on: [01-key-store]
-owns:  [src/auth/refresh.ts]   # exclusive write scope
-reads: [{path: src/auth/key-store.ts, symbols: [KeyStore]}]
-forbid: [src/auth/session.ts]  # a concurrent sibling owns this
-budget_tokens: 45000
-verify: [{kind: cmd, run: pnpm vitest run src/auth/refresh.test.ts}]
-```
-
-**Waves are computed, never authored.** `depends_on` is the only place ordering
-lives; `ctx plan-check` derives wave numbers from it, writes them back, and
-generates `plan.json`. Two checks run before anything is dispatched:
-
-| Check | Catches |
-|---|---|
-| Disjoint ownership | two units in one wave writing the same path |
-| No read/write races | a unit reading a path a **concurrent** unit rewrites |
-
-The second matters because `owns` sets can be disjoint and the plan still be
-wrong. Both are scoped to a wave — the same overlap across *different* waves is
-just ordinary sequential work and is not flagged.
-
-Neither is auto-repaired. Each reports the exact line that fixes it:
-
-```
-wave 1: 01-key-store and 03-rotate both own src/keys.ts
-        — add `depends_on: [01-key-store]` to 03-rotate or split the paths
-wave 1: 04-refresh reads src/clock.ts while 02-clock rewrites it
-        — add `depends_on: [02-clock]` to 04-refresh
-```
-
-Rewriting someone's dependency graph silently is not a favour. Nothing is written
-while problems remain, and `plan.json` archives prior revisions rather than
-overwriting, so an in-flight wave can't be pulled out from under itself.
-
-`/ctx:start` prints a dispatch brief and spawns nothing itself — what to hand a
-subagent is the harness's decision. It groups units by tier, names the
-`unit-runner` agent, and repeats the rule that keeps the whole thing affordable:
-**the orchestrator reads unit files and unit reports, never source.**
-
----
-
-## The worktree tier
-
-A unit with `tier: session` gets its own checkout and branch, so several units can
-*write* at once and a unit that goes wrong is discarded by deleting a directory
-rather than untangled out of a shared tree.
-
-```
-/ctx:start                       # prepares a worktree per session unit
-cd .ctx/runtime/worktrees/01-charge
-ctx unit 01-charge               # arms the done-gate for this unit
-claude                           # work it
-git commit -am "…"
-cd -  &&  /ctx:merge 01-charge    # preflight, gate, merge, cleanup
-```
-
-`start` prepares the tree and hands you the command rather than driving sessions
-headlessly — parallel writes are where you most want to stay in the loop.
-
-`ctx merge` refuses in four situations, and refusing changes nothing:
-
-| Refusal | Why |
-|---|---|
-| Integration tree dirty | a merge would entangle unrelated work |
-| Uncommitted work in the worktree | a merge would silently drop it |
-| Changed a path outside `owns` | breaks the isolation siblings relied on |
-| Done-gate fails **in the unit's own worktree** | the work isn't finished |
-
-**One correction to the original design.** It called for "sequential fast-forward
-merges in wave order", which is wrong from the second merge onward — once the
-first branch lands, the integration branch has moved and the next is no longer a
-fast-forward. This uses a real merge commit, and treats **any conflict as a
-violated ownership contract**: if `owns` sets were disjoint and honoured, git has
-nothing to reconcile. On conflict it aborts and names the paths.
-
-`.ctx/` is excluded from the dirty-tree preflight. That is not a workaround —
-those files are merge-safe by construction (append-only journal partitioned by
-date, one file per unit, immutable ADRs), and without the exclusion the ledger's
-own bookkeeping would make the tree permanently dirty and `ctx merge`
-unreachable. A regression test pins both halves: ledger noise never blocks, and a
-stray write is still caught alongside it.
-
----
-
-## The two gates
-
-**Gate 1 — ambiguity.** `/ctx:spec` writes acceptance criteria and a
-`questions.md` holding blocking questions as unchecked boxes. A spec is not
-`ready` while any remain, and `ctx spec-ready` is that check as an exit code. The
-model cannot assume its way past a file it has to clear.
-
-**Gate 2 — definition of done.** The `Stop` hook runs the active work's checks and
-blocks completion on failure, feeding back the failing check and its output. Five
-kinds, run cheapest-first and short-circuiting, so a scope violation never pays
-for a test run:
-
-| Kind | Passes when | Decided by |
-|---|---|---|
-| `diff` | changed files ⊆ declared `owns` | git, free |
-| `exists` | path present, optional regex match | stat |
-| `symbol` | named signatures still appear verbatim | one file read |
-| `cmd` | shell command exits 0 | subprocess |
-| `rubric` | a `verifier` subagent judges the criteria met | model, recorded |
-| `human` | you sign off explicitly | you, recorded |
-
-`symbol` is interface freeze made enforceable: list the signatures later units
-code against, and the gate fails if one is renamed or deleted. Crude on purpose —
-it needs no parser per language and catches the two cases that actually break a
-sibling.
-
-Three properties keep it from becoming an obstacle:
-
-- **Bounded.** Three blocks, then it stops, marks the work `verify_failed`, and
-  escalates to you with what was tried. No grinding.
-- **Infrastructure failure is not work failure.** Exit 127, a timeout, or output
-  matching `No module named …` / `command not found` / `Missing script` is a
-  config bug — it warns and passes rather than blocking every session in a
-  project whose toolchain is not installed.
-- **Sign-offs do not outlive the code.** Any edit after a `rubric`/`human`
-  sign-off clears it automatically, so the gate re-closes.
-
-Escape hatches: `CTX_GATE=off`, `gate.enabled: false` in `ctx.yaml`, and L0 has
-no gate at all.
-
-`ctx verify` exit codes: **0** pass · **1** a criterion failed · **2** nothing
-could run (a `ctx.yaml` problem).
-
----
-
-## Cost design
-
-Four decisions do most of the work:
-
-1. **`UserPromptSubmit` is silent by default.** Re-injecting criteria every turn
-   would cost ~12k tokens across a long session to repeat something the model
-   already has. Instead `PreToolUse` sets a one-shot flag when an edit strays
-   out of scope, and the nudge is delivered once.
-2. **The digest is a tail, not a summary.** Summarising on a schedule costs
-   tokens on a schedule. Journal lines are structured, and the digest is the
-   last N plus a count — O(1) regardless of project age, zero inference.
-3. **Briefings are deterministic.** No clock time, no drifting counters.
-   Identical state produces byte-identical text, so the prompt cache hits.
-4. **Scripts, not agents.** Status, digests, budget measurement, scope and
-   collision checks are all Python. They cost nothing.
-
-The plugin's own always-on footprint is the one cost these decisions don't touch,
-so it was trimmed directly: shortening component descriptions and dropping the
-`digest` slash command (still `ctx digest`) took it from ~590 to ~425 tokens. A
-slash command whose whole body is one shell call does not earn always-on context.
-Phases 5–6 then added ~132 back for four commands and the `unit-runner` agent —
-`plan-check`, `unit` and `worktree` were deliberately left CLI-only for the same
-reason.
-
-`/ctx:doctor` prints measured briefing size against the cap for every level, so
-the budget is observable rather than aspirational. When a level reports OVER,
-the fix is to shorten the objective and criteria on disk — raising the cap
-recreates the problem the ledger exists to solve.
-
----
-
-## Status
-
-**All seven phases are implemented.** Scaffold, cross-session continuity,
-portable memory, the L0/L1/L2 levels, both gates, plan generation with wave
-scheduling and subagent dispatch, the git-worktree tier with merge protocol and
-enforced interface freeze, and hardening — migration, CI mode, budget accounting
-and hook telemetry.
-
-## Tests
+## Operations
 
 ```bash
-python3 -m unittest discover -s tests
+ctx doctor                 # layout, budgets, verify availability, gate state
+ctx doctor --verify        # …and actually run the verify commands
+ctx budget                 # predicted vs measured context cost
+ctx telemetry              # hook durations, injected briefing sizes
+ctx migrate --check        # is the ledger schema current?
+ctx migrate                # upgrade it
 ```
 
-173 tests, no dependencies. The ones worth keeping green are the risk guards:
+**Migration** is idempotent, `--check` writes nothing, a ledger stamped *newer*
+than the plugin is refused rather than downgraded, and `ctx.yaml` is edited
+line-wise so your comments survive.
 
-- briefing caps hold at every level under deliberately bloated input
-- briefings are byte-identical for identical state (prompt-cache hits)
-- journal cost does not grow with history
-- hooks stay silent in untracked projects, and fail open on unexpected errors
-- a vague spec produces blocking questions, and the gate exits non-zero
-- incomplete work cannot end its session, and the gate escalates after 3 tries
-- a missing tool never blocks, but a real test failure always does
-- a judged sign-off is cleared by any subsequent edit
-- overlapping `owns` and read/write races are caught *within* a wave and
-  deliberately *not* flagged across waves
-- a broken plan writes no graph, and re-checking archives the prior revision
-- two units in one wave both merge cleanly (the second is not a fast-forward)
-- nothing merges past a failed gate or a write outside `owns`
-- the ledger's own writes never block a merge, but a stray write still does
-- `migrate --check` writes nothing, applying twice is a no-op, and a newer
-  ledger is refused rather than downgraded
-- `ctx.yaml` keeps its comments through a migration
-- telemetry never raises and never grows without bound
-- `auto_load` injects bundle content, and is truncated before active work
-- no profile ships a default check that can never fail
+**Measurement.** `doctor` predicts what a briefing would cost; the hooks record
+what sessions actually paid. `budget` shows both:
+
+```
+## briefing budget (predicted)
+  ok   L0 94/220 chars (~26 tok)
+## briefing actually injected (measured)
+  12 session(s) recorded · median 93 chars (~26 tok)
+## declared unit budgets — plan billing
+  ok   wave 1: 60,000 of 250,000 tokens
+```
+
+---
+
+## What it costs
+
+Two separate costs, and they're often confused:
+
+| | Cost | When |
+|---|---|---|
+| **Plugin always-on** | ~557 tok | every session, every project, at user scope |
+| **Hook briefing** | ~30 tok (L0) · ~96 (L1) · ≤722 (L2) | every session in a ledger project |
+| **Hooks themselves** | 0 | harness-side; no model context at all |
+| **Per turn** | 0 | `UserPromptSubmit` is silent unless drift is detected |
+
+So a real L0 session costs roughly **587 tokens**. Measure it yourself rather
+than trusting this figure as it ages:
+
+```bash
+claude plugin details ctx
+```
+
+Four design decisions keep it there:
+
+1. **`UserPromptSubmit` is silent by default.** Re-injecting criteria every turn
+   would cost ~12k tokens across a long session to repeat what the model already
+   has. Instead `PreToolUse` sets a one-shot flag when an edit strays out of
+   scope, and the nudge is delivered once.
+2. **The digest is a tail, not a summary.** Summarising costs tokens on a
+   schedule. Journal lines are structured; the digest is the last N plus a count —
+   O(1) regardless of project age, zero inference.
+3. **Briefings are deterministic.** No clock time, no drifting counters. Identical
+   state produces byte-identical text, so the prompt cache hits across sessions.
+4. **Scripts, not agents.** Status boards, digests, collision checks and budget
+   measurement are all Python. They cost nothing.
+
+To cut it further: install with `--scope project`, or remove slash commands you
+don't use. A command whose whole body is one shell call belongs in the CLI.
+
+---
+
+## Troubleshooting
+
+**The gate keeps blocking and I can't finish.**
+`CTX_GATE=off` disables it immediately. It's also bounded — three attempts, then
+it escalates. If a check can't run at all, that's reported as a warning and never
+blocks; run `ctx doctor --verify` to see which command is failing.
+
+**`ctx: command not found`.**
+Use the launcher: `~/tools/context-ledger/bin/ctx`. Add it to your PATH, or use
+the slash commands, which resolve the path themselves.
+
+**Nothing happens in my project.**
+The plugin is silent without `.ctx/`. Run `/ctx:init`. Confirm with
+`claude plugin list` that it's enabled.
+
+**`claude plugin update ctx` says "not found".**
+Expected for a local-directory marketplace — the plugin loads live from the
+directory, so there's nothing to update. `git pull` the repo instead.
+
+**`ctx merge` refuses: "integration tree has uncommitted changes".**
+Commit or stash first. Changes under `.ctx/` are excluded automatically, since
+the ledger writes there itself.
+
+**`ctx merge` reports a conflict.**
+That means an ownership contract was violated — a unit wrote outside its `owns`.
+It stops rather than resolving. Inspect the branch, fix the unit's scope, and
+re-run.
+
+**A briefing is truncated.**
+Shorten the objective and criteria on disk. Raising `briefing_chars` recreates the
+context problem this tool exists to solve. If it's `auto_load` being cut, that's
+by design — standing context yields to active work.
+
+**`plan-check` reports collisions I don't agree with.**
+It never auto-repairs; each message names the exact `depends_on` line that fixes
+it. If two units genuinely must write the same path, they're one unit.
+
+**Hooks seem slow.**
+`ctx telemetry` shows per-hook median and worst-case durations. `SessionStart` and
+`UserPromptSubmit` sit in front of every turn. Check
+`.ctx/runtime/hook-errors.log`.
+
+**A hook is broken.**
+Every hook except the done-gate **fails open** — errors are logged to
+`.ctx/runtime/hook-errors.log` and the hook exits 0. A bug here can't brick your
+session, including a bug in the gate itself.
+
+---
+
+## How it works
+
+Everything durable is on disk. Hooks are the only traffic across the boundary,
+and they run on harness events rather than on the model remembering to call them.
+
+| Event | Responsibility | On error |
+|---|---|---|
+| `SessionStart` | Inject the budgeted, deterministic briefing | open |
+| `UserPromptSubmit` | **Silent** unless a drift nudge is queued | open |
+| `PreToolUse` | Queue a nudge on out-of-scope edits (L2) | open |
+| `PostToolUse` | Append to the journal; clear stale sign-offs | open |
+| `PreCompact` | Flush state, write a mechanical autosave | open |
+| `SessionEnd` | Finalise journal and digest | open |
+| `Stop` / `SubagentStop` | **The done-gate** | **closed** |
+
+Note what isn't here: nothing depends on the model *choosing* to record state.
+Persistence is a property of the harness, which is why it survives compaction,
+crashes and your own `Ctrl-C`.
+
+### Design principles
+
+- **Waves are computed, never authored.** `depends_on` is the single source of
+  truth for ordering.
+- **`plan.json` is derived**, and prior revisions are archived rather than
+  overwritten, so an in-flight wave can't be pulled out from under itself.
+- **No check that can never fail.** A default that always passes makes an
+  unguarded project look guarded — worse than no default.
+- **Report, don't repair.** Collisions and merge conflicts name their fix and
+  stop. Silently rewriting someone's plan isn't a favour.
+- **Fail open everywhere but the gate.**
+
+---
+
+## Uninstalling
+
+```
+/plugin uninstall ctx
+/plugin marketplace remove context-ledger
+```
+
+Your `.ctx/` directory is untouched — it's plain markdown and JSON, readable and
+useful without the plugin. Delete it if you want it gone:
+
+```bash
+rm -rf .ctx
+git worktree prune          # if you used the session tier
+```
+
+---
+
+## Development
+
+```bash
+python3 -m unittest discover -s tests      # 175 tests, no dependencies
+claude plugin validate . --strict
+```
+
+```
+ctx/            the package — every decision that doesn't need a model
+hooks/          three-line shims over ctx.hooks, so the contract has one seam
+commands/       slash commands: a few lines each, logic lives in Python
+agents/         unit-runner, verifier
+skills/ledger/  when to escalate, and what belongs on disk
+tests/          stdlib unittest
+bin/ctx         launcher for CLI and CI use
+```
+
+The tests worth keeping green are the risk guards: briefing caps hold and
+briefings are byte-stable; journal cost doesn't grow with history; hooks stay
+silent in untracked projects and fail open on error; a missing tool never blocks
+but a real failure always does; a judged sign-off is cleared by any edit;
+collisions are caught within a wave and not across waves; `migrate --check` writes
+nothing; and no profile ships an always-passing default.
+
+---
+
+## License
+
+MIT © 2026 Ansh Chovatiya. See [LICENSE](LICENSE).
