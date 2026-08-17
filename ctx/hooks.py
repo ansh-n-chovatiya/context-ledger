@@ -16,11 +16,12 @@ import fnmatch
 import json
 import os
 import sys
+import time
 import traceback
 
 from . import (
     briefing, bundle, config as config_mod, frontmatter, journal, paths,
-    spec as spec_mod, state, verify, work,
+    spec as spec_mod, state, telemetry, verify, work,
 )
 
 
@@ -32,6 +33,7 @@ def main(event, stream=None, out=None):
     if root is None:
         return 0  # untracked project: contribute nothing
     layout = paths.Layout(root)
+    started = time.perf_counter()
     try:
         config = config_mod.load(layout)
         handler = HANDLERS.get(event)
@@ -42,13 +44,19 @@ def main(event, stream=None, out=None):
             # A decision object (the Stop gate). Exit 0; the JSON carries the verdict.
             json.dump(result, out)
             out.write("\n")
-        elif result:
-            out.write(result if result.endswith("\n") else result + "\n")
+            _measure(layout, event, started, decision=result.get("decision"))
+        else:
+            if result:
+                out.write(result if result.endswith("\n") else result + "\n")
+            # `chars` is what the session actually paid, as opposed to what
+            # `ctx doctor` predicts it would pay.
+            _measure(layout, event, started, chars=len(result) if result else 0)
         return 0
     except SystemExit:
         raise
     except BaseException:  # noqa: BLE001 - fail open, always
         _log_error(layout, event, traceback.format_exc())
+        _measure(layout, event, started, failed=True)
         return 0
 
 
@@ -64,6 +72,10 @@ def _read_payload(stream):
     except ValueError:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _measure(layout, event, started, **fields):
+    telemetry.record(layout, event, (time.perf_counter() - started) * 1000, **fields)
 
 
 def _log_error(layout, event, detail):

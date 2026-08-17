@@ -35,6 +35,10 @@ def measure(layout, config, state):
         "chars": len(text),
         "cap": config_mod.briefing_cap(config, level),
         "approx_tokens": round(len(text) / 3.6),
+        # `_fit` clamps to the cap, so overflow is impossible and reporting it
+        # would be a tautology. Truncation is the signal worth acting on: it
+        # means state a session needed was dropped to fit.
+        "truncated": TRUNCATED in text,
         "text": text,
     }
 

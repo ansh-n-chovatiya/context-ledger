@@ -14,8 +14,8 @@ import sys
 
 from . import (
     __version__, briefing, bundle, config as config_mod, dispatch, frontmatter,
-    journal, paths, plan as plan_mod, spec as spec_mod, state, verify, work,
-    worktree,
+    journal, migrate as migrate_mod, paths, plan as plan_mod, spec as spec_mod,
+    state, telemetry, verify, work, worktree,
 )
 
 GITIGNORE = "runtime/\n"
@@ -366,12 +366,12 @@ def cmd_doctor(args):
     for level in config_mod.LEVELS:
         probe = dict(current, level=level)
         measured = briefing.measure(layout, config, probe)
-        over = measured["chars"] > measured["cap"]
-        problems += 1 if over else 0
+        problems += 1 if measured["truncated"] else 0
         _echo(
-            f"  {'OVER' if over else 'ok  '} L{level} "
+            f"  {'CUT ' if measured['truncated'] else 'ok  '} L{level} "
             f"{measured['chars']}/{measured['cap']} chars "
             f"(~{measured['approx_tokens']} tokens)"
+            + (" — content dropped to fit" if measured["truncated"] else "")
         )
 
     _echo("## verify commands")
@@ -522,6 +522,10 @@ def cmd_decide(args):
 def cmd_verify(args):
     """Run the gate by hand. Same code path the Stop hook uses."""
     layout, config = _loaded(args)
+
+    if args.plan:
+        return _verify_plan(layout, config, bundle.slugify(args.plan))
+
     item = work.active(layout)
     if item is None:
         _echo("nothing active to verify — /ctx:task or /ctx:spec first")
@@ -737,6 +741,51 @@ def cmd_merge(args):
     return 1
 
 
+def _verify_plan(layout, config, slug):
+    """Every unit in a plan, headless. This is what CI runs.
+
+    Mechanical checks only: `rubric` and `human` need a model or a person, so an
+    unattended run reports them pending rather than pretending to judge them.
+    """
+    grouped, problems = plan_mod.check(layout, slug)
+    if problems:
+        _echo(f"plan {slug}: {len(problems)} problem(s) — not verifying units")
+        for problem in problems:
+            _echo(f"  - {problem}")
+        return 1
+
+    failed, pending, passed = [], [], []
+    for level in sorted(grouped):
+        for unit in grouped[level]:
+            # A unit with no usable checks never gets here: plan_mod.check()
+            # rejects it as a validation problem above.
+            results, verdict = verify.run(
+                layout, config, unit.checks, cwd=layout.root.parent,
+                key=f"ci-{unit.name}", owns=unit.owns, recorded=unit.recorded,
+                judged=False,
+            )
+            flag = {
+                verify.PASS: "ok  ", verify.FAIL: "FAIL",
+                verify.PENDING: "wait", verify.ERROR: "warn",
+            }[verdict]
+            _echo(f"  {flag} wave {level} {unit.name} ({unit.status})")
+            if verdict == verify.FAIL:
+                failed.append(unit.name)
+                _echo("       " + verify.summarise(results).replace("\n", "\n       "))
+            elif verdict == verify.PENDING:
+                pending.append(unit.name)
+            else:
+                passed.append(unit.name)
+
+    _echo("")
+    _echo(f"{len(passed)} passed · {len(pending)} awaiting sign-off · {len(failed)} failed")
+    journal.append(
+        layout, config, "verify", slug,
+        f"plan run: {len(passed)}p/{len(pending)}w/{len(failed)}f",
+    )
+    return 1 if failed else 0
+
+
 def cmd_worktree(args):
     layout, config = _loaded(args)
     if args.action == "list":
@@ -848,6 +897,164 @@ def cmd_handoff(args):
 
 
 # --------------------------------------------------------------------------- #
+# phase 7 — hardening
+# --------------------------------------------------------------------------- #
+
+def cmd_migrate(args):
+    """Upgrade ledger files to the plugin's schema. `--check` never writes."""
+    layout = _layout(args)
+    changed, problems = migrate_mod.upgrade(layout, dry_run=args.check)
+
+    for problem in problems:
+        _echo(f"  ! {problem}")
+    if not changed and not problems:
+        _echo(f"ledger is at schema v{config_mod.SCHEMA} — nothing to migrate")
+        return 0
+
+    verb = "would migrate" if args.check else "migrated"
+    for item, steps in changed:
+        path = ", ".join(f"v{v}" for v in steps)
+        _echo(f"  {verb} {layout.rel(item.path)} ({item.kind}) → {path}")
+    if problems:
+        return 1
+    if args.check:
+        _echo(f"{len(changed)} file(s) need migration — run `ctx migrate` to apply")
+        return 1
+    config = config_mod.load(layout)
+    journal.append(layout, config, "migrate", f"v{config_mod.SCHEMA}",
+                   f"{len(changed)} file(s)")
+    _echo(f"{len(changed)} file(s) migrated to v{config_mod.SCHEMA}")
+    return 0
+
+
+def cmd_budget(args):
+    """What the ledger costs: predicted per level, and what sessions actually paid."""
+    layout, config = _loaded(args)
+    current = state.load(layout)
+
+    _echo("## briefing budget (predicted)")
+    for level in config_mod.LEVELS:
+        measured = briefing.measure(layout, config, dict(current, level=level))
+        flag = "CUT " if measured["truncated"] else "ok  "
+        _echo(f"  {flag} L{level} {measured['chars']}/{measured['cap']} chars "
+              f"(~{measured['approx_tokens']} tok)"
+              + (" — truncated" if measured["truncated"] else ""))
+
+    rows = telemetry.summarise(layout)
+    briefings = [r for r in rows if r["event"] == "SessionStart" and r["median_chars"]]
+    _echo("")
+    _echo("## briefing actually injected (measured)")
+    if briefings:
+        row = briefings[0]
+        _echo(f"  {row['count']} session(s) recorded · "
+              f"median {round(row['median_chars'])} chars "
+              f"(~{round(row['median_chars'] / 3.6)} tok)")
+    else:
+        _echo("  no sessions recorded yet")
+    _echo("  the plugin's own always-on cost is separate and larger:")
+    _echo("  measure it with `claude plugin details ctx`")
+
+    plan_slug = args.plan or current.get("plan")
+    if plan_slug:
+        grouped, problems = plan_mod.check(layout, plan_slug)
+        cap = int((config.get("plan") or {}).get("wave_budget_tokens", 0) or 0)
+        _echo("")
+        _echo(f"## declared unit budgets — plan {plan_slug}")
+        if problems:
+            _echo("  plan has problems; budgets may be incomplete")
+        for level in sorted(grouped):
+            total = sum(u.budget for u in grouped[level])
+            flag = "OVER" if cap and total > cap else "ok  "
+            _echo(f"  {flag} wave {level}: {total:,} of {cap:,} tokens"
+                  if cap else f"  wave {level}: {total:,} tokens (no cap set)")
+    return 0
+
+
+def cmd_telemetry(args):
+    layout = _layout(args)
+    rows = telemetry.summarise(layout)
+    if not rows:
+        _echo("no telemetry recorded yet — hooks write it as they run")
+        return 0
+    _echo(f"{'event':<20}{'n':>5}{'median ms':>11}{'max ms':>9}{'median chars':>14}")
+    for row in rows:
+        chars = "" if row["median_chars"] is None else str(round(row["median_chars"]))
+        _echo(f"{row['event']:<20}{row['count']:>5}{row['median_ms']:>11.1f}"
+              f"{row['max_ms']:>9.1f}{chars:>14}")
+    slow = [r for r in rows if r["max_ms"] > 1000]
+    if slow:
+        _echo("")
+        _echo("slow hooks (>1s worst case): " + ", ".join(r["event"] for r in slow))
+        _echo("SessionStart and UserPromptSubmit sit in front of every turn — a slow")
+        _echo("one is felt directly. Check hook-errors.log and the verify commands.")
+    return 0
+
+
+def cmd_ci(args):
+    """Everything checkable, headless, in one exit code. Written for pipelines."""
+    layout, config = _loaded(args)
+    current = state.load(layout)
+    failures = []
+
+    def report(name, ok, detail=""):
+        # Detail explains a failure. Printed next to `ok` it reads as advice to
+        # act on something that is fine.
+        if ok:
+            _echo(f"  ok   {name}")
+        else:
+            _echo(f"  FAIL {name}" + (f" — {detail}" if detail else ""))
+            failures.append(name)
+
+    _echo("## ledger")
+    missing = [d for d in layout.dirs() if not d.is_dir()]
+    report("layout complete", not missing,
+           ", ".join(layout.rel(d) for d in missing))
+    behind, ahead = migrate_mod.pending(layout)
+    report("schema current", not behind and not ahead,
+           f"{len(behind)} behind, {len(ahead)} ahead — run `ctx migrate`")
+
+    _echo("## budgets")
+    for level in config_mod.LEVELS:
+        measured = briefing.measure(layout, config, dict(current, level=level))
+        report(f"L{level} briefing fits without truncation",
+               not measured["truncated"],
+               f"{measured['chars']}/{measured['cap']} chars — shorten the objective "
+               "and criteria on disk rather than raising the cap")
+
+    _echo("## verify commands")
+    entries = [e for e in (config.get("verify") or []) if isinstance(e, dict)]
+    for entry in entries:
+        if entry.get("kind") != "cmd":
+            continue
+        command = str(entry.get("run") or "")
+        report(f"available: {command}", _runnable(command), "binary not on PATH")
+    if not entries:
+        _echo("  none configured")
+
+    if current.get("spec"):
+        _echo("## spec")
+        ready, blocking = spec_mod.ready(layout, current["spec"])
+        report(f"{current['spec']} has no open blocking questions", ready,
+               f"{len(blocking)} unanswered")
+
+    plans = args.plan or ([current["plan"]] if current.get("plan") else [])
+    for slug in plans if isinstance(plans, list) else [plans]:
+        _echo(f"## plan {slug}")
+        _grouped, problems = plan_mod.check(layout, slug)
+        report("graph is valid and collision-free", not problems,
+               f"{len(problems)} problem(s)")
+        for problem in problems:
+            _echo(f"       {problem}")
+
+    _echo("")
+    if failures:
+        _echo(f"{len(failures)} check(s) failed: " + ", ".join(failures))
+        return 1
+    _echo("all checks passed")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # parser
 # --------------------------------------------------------------------------- #
 
@@ -944,6 +1151,8 @@ def build_parser():
     p.add_argument("--sign-off", choices=list(verify.JUDGED), default=None,
                    help="record a judged check as passed")
     p.add_argument("--note", default=None)
+    p.add_argument("--plan", default=None,
+                   help="verify every unit in a plan headlessly (for CI)")
     p.set_defaults(func=cmd_verify)
 
     p = sub.add_parser("plan", help="scaffold a plan (refuses if the spec is ambiguous)")
@@ -985,6 +1194,22 @@ def build_parser():
     p.add_argument("--force", action="store_true",
                    help="discard uncommitted work in the worktree")
     p.set_defaults(func=cmd_worktree)
+
+    p = sub.add_parser("migrate", help="upgrade ledger files to this plugin's schema")
+    p.add_argument("--check", action="store_true",
+                   help="report what needs migrating and exit 1; writes nothing")
+    p.set_defaults(func=cmd_migrate)
+
+    p = sub.add_parser("budget", help="predicted and measured context cost")
+    p.add_argument("--plan", default=None)
+    p.set_defaults(func=cmd_budget)
+
+    p = sub.add_parser("telemetry", help="hook durations and injected briefing sizes")
+    p.set_defaults(func=cmd_telemetry)
+
+    p = sub.add_parser("ci", help="every headless check in one exit code")
+    p.add_argument("--plan", action="append", default=[])
+    p.set_defaults(func=cmd_ci)
 
     p = sub.add_parser("unit", help="focus a unit, or record its outcome")
     p.add_argument("name")

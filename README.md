@@ -89,7 +89,7 @@ start and nothing at all per turn.
 Plus CLI-only helpers the commands above drive: `ctx question`, `ctx resolve`,
 `ctx spec-ready` (Gate 1 as an exit code, for CI), `ctx plan-unit`,
 `ctx plan-check`, `ctx unit`, `ctx worktree list|remove`, `ctx digest`,
-`ctx level` and `ctx journal`.
+`ctx level`, `ctx journal`, and the phase-7 additions below.
 
 All of it is also a CLI, which is what makes the same checks runnable in CI:
 
@@ -166,6 +166,55 @@ Every hook except the gate **fails open**: an unexpected error is appended to
 `.ctx/runtime/hook-errors.log` and the hook exits 0. A bug here must never brick
 a session — including a bug in the gate itself, which also fails open when *our*
 code throws. It fails closed only on a criterion that genuinely did not pass.
+
+---
+
+## CI, migration and measurement
+
+Four CLI-only commands. None has a slash command, because none of them is a
+conversation — and every slash command costs always-on context.
+
+| Command | Does | Exit |
+|---|---|---|
+| `ctx ci [--plan X]` | Every headless check in one run | 0 / 1 |
+| `ctx verify --plan X` | Run every unit's gate in a plan | 0 / 1 |
+| `ctx migrate [--check]` | Upgrade ledger files; `--check` never writes | 0 / 1 |
+| `ctx budget [--plan X]` | Predicted **and measured** context cost | 0 |
+| `ctx telemetry` | Hook durations and injected briefing sizes | 0 |
+
+```yaml
+# .github/workflows/ledger.yml
+name: ledger
+on: [push, pull_request]
+jobs:
+  ledger:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: git clone --depth 1 https://github.com/…/context-ledger /tmp/ctx
+      - run: /tmp/ctx/bin/ctx migrate --check   # ledger schema is current
+      - run: /tmp/ctx/bin/ctx ci                # layout, budgets, spec, plan
+```
+
+`ctx ci` fails on a stale schema, an unanswered blocking question, a plan with
+ownership collisions, or a briefing that has to truncate. `ctx verify --plan`
+runs each unit's mechanical checks and reports `rubric`/`human` as awaiting
+sign-off rather than pretending an unattended run can judge them.
+
+**On truncation rather than overflow.** `ctx doctor`, `ctx ci` and `ctx budget`
+report whether a briefing was *truncated*, not whether it exceeded its cap. The
+cap can never be exceeded — the fitting code clamps — so "within cap" is a
+tautology that always passes. Truncation is the actionable signal: it means state
+a session needed got dropped to fit.
+
+**Migration** stamps and upgrades every ledger file. It is idempotent, `--check`
+writes nothing, a ledger stamped *newer* than the plugin is refused rather than
+downgraded, and `ctx.yaml` is edited line-wise so your comments survive.
+
+**Measurement.** `ctx doctor` predicts what a briefing would cost; the hooks
+record what sessions actually paid, to `.ctx/runtime/telemetry.jsonl` (gitignored,
+size-capped). `ctx budget` shows both side by side, and points at
+`claude plugin details ctx` for the always-on cost it cannot measure itself.
 
 ---
 
@@ -342,13 +391,10 @@ recreates the problem the ledger exists to solve.
 
 ## Status
 
-Phases 0–6 are implemented: scaffold, cross-session continuity, portable memory,
-the L0/L1/L2 levels, both gates, plan generation with wave scheduling and subagent
-dispatch, and the git-worktree tier with merge protocol and interface freeze.
-
-Not yet built: **phase 7, hardening** — `ctx migrate` (the schema version is
-checked and a newer one refused, but cannot be upgraded), CI mode (`ctx verify`
-works on the active unit only; there is no `--plan` flag yet), budget accounting
+**All seven phases are implemented.** Scaffold, cross-session continuity,
+portable memory, the L0/L1/L2 levels, both gates, plan generation with wave
+scheduling and subagent dispatch, the git-worktree tier with merge protocol and
+enforced interface freeze, and hardening — migration, CI mode, budget accounting
 and hook telemetry.
 
 ## Tests
@@ -357,7 +403,7 @@ and hook telemetry.
 python3 -m unittest discover -s tests
 ```
 
-136 tests, no dependencies. The ones worth keeping green are the risk guards:
+165 tests, no dependencies. The ones worth keeping green are the risk guards:
 
 - briefing caps hold at every level under deliberately bloated input
 - briefings are byte-identical for identical state (prompt-cache hits)
@@ -373,3 +419,7 @@ python3 -m unittest discover -s tests
 - two units in one wave both merge cleanly (the second is not a fast-forward)
 - nothing merges past a failed gate or a write outside `owns`
 - the ledger's own writes never block a merge, but a stray write still does
+- `migrate --check` writes nothing, applying twice is a no-op, and a newer
+  ledger is refused rather than downgraded
+- `ctx.yaml` keeps its comments through a migration
+- telemetry never raises and never grows without bound
