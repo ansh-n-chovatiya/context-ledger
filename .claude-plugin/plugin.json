@@ -2,9 +2,9 @@
   "name": "ctx",
   "displayName": "Context Ledger",
   "version": "0.1.0",
-  "description": "Durable specs, plans, decisions and memory on disk — so sessions become disposable, compaction stops losing state, and 'done' is something a gate can refuse to sign off on.",
+  "description": "Durable specs, plans, decisions and memory on disk \u2014 so sessions become disposable, compaction stops losing state, and 'done' is something a gate can refuse to sign off on.",
   "author": {
-    "name": "ansh.n.chovatiya"
+    "name": "Ansh Chovatiya"
   },
   "keywords": [
     "memory",

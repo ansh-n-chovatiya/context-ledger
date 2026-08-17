@@ -2,7 +2,7 @@
   "name": "context-ledger",
   "description": "Durable project state for Claude Code: specs, plans, decisions and portable memory kept on disk, with gates that block on unanswered questions and unmet acceptance criteria.",
   "owner": {
-    "name": "ansh.n.chovatiya"
+    "name": "Ansh Chovatiya"
   },
   "plugins": [
     {
