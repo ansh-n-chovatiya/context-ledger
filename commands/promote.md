@@ -1,5 +1,5 @@
 ---
-description: Copy a context bundle to the global store for cross-project recall
+description: Promote a context bundle to the global store
 allowed-tools: Bash
 argument-hint: «name»
 ---

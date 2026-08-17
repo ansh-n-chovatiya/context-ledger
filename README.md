@@ -23,8 +23,7 @@ Then, in a project you want to track:
 /ctx:init
 ```
 
-That is the whole setup. You are now at **L0**, which costs about 30 tokens per
-session and asks nothing of you.
+That is the whole setup. You are now at **L0**, which asks nothing of you.
 
 ---
 
@@ -33,11 +32,26 @@ session and asks nothing of you.
 The single most important design decision: **ceremony is opt-in, and the floor
 costs nothing.** A system that demands a spec for a two-line fix gets abandoned.
 
-| Level | You write | Gates | Session cost | Use when |
+| Level | You write | Gates | Briefing | Use when |
 |---|---|---|---|---|
 | **L0 trace** | nothing | none | ~30 tok (cap 61) | default — anything you'd finish in one sitting |
 | **L1 tracked** | one task file | done-gate | ~96 tok (cap 250) | criteria worth writing down |
 | **L2 planned** | spec + plan + units | ambiguity + done | cap 722 tok | independent pieces, parallel work |
+
+**Total session cost.** The briefing above is what the *hooks* inject. The plugin
+itself also adds **~425 tokens** of always-on context in every session — the
+descriptions Claude reads to know these commands exist. So a real L0 session costs
+roughly **455 tokens**, L1 about 520, and L2 up to ~1,150.
+
+Measure it yourself, don't trust this number as it ages:
+
+```bash
+claude plugin details ctx     # component inventory + projected token cost
+```
+
+That always-on cost applies in *every* project when installed at user scope, even
+ones with no `.ctx/`. Install with `--scope project` if you only want it where you
+opt in. The hooks themselves are harness-only and cost nothing.
 
 ```
 /ctx:task fix-token-refresh     # L0 → L1
@@ -204,6 +218,11 @@ Four decisions do most of the work:
    Identical state produces byte-identical text, so the prompt cache hits.
 4. **Scripts, not agents.** Status, digests, budget measurement, scope and
    collision checks are all Python. They cost nothing.
+
+The plugin's own always-on footprint is the one cost these decisions don't touch,
+so it was trimmed directly: shortening component descriptions and dropping the
+`digest` slash command (still `ctx digest`) took it from ~590 to ~425 tokens. A
+slash command whose whole body is one shell call does not earn always-on context.
 
 `/ctx:doctor` prints measured briefing size against the cap for every level, so
 the budget is observable rather than aspirational. When a level reports OVER,

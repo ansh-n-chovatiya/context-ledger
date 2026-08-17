@@ -1,6 +1,6 @@
 ---
 name: ledger
-description: How much process a task deserves in a Context Ledger project — choosing between L0 trace, L1 tracked and L2 planned, and how durable state on disk replaces context that compaction would destroy. Use when deciding whether a task needs a task file or a plan, when the user asks about ledger levels, saved contexts or `.ctx/`, when a session is about to compact, or when work turns out to be larger than the level it was started at.
+description: Choosing how much process a task deserves in a Context Ledger project — L0 trace, L1 tracked or L2 planned — and what belongs on disk in `.ctx/`. Use for questions about ledger levels, saved contexts, or escalating work.
 ---
 
 # Engagement levels
@@ -48,10 +48,11 @@ is lost to compaction; state in a file is not. Practical consequences:
 ## Cost discipline
 
 The briefing injected at session start is capped per level: 61 tokens at L0, 250
-at L1, 722 at L2 — measured around 30 and 96 in practice for L0 and L1. When
-`/ctx:doctor` reports a budget as OVER, the fix is to shorten the objective and
-criteria on disk, not to raise the cap. Raising it recreates the problem the
-ledger exists to solve.
+at L1, 722 at L2 — measured around 30 and 96 in practice for L0 and L1. On top of
+that the plugin costs ~425 always-on tokens per session regardless of level, so a
+real L0 session is around 455. When `/ctx:doctor` reports a budget as OVER, the
+fix is to shorten the objective and criteria on disk, not to raise the cap.
+Raising it recreates the problem the ledger exists to solve.
 
 Two habits that keep cost down:
 

@@ -159,7 +159,9 @@ def cmd_init(args):
             _echo(f"  skipped {command} — {why}")
     if not accepted:
         _echo("  no verify commands configured — add them to ctx.yaml before using L1/L2")
-    _echo("L0 is active: work is journalled to disk. Session cost ~30 tokens (cap 61).")
+    _echo("L0 is active: work is journalled to disk, and the hook briefing costs")
+    _echo("~30 tokens per session (cap 61). See `claude plugin details ctx` for the")
+    _echo("plugin's own always-on footprint, which is separate and larger.")
     return 0
 
 
@@ -376,6 +378,10 @@ def cmd_doctor(args):
             problems += 0 if code == 0 else 1
         else:
             _echo(f"  ok   {command} (available; pass --verify to run it)")
+
+    _echo("## plugin footprint")
+    _echo("  the briefing above is the hook cost only; the plugin's own always-on")
+    _echo("  context is separate — measure it with: claude plugin details ctx")
 
     _echo("## gate")
     disabled = os.environ.get("CTX_GATE", "").lower() in ("off", "0", "false")

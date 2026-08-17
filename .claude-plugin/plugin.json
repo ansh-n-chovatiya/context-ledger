@@ -3,6 +3,16 @@
   "displayName": "Context Ledger",
   "version": "0.1.0",
   "description": "Durable specs, plans, decisions and memory on disk — so sessions become disposable, compaction stops losing state, and 'done' is something a gate can refuse to sign off on.",
-  "keywords": ["memory", "context", "planning", "orchestration", "hooks"],
+  "author": {
+    "name": "ansh.n.chovatiya"
+  },
+  "keywords": [
+    "memory",
+    "context",
+    "planning",
+    "orchestration",
+    "hooks",
+    "verification"
+  ],
   "license": "MIT"
 }

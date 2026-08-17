@@ -1,5 +1,5 @@
 ---
-description: Return to L0 trace — drop task/plan ceremony, keep journalling
+description: Return to L0 trace, keeping the journal
 allowed-tools: Bash
 ---
 !`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" drop`

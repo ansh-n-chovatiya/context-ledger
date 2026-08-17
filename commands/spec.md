@@ -1,5 +1,5 @@
 ---
-description: Turn an intent into a spec with checkable criteria, asking before assuming
+description: Turn an intent into checkable criteria, asking before assuming
 allowed-tools: Bash, Read, Grep, Glob, Edit, AskUserQuestion
 argument-hint: «short-name» — «what you want»
 ---

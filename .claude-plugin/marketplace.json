@@ -1,13 +1,14 @@
 {
   "name": "context-ledger",
+  "description": "Durable project state for Claude Code: specs, plans, decisions and portable memory kept on disk, with gates that block on unanswered questions and unmet acceptance criteria.",
   "owner": {
-    "name": "Context Ledger"
+    "name": "ansh.n.chovatiya"
   },
   "plugins": [
     {
       "name": "ctx",
       "source": "./",
-      "description": "Durable specs, plans and memory on disk for Claude Code sessions."
+      "description": "Keeps specs, plans, decisions and memory on disk instead of in the context window, so sessions are disposable and compaction stops losing state."
     }
   ]
 }

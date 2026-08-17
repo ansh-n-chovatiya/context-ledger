@@ -1,5 +1,5 @@
 ---
-description: Record an architectural decision so it is not re-argued later
+description: Record an architectural decision as an ADR
 allowed-tools: Bash, Edit, Read
 argument-hint: «title of the decision»
 ---

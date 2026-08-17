@@ -1,5 +1,5 @@
 ---
-description: Save the current understanding as a portable context bundle
+description: Save current understanding as a portable context bundle
 allowed-tools: Bash
 argument-hint: «name» [--tag x]
 ---

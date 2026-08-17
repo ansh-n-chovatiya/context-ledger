@@ -1,5 +1,5 @@
 ---
-description: Load prior work state on demand — the expansion of L0 trace
+description: Load prior work state on demand
 allowed-tools: Bash
 ---
 !`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" resume`

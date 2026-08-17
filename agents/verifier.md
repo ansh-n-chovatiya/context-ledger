@@ -1,6 +1,6 @@
 ---
 name: verifier
-description: Judges whether a change actually satisfies its acceptance criteria. Use for `rubric` verify checks, or when criteria are prose rather than something a command can decide. Receives the spec and the diff, never the implementation transcript.
+description: Judges whether a change satisfies its acceptance criteria. Use for `rubric` verify checks, or criteria no command can decide.
 tools: Bash, Read, Grep, Glob
 ---
 

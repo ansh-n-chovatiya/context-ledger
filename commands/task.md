@@ -1,5 +1,5 @@
 ---
-description: Escalate to L1 — track one change with a single task file and a done-gate
+description: Track one change at L1 with a done-gate
 allowed-tools: Bash, Read, Edit
 argument-hint: «short-name» [objective]
 ---

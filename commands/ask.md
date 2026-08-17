@@ -1,5 +1,5 @@
 ---
-description: Show what still has to be answered before building, and ask it
+description: Show and ask the questions still blocking a spec
 allowed-tools: Bash, AskUserQuestion
 argument-hint: "[spec-name]"
 ---

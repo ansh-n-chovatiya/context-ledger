@@ -1,5 +1,5 @@
 ---
-description: Load a saved context bundle into this session
+description: Load a saved context bundle
 allowed-tools: Bash
 argument-hint: «name»
 ---

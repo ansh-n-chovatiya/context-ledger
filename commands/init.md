@@ -1,5 +1,5 @@
 ---
-description: Scaffold the ledger in this project and propose verify commands
+description: Scaffold the ledger and propose verify commands
 allowed-tools: Bash
 argument-hint: "[--profile code|docs|research|infra|data] [--verify-now]"
 ---
