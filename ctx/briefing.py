@@ -111,12 +111,7 @@ def _spec_blocks(layout, state):
             f"spec {slug} · BLOCKED on {len(blocking)} unanswered question(s)",
             f"ask before building: {listed}",
         ]
-    # /ctx:plan is phase 5 and not built. Do not advertise it — a briefing that
-    # names a nonexistent command is worse than one that names nothing.
-    return [
-        f"spec {slug} · ready · no blocking questions",
-        "plan dispatch is not built yet — work the pieces with /ctx:task for now",
-    ]
+    return [f"spec {slug} · ready · /ctx:plan {slug} to decompose it into units"]
 
 
 def _work_blocks(doc, rel_path):

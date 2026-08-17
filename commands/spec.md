@@ -29,8 +29,8 @@ Do not write implementation code in this command. The spec is not ready to plan
 while any blocking question is open — `ctx spec-ready <slug>` is the check, and it
 exits non-zero until every blocking question is resolved.
 
-Automated decomposition (`/ctx:plan`) is not built yet. Once the spec is ready,
-work its criteria as individual `/ctx:task` items.
+Once the spec is ready, `/ctx:plan` decomposes it into independently
+dispatchable units — and refuses to run while any blocking question is open.
 
 If the request is genuinely unambiguous and small, say so and suggest
 `/ctx:task` instead. A spec for a two-line fix is how this system gets abandoned.
