@@ -11,7 +11,7 @@ context flat across a twenty-unit plan, and it is only enforceable because the
 plan already declares who owns what.
 """
 
-from . import plan as plan_mod
+from . import plan as plan_mod, worktree as wt
 
 DISPATCHABLE = ("inline", "subagent")
 
@@ -41,7 +41,33 @@ def prepare(layout, config, slug, level=None):
     return level, units, problems, budget
 
 
-def instructions(layout, slug, level, units, budget):
+def prepare_worktrees(layout, slug, units):
+    """Create a worktree per session-tier unit. (rows, problems).
+
+    Per the decision taken during design, this prepares the tree and hands back a
+    command rather than driving a session headlessly — parallel writes are the
+    place a human most wants to stay in the loop.
+    """
+    rows, problems = [], []
+    session_units = [u for u in units if u.tier == "session"]
+    if not session_units:
+        return rows, problems
+
+    problem = wt.check_repo(layout)
+    if problem:
+        return rows, [f"{problem} (units: " +
+                      ", ".join(u.name for u in session_units) + ")"]
+
+    for unit in session_units:
+        path, branch, created, error = wt.create(layout, slug, unit.name)
+        if error:
+            problems.append(f"{unit.name}: {error}")
+        else:
+            rows.append((unit, path, branch, created))
+    return rows, problems
+
+
+def instructions(layout, slug, level, units, budget, worktrees=()):
     """The dispatch brief. Read by the orchestrator, not by the units."""
     lines = [
         f"# Wave {level} of plan `{slug}` — {len(units)} unit(s), "
@@ -86,23 +112,41 @@ def instructions(layout, slug, level, units, budget):
         lines.append("")
 
     if sessions:
+        prepared = {unit.name: (path, branch, created) for unit, path, branch, created
+                    in worktrees}
         lines += [
-            f"## {len(sessions)} unit(s) need a separate writing session",
+            f"## {len(sessions)} unit(s) write in their own worktree",
             "",
-            "The git-worktree tier is not built yet (phase 6). For now either change "
-            "`tier: subagent` in the unit file, or run each in its own `claude` session "
-            "from a worktree you create by hand:",
+            "Each has an isolated checkout and branch, so their edits cannot collide "
+            "and a unit that goes wrong is discarded by deleting a directory. Run each "
+            "in its own terminal:",
             "",
         ]
         for unit in sessions:
-            branch = f"ctx/{slug}/{unit.name}"
+            entry = prepared.get(unit.name)
+            if entry is None:
+                lines.append(
+                    f"- `{unit.name}` — **worktree not prepared**; see the problems above"
+                )
+                continue
+            path, branch, created = entry
             lines += [
-                f"- `{unit.name}`",
-                f"  - `git worktree add -b {branch} .ctx/runtime/worktrees/{unit.name} HEAD`",
-                f"  - then in that directory: `ctx unit {unit.name}` and work "
-                f"{layout.rel(unit.path)}",
+                f"- `{unit.name}` on `{branch}` "
+                f"({'created' if created else 'reusing existing worktree'})",
+                f"  ```",
+                f"  cd {path}",
+                f"  ctx unit {unit.name}          # arms the done-gate for this unit",
+                f"  claude   # then: execute the unit contract at {layout.rel(unit.path)}",
+                f"  ```",
             ]
-        lines.append("")
+        lines += [
+            "",
+            "Commit inside the worktree when done, then from the main tree run "
+            "`ctx merge <unit>` for each. That runs the done-gate in the unit's own "
+            "worktree, refuses to merge anything that touched a path outside `owns`, "
+            "and removes the worktree on success.",
+            "",
+        ]
 
     lines += [
         "## When each unit reports back",

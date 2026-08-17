@@ -39,9 +39,9 @@ costs nothing.** A system that demands a spec for a two-line fix gets abandoned.
 | **L2 planned** | spec + plan + units | ambiguity + done | cap 722 tok | independent pieces, parallel work |
 
 **Total session cost.** The briefing above is what the *hooks* inject. The plugin
-itself also adds **~533 tokens** of always-on context in every session — the
+itself also adds **~557 tokens** of always-on context in every session — the
 descriptions Claude reads to know these commands exist. So a real L0 session costs
-roughly **563 tokens**, L1 about 630, and L2 up to ~1,255.
+roughly **587 tokens**, L1 about 655, and L2 up to ~1,280.
 
 Measure it yourself, don't trust this number as it ages:
 
@@ -84,10 +84,12 @@ start and nothing at all per turn.
 | `/ctx:plan «name»` | Decompose a ready spec into dispatchable units |
 | `/ctx:start [--wave N]` | Dispatch brief for the next wave |
 | `/ctx:handoff [name]` | Resume packet for another session, person or model |
+| `/ctx:merge «unit»` | Land a unit's worktree branch after its gate passes |
 
 Plus CLI-only helpers the commands above drive: `ctx question`, `ctx resolve`,
 `ctx spec-ready` (Gate 1 as an exit code, for CI), `ctx plan-unit`,
-`ctx plan-check`, `ctx unit`, `ctx digest`, `ctx level` and `ctx journal`.
+`ctx plan-check`, `ctx unit`, `ctx worktree list|remove`, `ctx digest`,
+`ctx level` and `ctx journal`.
 
 All of it is also a CLI, which is what makes the same checks runnable in CI:
 
@@ -219,6 +221,49 @@ subagent is the harness's decision. It groups units by tier, names the
 
 ---
 
+## The worktree tier
+
+A unit with `tier: session` gets its own checkout and branch, so several units can
+*write* at once and a unit that goes wrong is discarded by deleting a directory
+rather than untangled out of a shared tree.
+
+```
+/ctx:start                       # prepares a worktree per session unit
+cd .ctx/runtime/worktrees/01-charge
+ctx unit 01-charge               # arms the done-gate for this unit
+claude                           # work it
+git commit -am "…"
+cd -  &&  /ctx:merge 01-charge    # preflight, gate, merge, cleanup
+```
+
+`start` prepares the tree and hands you the command rather than driving sessions
+headlessly — parallel writes are where you most want to stay in the loop.
+
+`ctx merge` refuses in four situations, and refusing changes nothing:
+
+| Refusal | Why |
+|---|---|
+| Integration tree dirty | a merge would entangle unrelated work |
+| Uncommitted work in the worktree | a merge would silently drop it |
+| Changed a path outside `owns` | breaks the isolation siblings relied on |
+| Done-gate fails **in the unit's own worktree** | the work isn't finished |
+
+**One correction to the original design.** It called for "sequential fast-forward
+merges in wave order", which is wrong from the second merge onward — once the
+first branch lands, the integration branch has moved and the next is no longer a
+fast-forward. This uses a real merge commit, and treats **any conflict as a
+violated ownership contract**: if `owns` sets were disjoint and honoured, git has
+nothing to reconcile. On conflict it aborts and names the paths.
+
+`.ctx/` is excluded from the dirty-tree preflight. That is not a workaround —
+those files are merge-safe by construction (append-only journal partitioned by
+date, one file per unit, immutable ADRs), and without the exclusion the ledger's
+own bookkeeping would make the tree permanently dirty and `ctx merge`
+unreachable. A regression test pins both halves: ledger noise never blocks, and a
+stray write is still caught alongside it.
+
+---
+
 ## The two gates
 
 **Gate 1 — ambiguity.** `/ctx:spec` writes acceptance criteria and a
@@ -235,9 +280,15 @@ for a test run:
 |---|---|---|
 | `diff` | changed files ⊆ declared `owns` | git, free |
 | `exists` | path present, optional regex match | stat |
+| `symbol` | named signatures still appear verbatim | one file read |
 | `cmd` | shell command exits 0 | subprocess |
 | `rubric` | a `verifier` subagent judges the criteria met | model, recorded |
 | `human` | you sign off explicitly | you, recorded |
+
+`symbol` is interface freeze made enforceable: list the signatures later units
+code against, and the gate fails if one is renamed or deleted. Crude on purpose —
+it needs no parser per language and catches the two cases that actually break a
+sibling.
 
 Three properties keep it from becoming an obstacle:
 
@@ -278,8 +329,9 @@ The plugin's own always-on footprint is the one cost these decisions don't touch
 so it was trimmed directly: shortening component descriptions and dropping the
 `digest` slash command (still `ctx digest`) took it from ~590 to ~425 tokens. A
 slash command whose whole body is one shell call does not earn always-on context.
-Phase 5 then added ~108 back for three commands and the `unit-runner` agent —
-`plan-check` was deliberately left CLI-only for the same reason.
+Phases 5–6 then added ~132 back for four commands and the `unit-runner` agent —
+`plan-check`, `unit` and `worktree` were deliberately left CLI-only for the same
+reason.
 
 `/ctx:doctor` prints measured briefing size against the cap for every level, so
 the budget is observable rather than aspirational. When a level reports OVER,
@@ -290,14 +342,14 @@ recreates the problem the ledger exists to solve.
 
 ## Status
 
-Phases 0–5 are implemented: scaffold, cross-session continuity, portable memory,
-the L0/L1/L2 levels, both gates, and plan generation with wave scheduling and
-subagent dispatch.
+Phases 0–6 are implemented: scaffold, cross-session continuity, portable memory,
+the L0/L1/L2 levels, both gates, plan generation with wave scheduling and subagent
+dispatch, and the git-worktree tier with merge protocol and interface freeze.
 
-Not yet built: the **git-worktree tier** (phase 6) and hardening (phase 7 —
-`ctx migrate`, CI mode, budget accounting). A unit with `tier: session` is
-reported as not-yet-dispatchable by both `plan-check` and `start`, with the manual
-`git worktree add` fallback printed, rather than silently ignored.
+Not yet built: **phase 7, hardening** — `ctx migrate` (the schema version is
+checked and a newer one refused, but cannot be upgraded), CI mode (`ctx verify`
+works on the active unit only; there is no `--plan` flag yet), budget accounting
+and hook telemetry.
 
 ## Tests
 
@@ -305,7 +357,7 @@ reported as not-yet-dispatchable by both `plan-check` and `start`, with the manu
 python3 -m unittest discover -s tests
 ```
 
-108 tests, no dependencies. The ones worth keeping green are the risk guards:
+136 tests, no dependencies. The ones worth keeping green are the risk guards:
 
 - briefing caps hold at every level under deliberately bloated input
 - briefings are byte-identical for identical state (prompt-cache hits)
@@ -318,3 +370,6 @@ python3 -m unittest discover -s tests
 - overlapping `owns` and read/write races are caught *within* a wave and
   deliberately *not* flagged across waves
 - a broken plan writes no graph, and re-checking archives the prior revision
+- two units in one wave both merge cleanly (the second is not a fast-forward)
+- nothing merges past a failed gate or a write outside `owns`
+- the ledger's own writes never block a merge, but a stray write still does

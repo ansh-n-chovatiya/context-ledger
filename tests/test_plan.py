@@ -283,13 +283,15 @@ class TestDispatch(PlanFixture):
         self.assertEqual(code, 1)
         self.assertIn("budget", out)
 
-    def test_session_tier_is_reported_as_not_yet_dispatchable(self):
+    def test_session_tier_without_a_repo_says_why(self):
+        """The fixture has no real git repo, so this must fail loudly, not silently."""
         self.unit("01-writer", owns=["src/w.py"], tier="session")
         self.cli("plan", self.slug, "--no-spec")
         _code, check_out = self.cli("plan-check", self.slug)
-        self.assertIn("phase 6", check_out, "plan-check warns up front")
+        self.assertIn("not a git repository", check_out, "plan-check warns up front")
         _code, out = self.cli("start")
-        self.assertIn("git worktree add", out, "and start gives a manual fallback")
+        self.assertIn("not a git repository", out)
+        self.assertIn("worktree not prepared", out)
 
     def test_completing_a_wave_advances_to_the_next(self):
         self.setup_plan()

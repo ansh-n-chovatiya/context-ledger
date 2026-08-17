@@ -97,6 +97,12 @@ class Unit:
     def checks(self):
         return self.doc.meta.get("verify") or []
 
+    @property
+    def recorded(self):
+        """Judged kinds already signed off. Mirrors work.Work so the same gate
+        code can run against a unit or a task."""
+        return [str(k) for k in (self.doc.meta.get("verified") or [])]
+
     def _read_paths(self):
         """`reads` may be bare paths or {path, symbols} mappings."""
         out = []
@@ -302,6 +308,12 @@ def _overlap(left, right):
             if _covers(a, b) or _covers(b, a):
                 found.add(a)
     return found
+
+
+def covers_any(path, patterns):
+    """True when `path` falls inside any of `patterns`. Same rule the wave
+    collision check uses, so merge-time scope enforcement cannot drift from it."""
+    return any(_covers(path, pattern) for pattern in patterns or ())
 
 
 def _covers(path, pattern):

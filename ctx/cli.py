@@ -15,6 +15,7 @@ import sys
 from . import (
     __version__, briefing, bundle, config as config_mod, dispatch, frontmatter,
     journal, paths, plan as plan_mod, spec as spec_mod, state, verify, work,
+    worktree,
 )
 
 GITIGNORE = "runtime/\n"
@@ -659,9 +660,12 @@ def cmd_plan_check(args):
         _echo(f"  wave {level}: {names}")
     sessions = [u.name for units in grouped.values() for u in units if u.tier == "session"]
     if sessions:
+        problem = worktree.check_repo(layout)
         _echo("")
-        _echo(f"note: {', '.join(sessions)} use tier `session`, which needs the worktree")
-        _echo("tier (phase 6, not built). Change to `subagent` or run them by hand.")
+        if problem:
+            _echo(f"note: {', '.join(sessions)} use tier `session`, but {problem}")
+        else:
+            _echo(f"note: {', '.join(sessions)} will each get a git worktree on dispatch")
     _echo(f"wrote {layout.rel(path)}")
     return 0
 
@@ -683,8 +687,74 @@ def cmd_start(args):
         _echo(f"wave {level}: nothing left to dispatch")
         return 0
 
-    journal.append(layout, config, "start", slug, f"wave {level}, {len(units)} unit(s)")
-    _echo(dispatch.instructions(layout, slug, level, units, budget))
+    worktrees, wt_problems = ([], [])
+    if not args.no_worktree:
+        worktrees, wt_problems = dispatch.prepare_worktrees(layout, slug, units)
+    for problem in wt_problems:
+        _echo(f"  ! {problem}")
+    if wt_problems:
+        _echo("")
+
+    journal.append(
+        layout, config, "start", slug,
+        f"wave {level}, {len(units)} unit(s), {len(worktrees)} worktree(s)",
+    )
+    _echo(dispatch.instructions(layout, slug, level, units, budget, worktrees))
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# phase 6 — the worktree tier
+# --------------------------------------------------------------------------- #
+
+def cmd_merge(args):
+    """Land a unit's worktree branch. Refuses past a failed gate or stray writes."""
+    layout, config = _loaded(args)
+    slug = bundle.slugify(args.plan or state.load(layout).get("plan") or "")
+    if not slug:
+        _echo("no active plan — /ctx:plan «slug» first")
+        return 1
+
+    ok, messages = worktree.merge(
+        layout, config, slug, args.name, skip_gate=args.skip_gate
+    )
+    for message in messages:
+        if message:
+            _echo(f"  {message}")
+    journal.append(
+        layout, config, "merge", args.name, "ok" if ok else "refused"
+    )
+    if ok:
+        state.update(layout, unit=None)
+        state.clear_attempts(layout, args.name)
+        remaining = plan_mod.next_wave(layout, slug)
+        _echo(
+            f"  next: wave {remaining} — /ctx:start" if remaining
+            else f"  plan {slug} is complete"
+        )
+        return 0
+    _echo("  nothing was merged")
+    return 1
+
+
+def cmd_worktree(args):
+    layout, config = _loaded(args)
+    if args.action == "list":
+        rows = worktree.listing(layout)
+        if not rows:
+            _echo("no ctx worktrees")
+            return 0
+        for name, path, branch in rows:
+            _echo(f"{name:<24} {branch:<36} {path}")
+        return 0
+
+    error = worktree.remove(layout, args.name, force=args.force)
+    if error:
+        _echo(f"could not remove: {error}")
+        _echo("pass --force to discard uncommitted work in the worktree")
+        return 1
+    journal.append(layout, config, "worktree", args.name, "removed")
+    _echo(f"removed worktree and branch for {args.name}")
     return 0
 
 
@@ -898,7 +968,23 @@ def build_parser():
     p = sub.add_parser("start", help="dispatch brief for the next (or given) wave")
     p.add_argument("name", nargs="?", default=None)
     p.add_argument("--wave", type=int, default=None)
+    p.add_argument("--no-worktree", action="store_true",
+                   help="do not create worktrees for session-tier units")
     p.set_defaults(func=cmd_start)
+
+    p = sub.add_parser("merge", help="land a unit's worktree branch after its gate passes")
+    p.add_argument("name")
+    p.add_argument("--plan", default=None)
+    p.add_argument("--skip-gate", action="store_true",
+                   help="merge without running the unit's verify checks")
+    p.set_defaults(func=cmd_merge)
+
+    p = sub.add_parser("worktree", help="list or discard ctx worktrees")
+    p.add_argument("action", choices=["list", "remove"])
+    p.add_argument("name", nargs="?", default=None)
+    p.add_argument("--force", action="store_true",
+                   help="discard uncommitted work in the worktree")
+    p.set_defaults(func=cmd_worktree)
 
     p = sub.add_parser("unit", help="focus a unit, or record its outcome")
     p.add_argument("name")

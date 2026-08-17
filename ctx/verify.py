@@ -1,4 +1,4 @@
-"""The done-gate: five verify kinds, cheapest first, short-circuiting.
+"""The done-gate: six verify kinds, cheapest first, short-circuiting.
 
 Two distinctions carry the whole design.
 
@@ -7,7 +7,8 @@ block. A verify command that *cannot run* — missing binary, exit 127, timeout 
 is a configuration bug, and blocking on it would brick every session in the
 project. Infrastructure failures warn and pass.
 
-**Mechanical vs judged.** `diff`, `exists` and `cmd` are decidable by a script,
+**Mechanical vs judged.** `diff`, `exists`, `symbol` and `cmd` are decidable by a
+script,
 so the `Stop` hook runs them directly and they cost nothing. `rubric` and
 `human` need a model or a person, so they are evaluated by `/ctx:verify` and
 *recorded* in the work file; the hook only checks whether a recording exists.
@@ -22,13 +23,13 @@ import os
 import re
 import subprocess
 
-MECHANICAL = ("diff", "exists", "cmd")
+MECHANICAL = ("diff", "exists", "symbol", "cmd")
 JUDGED = ("rubric", "human")
 KINDS = MECHANICAL + JUDGED
 
 # Cheapest first: `diff` is a git call, `exists` is a stat, `cmd` is a whole
 # subprocess, and the judged kinds cost a model call or a human's attention.
-COST = {"diff": 0, "exists": 1, "cmd": 2, "rubric": 3, "human": 4}
+COST = {"diff": 0, "exists": 1, "symbol": 2, "cmd": 3, "rubric": 4, "human": 5}
 
 PASS, FAIL, ERROR, PENDING = "pass", "fail", "error", "pending"
 
@@ -64,6 +65,9 @@ def label_of(check):
         return str(check.get("run") or "<no command>")
     if kind == "exists":
         return str(check.get("path") or "<no path>")
+    if kind == "symbol":
+        names = check.get("contains") or []
+        return f"{check.get('path') or '?'} still provides {', '.join(map(str, names))}"
     if kind == "diff":
         return "changed files within owned scope"
     if kind == "rubric":
@@ -90,6 +94,8 @@ def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False)
             result = _check_diff(check, cwd, owns)
         elif kind == "exists":
             result = _check_exists(check, cwd)
+        elif kind == "symbol":
+            result = _check_symbol(check, cwd)
         elif kind == "cmd":
             result = _check_cmd(layout, check, cwd, key, timeout, head, tail)
         else:
@@ -150,6 +156,35 @@ def _check_exists(check, cwd):
         except re.error as exc:
             return Result("exists", raw, ERROR, f"bad pattern: {exc}")
     return Result("exists", raw, PASS)
+
+
+def _check_symbol(check, cwd):
+    """Interface freeze: every named signature must still appear verbatim.
+
+    Crude on purpose. It catches the two dangerous cases — a signature renamed or
+    deleted while a sibling unit is coding against it — without needing a parser
+    per language, and it costs one file read.
+    """
+    raw = str(check.get("path") or "")
+    names = [str(n) for n in (check.get("contains") or []) if str(n).strip()]
+    if not raw or not names:
+        return Result("symbol", label_of(check), ERROR, "needs `path` and `contains`")
+    target = os.path.join(str(cwd), raw) if not os.path.isabs(raw) else raw
+    if not os.path.exists(target):
+        return Result("symbol", raw, FAIL, "file does not exist")
+    try:
+        body = open(target, encoding="utf-8", errors="replace").read()
+    except OSError as exc:
+        return Result("symbol", raw, ERROR, str(exc))
+    missing = [name for name in names if name not in body]
+    if missing:
+        return Result(
+            "symbol", raw, FAIL,
+            "no longer provides: " + ", ".join(missing)
+            + " — a sibling unit is coding against this, so changing it is a planning "
+              "decision. Report it instead of adjusting the check.",
+        )
+    return Result("symbol", raw, PASS)
 
 
 def _check_cmd(layout, check, cwd, key, timeout, head, tail):
