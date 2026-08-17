@@ -1,0 +1,13 @@
+{
+  "name": "context-ledger",
+  "owner": {
+    "name": "Context Ledger"
+  },
+  "plugins": [
+    {
+      "name": "ctx",
+      "source": "./",
+      "description": "Durable specs, plans and memory on disk for Claude Code sessions."
+    }
+  ]
+}
