@@ -26,8 +26,11 @@ Now do the work this command exists for: **surface what you would otherwise assu
    `ctx resolve <slug> --question "<substring>" --answer "<what they chose>"`
 
 Do not write implementation code in this command. The spec is not ready to plan
-while any blocking question is open — `ctx spec-ready <slug>` is the check, and
-`/ctx:plan` will refuse until it passes.
+while any blocking question is open — `ctx spec-ready <slug>` is the check, and it
+exits non-zero until every blocking question is resolved.
+
+Automated decomposition (`/ctx:plan`) is not built yet. Once the spec is ready,
+work its criteria as individual `/ctx:task` items.
 
 If the request is genuinely unambiguous and small, say so and suggest
 `/ctx:task` instead. A spec for a two-line fix is how this system gets abandoned.

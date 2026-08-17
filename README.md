@@ -76,15 +76,15 @@ start and nothing at all per turn.
 | `/ctx:load «name»` | Load a bundle: project → global → path |
 | `/ctx:list` | Saved bundles, project and global |
 | `/ctx:promote «name»` | Copy a bundle to the global store |
-| `/ctx:digest` | Regenerate the journal digest |
 | `/ctx:doctor [--verify]` | Check layout, budgets, verify commands, gate |
 | `/ctx:spec «name»` | Escalate to L2: intent → checkable criteria → questions |
 | `/ctx:ask [name]` | Show what must be answered before building, and ask it |
 | `/ctx:decide «title»` | Record an ADR so a settled choice is not re-argued |
 | `/ctx:verify` | Run the done-gate by hand; `--sign-off rubric\|human` |
 
-Plus three CLI-only helpers that the commands above drive: `ctx question`,
-`ctx resolve` and `ctx spec-ready` (Gate 1 as an exit code, for CI).
+Plus CLI-only helpers the commands above drive: `ctx question`, `ctx resolve`,
+`ctx spec-ready` (Gate 1 as an exit code, for CI), `ctx digest`, `ctx level` and
+`ctx journal`.
 
 All of it is also a CLI, which is what makes the same checks runnable in CI:
 
