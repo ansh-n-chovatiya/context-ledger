@@ -360,5 +360,31 @@ class TestBudget(MigrateFixture):
         self.assertIn("no sessions recorded yet", out)
 
 
+class TestProfileDefaults(Fixture):
+    """No profile may ship a default that can never fail."""
+
+    def test_no_tautological_defaults(self):
+        for name, checks in config_mod.PROFILES.items():
+            for check in checks:
+                self.assertNotEqual(
+                    (check.get("kind"), check.get("path")), ("exists", "."),
+                    f"{name}: the working directory always exists, so this check "
+                    "makes an unguarded project look guarded",
+                )
+
+    def test_every_profile_is_usable(self):
+        for name in config_mod.PROFILES:
+            code, out = self.cli("init", "--profile", name, "--force")
+            self.assertEqual(code, 0, out)
+            config = config_mod.load(self.layout)
+            self.assertEqual(config["profile"], name)
+
+    def test_judged_only_fallbacks_are_flagged_at_init(self):
+        code, out = self.cli("init", "--profile", "docs", "--force")
+        self.assertEqual(code, 0)
+        self.assertIn("falling back to rubric", out)
+        self.assertIn("decides objectively", out, "must say the gate is not objective")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

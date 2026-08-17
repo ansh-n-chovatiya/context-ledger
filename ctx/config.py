@@ -38,15 +38,24 @@ DEFAULTS = {
     "verify": [],
 }
 
-# Per-profile verify defaults proposed by `ctx init`. Every one is dry-run
-# before it is written, so a project only ever inherits checks that pass on a
-# clean tree.
+# Per-profile fallbacks, used only when no concrete command could be detected
+# from the toolchain.
+#
+# `code` and `infra` get real commands from `_verify_candidates`, so their
+# fallbacks carry the judgement a command cannot supply. The others lean on
+# judgement because no command can decide whether prose is correct.
+#
+# Deliberately no `{"kind": "exists", "path": "."}` anywhere: the working
+# directory always exists, so that check can never fail. A default that always
+# passes is worse than no default — it makes an unguarded project look guarded.
 PROFILES = {
     "code": [],
-    "docs": [{"kind": "exists", "path": "."}],
-    "research": [{"kind": "rubric"}],
-    "infra": [],
-    "data": [],
+    "infra": [{"kind": "human", "about": "review the planned changes before applying"}],
+    "docs": [{"kind": "rubric", "about": "the text satisfies the acceptance criteria"}],
+    "research": [
+        {"kind": "rubric", "about": "findings are sourced and answer the question asked"}
+    ],
+    "data": [{"kind": "human", "about": "sanity-check the output before relying on it"}],
 }
 
 

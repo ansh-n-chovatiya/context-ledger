@@ -159,7 +159,14 @@ def cmd_init(args):
         for command, why in rejected:
             _echo(f"  skipped {command} — {why}")
     if not accepted:
-        _echo("  no verify commands configured — add them to ctx.yaml before using L1/L2")
+        fallback = config.get("verify") or []
+        judged = [str(e.get("kind")) for e in fallback if isinstance(e, dict)]
+        if judged:
+            _echo(f"  no runnable command detected; falling back to {', '.join(judged)}")
+            _echo("  those need a model or a person — add a `cmd` check to ctx.yaml for")
+            _echo("  a gate that decides objectively")
+        else:
+            _echo("  no verify commands configured — add them to ctx.yaml before L1/L2")
     _echo("L0 is active: work is journalled to disk, and the hook briefing costs")
     _echo("~30 tokens per session (cap 61). See `claude plugin details ctx` for the")
     _echo("plugin's own always-on footprint, which is separate and larger.")

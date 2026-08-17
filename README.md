@@ -420,7 +420,7 @@ and hook telemetry.
 python3 -m unittest discover -s tests
 ```
 
-170 tests, no dependencies. The ones worth keeping green are the risk guards:
+173 tests, no dependencies. The ones worth keeping green are the risk guards:
 
 - briefing caps hold at every level under deliberately bloated input
 - briefings are byte-identical for identical state (prompt-cache hits)
@@ -441,3 +441,4 @@ python3 -m unittest discover -s tests
 - `ctx.yaml` keeps its comments through a migration
 - telemetry never raises and never grows without bound
 - `auto_load` injects bundle content, and is truncated before active work
+- no profile ships a default check that can never fail
