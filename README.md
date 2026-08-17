@@ -80,9 +80,18 @@ entry, no `package.json` edit.
 
 ## Installation
 
+In an interactive Claude Code session:
+
 ```
 /plugin marketplace add ansh-n-chovatiya/context-ledger
 /plugin install ctx@context-ledger
+```
+
+Or from any shell — VSCode, SSH, CI — where `/plugin` doesn't exist:
+
+```bash
+claude plugin marketplace add ansh-n-chovatiya/context-ledger
+claude plugin install ctx@context-ledger
 ```
 
 Verify it:
@@ -97,7 +106,11 @@ Update it later with `claude plugin update ctx`.
 ### Choosing an install scope
 
 ```
-/plugin install ctx@context-ledger --scope project   # this project only
+/plugin install ctx@context-ledger --scope project         # this project only
+```
+
+```bash
+claude plugin install ctx@context-ledger --scope project   # same, from a shell
 ```
 
 | Scope | Available in | Trade-off |
@@ -121,6 +134,11 @@ git clone https://github.com/ansh-n-chovatiya/context-ledger.git ~/tools/context
 ```
 /plugin marketplace add ~/tools/context-ledger
 /plugin install ctx@context-ledger
+```
+
+```bash
+claude plugin marketplace add ~/tools/context-ledger
+claude plugin install ctx@context-ledger
 ```
 
 A local-directory marketplace loads **live from that directory**, so your edits
@@ -887,6 +905,11 @@ the slash commands, which resolve the path themselves.
 The plugin is silent without `.ctx/`. Run `/ctx:init`. Confirm with
 `claude plugin list` that it's enabled.
 
+**`/plugin isn't available in this environment`.**
+`/plugin` is a built-in of the interactive terminal only — the VSCode extension,
+headless runs and CI don't have it. Use the `claude plugin ...` CLI instead,
+which works everywhere. See [Installation](#installation).
+
 **`claude plugin update ctx` says "not found".**
 Expected for a local-directory marketplace — the plugin loads live from the
 directory, so there's nothing to update. `git pull` the repo instead.
@@ -959,6 +982,11 @@ crashes and your own `Ctrl-C`.
 ```
 /plugin uninstall ctx
 /plugin marketplace remove context-ledger
+```
+
+```bash
+claude plugin uninstall ctx
+claude plugin marketplace remove context-ledger
 ```
 
 Your `.ctx/` directory is untouched — it's plain markdown and JSON, readable and
