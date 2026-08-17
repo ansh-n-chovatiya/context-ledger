@@ -80,14 +80,8 @@ entry, no `package.json` edit.
 
 ## Installation
 
-```bash
-git clone https://github.com/<your-org>/context-ledger.git ~/tools/context-ledger
 ```
-
-Then in Claude Code:
-
-```
-/plugin marketplace add ~/tools/context-ledger
+/plugin marketplace add ansh-n-chovatiya/context-ledger
 /plugin install ctx@context-ledger
 ```
 
@@ -96,8 +90,9 @@ Verify it:
 ```bash
 claude plugin list                 # ctx@context-ledger  0.1.0  ✔ enabled
 claude plugin details ctx          # component inventory + token cost
-claude plugin validate ~/tools/context-ledger --strict
 ```
+
+Update it later with `claude plugin update ctx`.
 
 ### Choosing an install scope
 
@@ -115,16 +110,23 @@ The **hooks** are free everywhere either way — they're harness-side and add no
 model context. It's the command descriptions that cost tokens. See
 [What it costs](#what-it-costs).
 
-### A note on updating
+### Installing from a local clone
 
-If you added the marketplace from a local directory, the plugin loads **live from
-that directory**. Edits take effect in the next session with no reinstall — and
-`claude plugin update ctx` will report `not found`, because there's no snapshot to
-update. That's expected. Pull the repo instead:
+For hacking on the plugin itself:
 
 ```bash
-git -C ~/tools/context-ledger pull
+git clone https://github.com/ansh-n-chovatiya/context-ledger.git ~/tools/context-ledger
 ```
+
+```
+/plugin marketplace add ~/tools/context-ledger
+/plugin install ctx@context-ledger
+```
+
+A local-directory marketplace loads **live from that directory**, so your edits
+take effect in the next session with no reinstall. The trade-off: there's no
+snapshot to update, so `claude plugin update ctx` reports `not found` — which is
+expected, not a fault. Use `git pull` instead.
 
 ---
 
@@ -776,7 +778,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Get Context Ledger
-        run: git clone --depth 1 https://github.com/<your-org>/context-ledger /tmp/ctx
+        run: git clone --depth 1 https://github.com/ansh-n-chovatiya/context-ledger /tmp/ctx
       - name: Ledger schema is current
         run: /tmp/ctx/bin/ctx migrate --check
       - name: Ledger checks
