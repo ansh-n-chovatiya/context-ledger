@@ -14,7 +14,7 @@ Cost at L0 is around 30 tokens against a 61-token cap. That is the number that
 makes it acceptable to leave this on for a two-line fix.
 """
 
-from . import config as config_mod, frontmatter, journal, spec as spec_mod
+from . import bundle, config as config_mod, frontmatter, journal, spec as spec_mod
 
 TRUNCATED = "…[briefing truncated]"
 
@@ -52,9 +52,9 @@ def _blocks(layout, config, state, level):
     recent = journal.recent_paths(layout, 4)
     if recent and level != "0":
         out.append("recent: " + ", ".join(recent))
-    out.extend(_auto_load(layout, config, level))
     if level == "0":
         out.append("/ctx:resume for detail · /ctx:task «goal» to track a change")
+    out.extend(_auto_load(layout, config, level))
     return [block for block in out if block]
 
 
@@ -143,13 +143,49 @@ def _verify_summary(verify):
     return " · ".join(parts)
 
 
+# Sections worth carrying into every session. `Situation` and `Resume here` are
+# about one piece of work, so they are noise as standing context; constraints and
+# verified facts are the parts that stay true.
+STANDING_SECTIONS = ("constraints", "established facts")
+
+
 def _auto_load(layout, config, level):
-    names = config.get("auto_load") or []
-    if not names:
-        return []
-    if level == "0":
-        return []  # names alone are not worth the characters at L0
-    return [f"auto-loaded contexts: {', '.join(map(str, names))} (see .ctx/contexts/)"]
+    """Inject the content of bundles named in `auto_load` — house conventions.
+
+    Emitted last, so the cap truncates these before it drops active work. At L0
+    the 220-char cap leaves almost no room; that shows up as truncation in
+    `ctx doctor` rather than silently doing nothing, and raising
+    `briefing_chars.l0` is the deliberate way to make space.
+    """
+    out = []
+    for name in config.get("auto_load") or []:
+        path = bundle.resolve(layout, str(name))
+        if path is None:
+            out.append(f"auto_load: no context named {str(name)!r} — check ctx.yaml")
+            continue
+        doc = frontmatter.read(path)
+        if doc is None:
+            continue
+        text = _standing_content(doc)
+        if text:
+            out.append(f"[{name}] {text}")
+    return out
+
+
+def _standing_content(doc):
+    parts = []
+    for heading in STANDING_SECTIONS:
+        body = doc.section(heading)
+        if not body:
+            continue
+        cleaned = " ".join(
+            line.strip().lstrip("-*").strip()
+            for line in body.splitlines()
+            if line.strip() and not line.strip().startswith("<!--")
+        )
+        if cleaned:
+            parts.append(f"{heading}: {cleaned}")
+    return " · ".join(parts)
 
 
 def _first_paragraph(text):

@@ -171,6 +171,86 @@ class TestBriefingBudget(Fixture):
         self.assertIn("objective: Renew expiring tokens.", text)
 
 
+class TestAutoLoad(Fixture):
+    """`auto_load` must inject bundle *content*, not just name the bundles.
+
+    It named them for six phases while the docs claimed otherwise — a documented
+    feature that did nothing.
+    """
+
+    def configure(self, *names):
+        from ctx import miniyaml
+
+        data = miniyaml.loads(self.layout.config.read_text(encoding="utf-8"))
+        data["auto_load"] = list(names)
+        data["briefing_chars"] = {"l0": 900, "l1": 900, "l2": 2600}
+        self.layout.config.write_text(miniyaml.dumps(data) + "\n", encoding="utf-8")
+        self.config = config_mod.load(self.layout)
+
+    def house_bundle(self):
+        bundle.save(
+            self.layout, "house",
+            "## Situation\nWorking on the thing.\n\n"
+            "## Established facts\n- Webhooks are verified in verify.ts\n\n"
+            "## Constraints\n- No public API changes before September\n\n"
+            "## Resume here\nRun the tests.\n",
+            config=self.config,
+        )
+
+    def briefing_now(self):
+        return briefing.build(self.layout, self.config, state.load(self.layout))
+
+    def test_standing_sections_are_injected(self):
+        self.house_bundle()
+        self.configure("house")
+        text = self.briefing_now()
+        self.assertIn("No public API changes before September", text)
+        self.assertIn("Webhooks are verified in verify.ts", text)
+
+    def test_task_specific_sections_are_left_out(self):
+        """Situation and Resume-here describe one piece of work, not house rules."""
+        self.house_bundle()
+        self.configure("house")
+        text = self.briefing_now()
+        self.assertNotIn("Working on the thing", text)
+        self.assertNotIn("Run the tests", text)
+
+    def test_a_missing_name_is_surfaced_not_swallowed(self):
+        self.configure("nonexistent")
+        self.assertIn("no context named 'nonexistent'", self.briefing_now())
+
+    def test_it_is_truncated_before_active_work(self):
+        self.cli("task", "important")
+        path = self.layout.task_file("important")
+        doc = frontmatter.read(path)
+        doc.body = (
+            "## Objective\nShip the critical fix.\n\n"
+            "## Acceptance criteria\n1. the critical criterion\n"
+        )
+        doc.write(path)
+
+        bundle.save(
+            self.layout, "verbose",
+            "## Constraints\n- " + ("x" * 3000) + "\n", config=self.config,
+        )
+        from ctx import miniyaml
+
+        data = miniyaml.loads(self.layout.config.read_text(encoding="utf-8"))
+        data["auto_load"] = ["verbose"]
+        self.layout.config.write_text(miniyaml.dumps(data) + "\n", encoding="utf-8")
+        self.config = config_mod.load(self.layout)
+
+        text = self.briefing_now()
+        self.assertIn("the critical criterion", text, "active work survives")
+        self.assertIn(briefing.TRUNCATED, text, "the bundle is what gets cut")
+
+    def test_no_auto_load_costs_nothing(self):
+        before = len(self.briefing_now())
+        self.house_bundle()
+        self.assertEqual(len(self.briefing_now()), before,
+                         "an unreferenced bundle must not affect the briefing")
+
+
 class TestBundles(Fixture):
     def test_save_resolve_and_promote(self):
         body = "# Context — demo\n\n## Situation\nWe are testing.\n\n## Resume here\nRun tests.\n"

@@ -130,6 +130,23 @@ Bundles live in the repo, so they land in pull requests and can be reviewed.
 manual on purpose, because automatic cross-project memory is how you get a
 confident assertion sourced from an unrelated codebase.
 
+### Standing context
+
+Name bundles in `auto_load` and every session gets their content:
+
+```yaml
+auto_load: [house-conventions]
+```
+
+Only **Constraints** and **Established facts** are injected. `Situation` and
+`Resume here` describe one piece of work, so they are noise as standing context.
+
+It is emitted last in the briefing, so if there isn't room the cap truncates
+*this* rather than dropping your active task. At L0 the 220-char cap leaves almost
+none — raise `briefing_chars.l0` if you want house rules there, and check
+`ctx doctor` for truncation afterwards. A name that resolves to nothing is
+reported in the briefing rather than silently skipped.
+
 ---
 
 ## What lives where
@@ -403,7 +420,7 @@ and hook telemetry.
 python3 -m unittest discover -s tests
 ```
 
-165 tests, no dependencies. The ones worth keeping green are the risk guards:
+170 tests, no dependencies. The ones worth keeping green are the risk guards:
 
 - briefing caps hold at every level under deliberately bloated input
 - briefings are byte-identical for identical state (prompt-cache hits)
@@ -423,3 +440,4 @@ python3 -m unittest discover -s tests
   ledger is refused rather than downgraded
 - `ctx.yaml` keeps its comments through a migration
 - telemetry never raises and never grows without bound
+- `auto_load` injects bundle content, and is truncated before active work
