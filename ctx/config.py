@@ -32,6 +32,7 @@ DEFAULTS = {
         "output_tail": 20,
         "timeout_seconds": 240,  # must stay under the Stop hook timeout (300s)
     },
+    "plan": {"wave_budget_tokens": 250000},
     "auto_load": [],
     "redact": [],
     "verify": [],

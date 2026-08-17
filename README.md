@@ -39,9 +39,9 @@ costs nothing.** A system that demands a spec for a two-line fix gets abandoned.
 | **L2 planned** | spec + plan + units | ambiguity + done | cap 722 tok | independent pieces, parallel work |
 
 **Total session cost.** The briefing above is what the *hooks* inject. The plugin
-itself also adds **~425 tokens** of always-on context in every session — the
+itself also adds **~533 tokens** of always-on context in every session — the
 descriptions Claude reads to know these commands exist. So a real L0 session costs
-roughly **455 tokens**, L1 about 520, and L2 up to ~1,150.
+roughly **563 tokens**, L1 about 630, and L2 up to ~1,255.
 
 Measure it yourself, don't trust this number as it ages:
 
@@ -81,10 +81,13 @@ start and nothing at all per turn.
 | `/ctx:ask [name]` | Show what must be answered before building, and ask it |
 | `/ctx:decide «title»` | Record an ADR so a settled choice is not re-argued |
 | `/ctx:verify` | Run the done-gate by hand; `--sign-off rubric\|human` |
+| `/ctx:plan «name»` | Decompose a ready spec into dispatchable units |
+| `/ctx:start [--wave N]` | Dispatch brief for the next wave |
+| `/ctx:handoff [name]` | Resume packet for another session, person or model |
 
 Plus CLI-only helpers the commands above drive: `ctx question`, `ctx resolve`,
-`ctx spec-ready` (Gate 1 as an exit code, for CI), `ctx digest`, `ctx level` and
-`ctx journal`.
+`ctx spec-ready` (Gate 1 as an exit code, for CI), `ctx plan-unit`,
+`ctx plan-check`, `ctx unit`, `ctx digest`, `ctx level` and `ctx journal`.
 
 All of it is also a CLI, which is what makes the same checks runnable in CI:
 
@@ -164,6 +167,58 @@ code throws. It fails closed only on a criterion that genuinely did not pass.
 
 ---
 
+## Plans, waves and units
+
+`/ctx:plan` decomposes a **ready** spec — it refuses outright while any blocking
+question is open, which is what makes Gate 1 more than advice. The output is one
+file per unit, and the test each must pass is: *could an agent that has never seen
+the conversation execute this?* That property is what makes a unit dispatchable,
+and its absence is what produces half-finished work.
+
+```yaml
+unit: 03-token-refresh
+tier: subagent            # inline | subagent | session
+depends_on: [01-key-store]
+owns:  [src/auth/refresh.ts]   # exclusive write scope
+reads: [{path: src/auth/key-store.ts, symbols: [KeyStore]}]
+forbid: [src/auth/session.ts]  # a concurrent sibling owns this
+budget_tokens: 45000
+verify: [{kind: cmd, run: pnpm vitest run src/auth/refresh.test.ts}]
+```
+
+**Waves are computed, never authored.** `depends_on` is the only place ordering
+lives; `ctx plan-check` derives wave numbers from it, writes them back, and
+generates `plan.json`. Two checks run before anything is dispatched:
+
+| Check | Catches |
+|---|---|
+| Disjoint ownership | two units in one wave writing the same path |
+| No read/write races | a unit reading a path a **concurrent** unit rewrites |
+
+The second matters because `owns` sets can be disjoint and the plan still be
+wrong. Both are scoped to a wave — the same overlap across *different* waves is
+just ordinary sequential work and is not flagged.
+
+Neither is auto-repaired. Each reports the exact line that fixes it:
+
+```
+wave 1: 01-key-store and 03-rotate both own src/keys.ts
+        — add `depends_on: [01-key-store]` to 03-rotate or split the paths
+wave 1: 04-refresh reads src/clock.ts while 02-clock rewrites it
+        — add `depends_on: [02-clock]` to 04-refresh
+```
+
+Rewriting someone's dependency graph silently is not a favour. Nothing is written
+while problems remain, and `plan.json` archives prior revisions rather than
+overwriting, so an in-flight wave can't be pulled out from under itself.
+
+`/ctx:start` prints a dispatch brief and spawns nothing itself — what to hand a
+subagent is the harness's decision. It groups units by tier, names the
+`unit-runner` agent, and repeats the rule that keeps the whole thing affordable:
+**the orchestrator reads unit files and unit reports, never source.**
+
+---
+
 ## The two gates
 
 **Gate 1 — ambiguity.** `/ctx:spec` writes acceptance criteria and a
@@ -223,6 +278,8 @@ The plugin's own always-on footprint is the one cost these decisions don't touch
 so it was trimmed directly: shortening component descriptions and dropping the
 `digest` slash command (still `ctx digest`) took it from ~590 to ~425 tokens. A
 slash command whose whole body is one shell call does not earn always-on context.
+Phase 5 then added ~108 back for three commands and the `unit-runner` agent —
+`plan-check` was deliberately left CLI-only for the same reason.
 
 `/ctx:doctor` prints measured briefing size against the cap for every level, so
 the budget is observable rather than aspirational. When a level reports OVER,
@@ -233,13 +290,14 @@ recreates the problem the ledger exists to solve.
 
 ## Status
 
-Phases 0–4 are implemented: scaffold, cross-session continuity, portable memory,
-the L0/L1/L2 level machinery, the ambiguity gate and the done-gate.
+Phases 0–5 are implemented: scaffold, cross-session continuity, portable memory,
+the L0/L1/L2 levels, both gates, and plan generation with wave scheduling and
+subagent dispatch.
 
-Not yet built: plan generation and unit dispatch (`/ctx:plan`, `/ctx:start`), and
-the git-worktree tier. The unit contract that those phases will read is already
-honoured by everything downstream of it — `owns`/`forbid` drive the `diff` check
-and the `PreToolUse` scope nudge today.
+Not yet built: the **git-worktree tier** (phase 6) and hardening (phase 7 —
+`ctx migrate`, CI mode, budget accounting). A unit with `tier: session` is
+reported as not-yet-dispatchable by both `plan-check` and `start`, with the manual
+`git worktree add` fallback printed, rather than silently ignored.
 
 ## Tests
 
@@ -247,7 +305,7 @@ and the `PreToolUse` scope nudge today.
 python3 -m unittest discover -s tests
 ```
 
-75 tests, no dependencies. The ones worth keeping green are the risk guards:
+108 tests, no dependencies. The ones worth keeping green are the risk guards:
 
 - briefing caps hold at every level under deliberately bloated input
 - briefings are byte-identical for identical state (prompt-cache hits)
@@ -257,3 +315,6 @@ python3 -m unittest discover -s tests
 - incomplete work cannot end its session, and the gate escalates after 3 tries
 - a missing tool never blocks, but a real test failure always does
 - a judged sign-off is cleared by any subsequent edit
+- overlapping `owns` and read/write races are caught *within* a wave and
+  deliberately *not* flagged across waves
+- a broken plan writes no graph, and re-checking archives the prior revision

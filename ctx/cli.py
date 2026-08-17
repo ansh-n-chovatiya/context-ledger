@@ -13,8 +13,8 @@ import subprocess
 import sys
 
 from . import (
-    __version__, briefing, bundle, config as config_mod, frontmatter,
-    journal, paths, spec as spec_mod, state, verify, work,
+    __version__, briefing, bundle, config as config_mod, dispatch, frontmatter,
+    journal, paths, plan as plan_mod, spec as spec_mod, state, verify, work,
 )
 
 GITIGNORE = "runtime/\n"
@@ -179,6 +179,25 @@ def cmd_status(args):
     attempts = {k: v for k, v in (current.get("attempts") or {}).items() if v}
     if attempts:
         _echo("attempts " + ", ".join(f"{k}×{v}" for k, v in sorted(attempts.items())))
+
+    if current.get("plan"):
+        rows, problems = plan_mod.board(layout, current["plan"])
+        _echo("")
+        _echo(f"wave board — plan {current['plan']}:")
+        wave = None
+        for level, name, tier, status, owns in rows:
+            if level != wave:
+                wave, marker = level, ""
+                _echo(f"  wave {level}")
+            flag = "→" if name == current.get("unit") else " "
+            _echo(f"   {flag} {name:<24} {tier:<9} {status}")
+        if not rows:
+            _echo("   (no units yet)")
+        for problem in problems:
+            _echo(f"   ! {problem}")
+        if not problems:
+            nxt = plan_mod.next_wave(layout, current["plan"])
+            _echo(f"   next: {'wave %d — /ctx:start' % nxt if nxt else 'plan complete'}")
 
     entries, earlier = journal.tail(layout, 8)
     _echo("")
@@ -548,6 +567,216 @@ def cmd_verify(args):
     return 1
 
 
+
+# --------------------------------------------------------------------------- #
+# phase 5 — plans, waves and dispatch
+# --------------------------------------------------------------------------- #
+
+def cmd_plan(args):
+    """Scaffold a plan. Gate 1 is enforced here: an ambiguous spec cannot be planned."""
+    layout, config = _loaded(args)
+    slug = bundle.slugify(args.name)
+    spec_slug = bundle.slugify(args.spec or slug)
+
+    if spec_mod.spec_path(layout, spec_slug).is_file():
+        ready, blocking = spec_mod.ready(layout, spec_slug)
+        if not ready:
+            _echo(f"refusing to plan: spec {spec_slug} has {len(blocking)} unanswered")
+            _echo("blocking question(s). Answer them first — /ctx:ask")
+            for item in blocking:
+                _echo(f"  - {item}")
+            return 1
+    elif not args.no_spec:
+        _echo(f"no spec at {layout.rel(spec_mod.spec_path(layout, spec_slug))}")
+        _echo("run /ctx:spec first, or pass --no-spec to plan without one")
+        return 1
+
+    plan_mod.create(layout, slug, spec_slug)
+    created = []
+    for index, name in enumerate(args.unit or [], 1):
+        unit_name = name if name[:2].isdigit() else f"{index:02d}-{bundle.slugify(name)}"
+        path, fresh = plan_mod.scaffold_unit(
+            layout, slug, unit_name, verify_checks=config.get("verify") or []
+        )
+        created.append((unit_name, fresh, path))
+
+    state.update(layout, level="2", plan=slug, spec=spec_slug, unit=None)
+    journal.append(layout, config, "plan", slug, f"opened ({len(created)} unit stubs)")
+
+    _echo(f"L2 planned · plan {slug}")
+    _echo(f"readme {layout.rel(plan_mod.readme_path(layout, slug))}")
+    _echo(f"units  {layout.rel(plan_mod.units_dir(layout, slug))}/")
+    for unit_name, fresh, path in created:
+        _echo(f"  {'created' if fresh else 'exists '} {layout.rel(path)}")
+    if not created:
+        _echo("  no units yet — `ctx plan-unit` or write NN-name.md files directly")
+    _echo("then run /ctx:plan-check to compute waves and check for collisions")
+    return 0
+
+
+def cmd_plan_unit(args):
+    layout, config = _loaded(args)
+    slug = bundle.slugify(args.plan or state.load(layout).get("plan") or "")
+    if not slug:
+        _echo("no active plan — /ctx:plan «slug» first")
+        return 1
+    path, fresh = plan_mod.scaffold_unit(
+        layout, slug, args.name, objective=args.objective or "",
+        tier=args.tier, owns=args.owns or [],
+        verify_checks=config.get("verify") or [],
+    )
+    _echo(f"{'created' if fresh else 'exists'} {layout.rel(path)}")
+    return 0
+
+
+def cmd_plan_check(args):
+    """Validate, compute waves from depends_on, and derive plan.json."""
+    layout, config = _loaded(args)
+    slug = bundle.slugify(args.name or state.load(layout).get("plan") or "")
+    if not slug:
+        _echo("no active plan — /ctx:plan «slug» first")
+        return 1
+
+    grouped, problems = plan_mod.check(layout, slug)
+    if problems:
+        _echo(f"plan {slug}: {len(problems)} problem(s) — nothing was written")
+        for problem in problems:
+            _echo(f"  - {problem}")
+        _echo("")
+        _echo("Collision problems name the `depends_on` line that fixes them. They are")
+        _echo("not auto-repaired: rewriting a dependency graph is a planning decision.")
+        return 1
+
+    plan_mod.apply_waves(grouped)
+    path, revision = plan_mod.write_graph(layout, slug, grouped)
+    plan_mod.render_readme_units(layout, slug, grouped)
+    journal.append(layout, config, "plan", slug, f"checked, graph r{revision}")
+
+    total = sum(len(units) for units in grouped.values())
+    _echo(f"plan {slug}: {total} unit(s) in {len(grouped)} wave(s) · graph r{revision}")
+    for level in sorted(grouped):
+        names = ", ".join(u.name for u in grouped[level])
+        _echo(f"  wave {level}: {names}")
+    sessions = [u.name for units in grouped.values() for u in units if u.tier == "session"]
+    if sessions:
+        _echo("")
+        _echo(f"note: {', '.join(sessions)} use tier `session`, which needs the worktree")
+        _echo("tier (phase 6, not built). Change to `subagent` or run them by hand.")
+    _echo(f"wrote {layout.rel(path)}")
+    return 0
+
+
+def cmd_start(args):
+    """Print the dispatch brief for a wave. Spawns nothing itself."""
+    layout, config = _loaded(args)
+    slug = bundle.slugify(args.name or state.load(layout).get("plan") or "")
+    if not slug:
+        _echo("no active plan — /ctx:plan «slug» first")
+        return 1
+
+    level, units, problems, budget = dispatch.prepare(layout, config, slug, args.wave)
+    if problems:
+        for problem in problems:
+            _echo(f"  - {problem}")
+        return 1
+    if not units:
+        _echo(f"wave {level}: nothing left to dispatch")
+        return 0
+
+    journal.append(layout, config, "start", slug, f"wave {level}, {len(units)} unit(s)")
+    _echo(dispatch.instructions(layout, slug, level, units, budget))
+    return 0
+
+
+def cmd_unit(args):
+    """Focus a unit so the done-gate applies to it, or record its outcome."""
+    layout, config = _loaded(args)
+    current = state.load(layout)
+    slug = bundle.slugify(args.plan or current.get("plan") or "")
+    if not slug:
+        _echo("no active plan — /ctx:plan «slug» first")
+        return 1
+
+    unit = plan_mod.find_unit(layout, slug, args.name)
+    if unit is None:
+        _echo(f"no unit {args.name!r} in plan {slug}")
+        return 1
+
+    unit.set(status=args.status)
+    if args.status == "done":
+        state.update(layout, unit=None)
+        state.clear_attempts(layout, unit.name)
+    else:
+        state.update(layout, level="2", plan=slug, unit=unit.name)
+    journal.append(layout, config, "unit", unit.name, args.status)
+
+    _echo(f"{unit.name}: {args.status}")
+    if args.status == "running":
+        _echo(f"file  {layout.rel(unit.path)}")
+        if unit.owns:
+            _echo(f"owns  {', '.join(unit.owns)}")
+        if unit.forbid:
+            _echo(f"never {', '.join(unit.forbid)}")
+    remaining = plan_mod.next_wave(layout, slug)
+    if remaining is None:
+        _echo(f"plan {slug} is complete")
+    return 0
+
+
+def cmd_handoff(args):
+    """A resume packet: everything a fresh session or another person needs."""
+    layout, config = _loaded(args)
+    current = state.load(layout)
+    level = config_mod.normalise_level(current.get("level"))
+    slug = current.get("plan")
+
+    lines = [f"# Context — {args.name or 'handoff'}", "", "## Situation"]
+    lines.append(
+        f"Level L{level} ({config_mod.LEVEL_NAMES[level]}). "
+        f"Spec: {current.get('spec') or 'none'}. Plan: {slug or 'none'}. "
+        f"Active task/unit: {current.get('task') or current.get('unit') or 'none'}."
+    )
+    lines += ["", "## Established facts"]
+    if slug:
+        rows, problems = plan_mod.board(layout, slug)
+        for level_no, name, tier, status, owns in rows:
+            scope = f" owns {', '.join(owns)}" if owns else ""
+            lines.append(f"- wave {level_no} `{name}` ({tier}) — {status}{scope}")
+        for problem in problems:
+            lines.append(f"- PLAN PROBLEM: {problem}")
+    touched = journal.recent_paths(layout, 8)
+    lines += [f"- touched `{path}`" for path in touched] or ["- no file changes recorded"]
+
+    lines += ["", "## Decisions made", "_see .ctx/decisions/_", "", "## Open questions"]
+    if current.get("spec"):
+        _ready, blocking = spec_mod.ready(layout, current["spec"])
+        lines += [f"- [ ] {item}" for item in blocking] or ["_none blocking_"]
+
+    lines += ["", "## Constraints", "", "## Artifacts"]
+    if slug:
+        lines.append(f"- plan: `{layout.rel(plan_mod.readme_path(layout, slug))}`")
+    lines.append(f"- journal digest: `{layout.rel(layout.digest)}`")
+
+    lines += ["", "## Resume here"]
+    if slug:
+        wave = plan_mod.next_wave(layout, slug)
+        lines.append(
+            f"_run `/ctx:start` to dispatch wave {wave}_" if wave
+            else "_plan is complete_"
+        )
+    else:
+        lines.append("_run /ctx:resume_")
+
+    path = bundle.save(
+        layout, args.name or "handoff", "\n".join(lines),
+        project=layout.root.parent.name, config=config,
+    )
+    journal.append(layout, config, "handoff", layout.rel(path), "")
+    _echo(f"wrote {layout.rel(path)}")
+    _echo("mechanical only — add what the state cannot show: why, and what to avoid")
+    return 0
+
+
 # --------------------------------------------------------------------------- #
 # parser
 # --------------------------------------------------------------------------- #
@@ -646,6 +875,40 @@ def build_parser():
                    help="record a judged check as passed")
     p.add_argument("--note", default=None)
     p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("plan", help="scaffold a plan (refuses if the spec is ambiguous)")
+    p.add_argument("name")
+    p.add_argument("--spec", default=None)
+    p.add_argument("--unit", action="append", default=[])
+    p.add_argument("--no-spec", action="store_true", help="plan without a spec")
+    p.set_defaults(func=cmd_plan)
+
+    p = sub.add_parser("plan-unit", help="scaffold one unit file")
+    p.add_argument("name")
+    p.add_argument("--plan", default=None)
+    p.add_argument("--objective", default=None)
+    p.add_argument("--tier", choices=list(plan_mod.TIERS), default="subagent")
+    p.add_argument("--owns", action="append", default=[])
+    p.set_defaults(func=cmd_plan_unit)
+
+    p = sub.add_parser("plan-check", help="compute waves and check for collisions")
+    p.add_argument("name", nargs="?", default=None)
+    p.set_defaults(func=cmd_plan_check)
+
+    p = sub.add_parser("start", help="dispatch brief for the next (or given) wave")
+    p.add_argument("name", nargs="?", default=None)
+    p.add_argument("--wave", type=int, default=None)
+    p.set_defaults(func=cmd_start)
+
+    p = sub.add_parser("unit", help="focus a unit, or record its outcome")
+    p.add_argument("name")
+    p.add_argument("--plan", default=None)
+    p.add_argument("--status", choices=list(plan_mod.STATUSES), default="running")
+    p.set_defaults(func=cmd_unit)
+
+    p = sub.add_parser("handoff", help="write a resume packet for a session or person")
+    p.add_argument("name", nargs="?", default=None)
+    p.set_defaults(func=cmd_handoff)
 
     return parser
 
