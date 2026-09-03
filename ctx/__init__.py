@@ -5,4 +5,4 @@ dependency tree, so it can be installed globally and stay silent in projects
 that have not opted in.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
