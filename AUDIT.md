@@ -8,16 +8,18 @@
 |---|---|---|
 | Blocking | 9 | 9 |
 | Enterprise readiness | 11 | 11 |
-| Flow | 5 | 4 |
+| Flow | 5 | 5 |
 | Record | 3 | 3 |
 
-**Status:** 27 of 28 fixed. Suite is 298 tests (was 193); the 105 added pin the
+**Status:** all 28 fixed. Suite is 300 tests (was 193); the 107 added pin the
 behaviour that was wrong rather than the shape of the fix.
 
-**F22 (command consolidation) is deliberately not done** — it is the one finding
-that is a product decision rather than a defect, and collapsing verbs people have
-muscle memory for is a breaking change worth asking about rather than imposing.
-See the finding for the options.
+`tests/test_flow_end_to_end.py` walks L0 → L1 → L2 → dispatch → merge in one
+repository, because four waves touched the gate, detection, state, trust, the
+hooks and the CLI, and pieces that pass in isolation can still fail to compose.
+Five behaviours were mutated to confirm the suite catches them: ownership
+collision detection, the trust boundary, the `SubagentStop` binding, the gate
+time budget, and output redaction. All five are caught.
 
 One correction found while fixing F02: worktree-tier units were **already**
 isolated, because each worktree is a checkout carrying its own `.ctx/` and
@@ -356,9 +358,10 @@ caught.
 
 ## 4. Flow
 
-### F22 — Too many slash commands for a tool that argues against ceremony  ·  **open, needs a decision**
+### F22 — Too many slash commands for a tool that argues against ceremony  ·  **fixed**
 
-`commands/` · 20 files (18 at audit time; `next` and `escalate` added since)
+`commands/` · 19 files (18 at audit time, miscounted as 19; `next` and `escalate`
+added since, `list` and `promote` folded away)
 
 `save`, `load`, `list` and `promote` are four commands over one noun. `status`, `resume`
 and `doctor` overlap heavily in what they print. The skill file warns that "a system that
@@ -368,11 +371,13 @@ same failure wearing a different coat.
 **Fix:** collapse the bundle verbs into one `/ctx:context` with subcommands. Target ten
 surfaced commands; keep the rest reachable through the CLI.
 
-**Status:** open. This is the one finding that is a product decision rather than a defect —
-`/ctx:save` and `/ctx:load` are the memory verbs people learn first, and removing them is a
-breaking change for existing users in exchange for a tidier palette. `/ctx:next` (F23) took
-most of the pressure off by removing the need to *know* the palette at all. Raised rather
-than decided.
+**Fixed, but not as originally proposed.** Collapsing all four bundle verbs would have
+removed `/ctx:save` and `/ctx:load` — the two people learn first — for a tidier palette,
+which is a bad trade. Instead `/ctx:list` and `/ctx:promote` are folded into one
+`/ctx:context`; both were pure CLI passthroughs, and the README's own principle says *a
+command whose whole body is one shell call belongs in the CLI*. `ctx list` and
+`ctx promote` are unchanged, so nothing scripted breaks. `/ctx:next` (F23) did the rest of
+the work by removing the need to know the palette at all.
 
 ### F23 — There is no "what now"  ·  **fixed**
 
@@ -514,7 +519,7 @@ A composite action for consumers was **not** shipped: the workflow in the README
 seven-line copy-paste, and an action to maintain is not obviously better than that. Say if
 you want one.
 
-### Wave 4 — done except F22 · F23 F24 F25 F26 F27 F28
+### Wave 4 — done · F22 F23 F24 F25 F26 F27 F28
 
 - **Streamlined the flow.** `/ctx:next` reads state and names the one action — blocked spec
   to `/ctx:ask`, ready spec to `/ctx:plan`, dispatchable wave to `/ctx:start`, unaccepted

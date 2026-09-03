@@ -513,8 +513,8 @@ entirely, is a supported path rather than a fallback.
 ```
 /ctx:save billing-migration      # snapshot current understanding
 /ctx:load billing-migration      # in any later session
-/ctx:list                        # what exists
-/ctx:promote billing-migration   # make it loadable from other projects
+/ctx:context                     # what exists
+ctx promote billing-migration    # make it loadable from other projects
 ```
 
 ```markdown
@@ -537,7 +537,7 @@ tags: [billing, stripe]
 ```
 
 Bundles live in the repo, so they land in pull requests and get reviewed.
-`/ctx:promote` copies one to `~/.claude/ctx/` for cross-project recall — kept
+`ctx promote` copies one to `~/.claude/ctx/` for cross-project recall — kept
 **manual on purpose**, because automatic cross-project memory is how you get a
 confident assertion sourced from an unrelated codebase.
 
@@ -599,8 +599,7 @@ the point.
 | **Memory** | |
 | `/ctx:save «name»` | Write a portable context bundle |
 | `/ctx:load «name»` | Load a bundle: project → global → path |
-| `/ctx:list` | Saved bundles, project and global |
-| `/ctx:promote «name»` | Copy a bundle to the global store |
+| `/ctx:context` | Saved bundles: what exists, and how to load, save or promote one |
 | `/ctx:handoff [name]` | Resume packet for another session, person or model |
 
 Arguments are free text, not shell tokens. Claude Code splices what you typed

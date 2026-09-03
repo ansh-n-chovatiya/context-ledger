@@ -1310,8 +1310,12 @@ def _gate_before_done(layout, config, slug, unit):
         journal.append(layout, config, "unit", unit.name, f"done refused ({verdict})")
         return 1
     if verdict == verify.ERROR:
-        _echo(f"warning: no check could run for {unit.name} — that is a ctx.yaml")
-        _echo("problem, not a work failure, so this is not blocking")
+        # Say *which* configuration problem. "Check ctx.yaml" is useless advice
+        # when the real answer is `ctx trust`, or a `cwd` that does not exist.
+        _echo(f"warning: no check could run for {unit.name} — configuration, not "
+              "a work failure, so this is not blocking:")
+        for result in results:
+            _echo(result.line())
     return None
 
 
