@@ -38,6 +38,9 @@ DEFAULTS = {
     "plan": {"wave_budget_tokens": 250000},
     "auto_load": [],
     "redact": [],
+    # Extra commands `ctx init` should consider, for a toolchain no marker table
+    # can anticipate: a wrapper script, a bazel target, a house Makefile rule.
+    "verify_candidates": [],
     "verify": [],
 }
 

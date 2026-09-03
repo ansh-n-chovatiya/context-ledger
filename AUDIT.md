@@ -6,15 +6,19 @@
 
 | | Found | Fixed |
 |---|---|---|
-| Blocking | 9 | 7 |
-| Enterprise readiness | 11 | 3 |
+| Blocking | 9 | 9 |
+| Enterprise readiness | 11 | 6 |
 | Flow | 5 | 0 |
 | Record | 3 | 0 |
 
-**Status:** Wave 1 complete — F01, F03, F04, F05, F06, F07, F09, F15, F17, F21.
-Suite is 219 tests (was 193); the 26 added pin the behaviour that was wrong, and
-20 of them fail against the pre-fix tree. F02 and F08 carry over to Wave 2, where
-the per-session unit pointer and the hook matchers are addressed together.
+**Status:** Waves 1 and 2 complete — F01–F11, F13, F15, F17, F21. Suite is 248
+tests (was 193); the 55 added pin the behaviour that was wrong, and they fail
+against their respective pre-fix trees. Waves 3 and 4 outstanding.
+
+One correction found while fixing F02: worktree-tier units were **already**
+isolated, because each worktree is a checkout carrying its own `.ctx/` and
+therefore its own gitignored `runtime/`. The pointer only ever collided between
+two sessions sharing one tree, which is narrower than this audit first claimed.
 
 ---
 
@@ -68,7 +72,7 @@ reproduced → hooks.main("SubagentStop") on an L1 ledger
 **Fix:** gate on `Stop` only. If subagent verification is wanted, key it to an explicit
 unit handoff — a `ctx unit` claim the runner makes — not to every agent that finishes.
 
-### F02 — Parallel waves share one `unit` pointer
+### F02 — Parallel waves share one `unit` pointer  ·  **fixed**
 
 `ctx/state.py` · `ctx/work.py:63` · `ctx/dispatch.py:98`
 
@@ -167,7 +171,7 @@ which is only true for a single check.
 `ERROR` verdict when the remaining budget is exhausted, so an over-long suite warns
 instead of vanishing.
 
-### F08 — Scope isolation does not see Bash edits
+### F08 — Scope isolation does not see Bash edits  ·  **fixed**
 
 `hooks/hooks.json` → PreToolUse/PostToolUse matchers · `ctx/hooks.py:263`
 
@@ -204,7 +208,7 @@ $ ctx doctor
 
 ## 3. Enterprise readiness
 
-### F10 — No verify check can name its own working directory
+### F10 — No verify check can name its own working directory  ·  **fixed**
 
 `ctx/verify.py:196` · `ctx/hooks.py:195`
 
@@ -215,7 +219,7 @@ the primary reason the tool cannot be pointed at a large repository as-is.
 **Fix:** add optional `cwd:` and `env:` to a check. Both are a few lines and they unlock
 the whole monorepo class.
 
-### F11 — Toolchain detection covers five ecosystems
+### F11 — Toolchain detection covers five ecosystems  ·  **fixed**
 
 `ctx/cli.py:141-161`
 
@@ -238,7 +242,7 @@ is mixed, that excludes a large share of seats.
 **Fix:** ship `bin/ctx.cmd` alongside, or have the command files call `python3 -m ctx`
 with `PYTHONPATH` set inline — removing the shell dependency entirely.
 
-### F13 — `state.json` has atomic writes but no atomic updates
+### F13 — `state.json` has atomic writes but no atomic updates  ·  **fixed**
 
 `ctx/state.py:58-82`
 
@@ -461,14 +465,19 @@ after it is worth doing until it holds.
 - **Unstuck `doctor`.** Error entries are timestamped, the log rotates at 64 KB, only
   failures inside 24h block, and `ctx doctor --clear` drops a stale one.
 
-### Wave 2 — ~2 days · F02 F08 F10 F11 F13
+### Wave 2 — done · F02 F08 F10 F11 F13
 
-- **Reach a real repo.** Per-check `cwd` and `env`; the ecosystem table covering Maven,
-  Gradle, .NET, Ruby, Make and the workspace tools.
-- **Survive concurrency.** Per-session unit pointer, lockfile around state updates,
-  namespaced attempt keys.
-- **Close the bypass.** `Bash` in the hook matchers; state plainly that the nudge is
-  advisory and `diff` is authoritative.
+- **Reached a real repo.** `cmd`, `exists` and `symbol` take a `cwd`, and `cmd` takes an
+  `env`; a missing `cwd` warns rather than blocks. Candidates come from a declarative
+  marker table covering Maven, Gradle, .NET, Ruby, PHP, Elixir, Swift, Make and the pnpm
+  / yarn / bun workspaces, extensible from `ctx.yaml` via `verify_candidates`, and no
+  longer gated on the profile label.
+- **Survived concurrency.** `CTX_UNIT`/`CTX_PLAN` claim a unit for one process and beat
+  the shared pointer; state updates hold a lockfile that reclaims a stale one and fails
+  open; attempt keys are namespaced `plan/unit`.
+- **Closed the bypass.** `Bash` is in both hook matchers, with shell write detection
+  feeding the same `owns`/`forbid` nudge and the journal. The heuristic is documented as
+  advisory, with `diff` named as authoritative.
 
 ### Wave 3 — ~1.5 days · F12 F14 F16 F18 F19 F20
 

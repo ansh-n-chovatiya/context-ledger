@@ -165,7 +165,10 @@ def _check_exists(check, cwd):
     raw = str(check.get("path") or "")
     if not raw:
         return Result("exists", label_of(check), ERROR, "no path configured")
-    target = os.path.join(str(cwd), raw) if not os.path.isabs(raw) else raw
+    base, problem = resolve_cwd(check, cwd)
+    if problem:
+        return Result("exists", raw, ERROR, problem)
+    target = os.path.join(base, raw) if not os.path.isabs(raw) else raw
     if not os.path.exists(target):
         return Result("exists", raw, FAIL, "path does not exist")
     pattern = check.get("matches")
@@ -193,7 +196,10 @@ def _check_symbol(check, cwd):
     names = [str(n) for n in (check.get("contains") or []) if str(n).strip()]
     if not raw or not names:
         return Result("symbol", label_of(check), ERROR, "needs `path` and `contains`")
-    target = os.path.join(str(cwd), raw) if not os.path.isabs(raw) else raw
+    base, problem = resolve_cwd(check, cwd)
+    if problem:
+        return Result("symbol", raw, ERROR, problem)
+    target = os.path.join(base, raw) if not os.path.isabs(raw) else raw
     if not os.path.exists(target):
         return Result("symbol", raw, FAIL, "file does not exist")
     try:
@@ -211,14 +217,43 @@ def _check_symbol(check, cwd):
     return Result("symbol", raw, PASS)
 
 
+def resolve_cwd(check, cwd):
+    """Where a check runs. `(path, error)`; the error is a configuration bug.
+
+    Without this every command ran at the ledger's parent, so a monorepo whose
+    ledger sits at the root could not say "run `npm test` in `apps/web`" — which
+    ruled out most large repositories outright.
+    """
+    raw = str(check.get("cwd") or "").strip()
+    if not raw:
+        return str(cwd), ""
+    target = raw if os.path.isabs(raw) else os.path.join(str(cwd), raw)
+    if not os.path.isdir(target):
+        return str(cwd), f"cwd {raw!r} is not a directory"
+    return target, ""
+
+
+def _check_env(check):
+    """Extra environment for a check, layered over the session's own."""
+    extra = check.get("env")
+    if not isinstance(extra, dict) or not extra:
+        return None
+    merged = dict(os.environ)
+    merged.update({str(k): str(v) for k, v in extra.items()})
+    return merged
+
+
 def _check_cmd(layout, check, cwd, key, timeout, head, tail, patterns=()):
     command = str(check.get("run") or "")
     if not command:
         return Result("cmd", "<none>", ERROR, "no command configured")
+    where, problem = resolve_cwd(check, cwd)
+    if problem:
+        return Result("cmd", command, ERROR, problem)
     try:
         completed = subprocess.run(
-            command, shell=True, cwd=str(cwd), capture_output=True,
-            text=True, timeout=timeout,
+            command, shell=True, cwd=where, capture_output=True,
+            text=True, timeout=timeout, env=_check_env(check),
         )
     except subprocess.TimeoutExpired:
         # Infrastructure, not work: a hung command must not block forever.

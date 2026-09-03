@@ -135,6 +135,8 @@ def instructions(layout, slug, level, units, budget, worktrees=()):
                 f"({'created' if created else 'reusing existing worktree'})",
                 f"  ```",
                 f"  cd {path}",
+                f"  export CTX_PLAN={slug} CTX_UNIT={unit.name}   # claims this unit "
+                f"for this terminal only",
                 f"  ctx unit {unit.name}          # arms the done-gate for this unit",
                 f"  claude   # then: execute the unit contract at {layout.rel(unit.path)}",
                 f"  ```",

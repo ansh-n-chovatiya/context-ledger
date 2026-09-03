@@ -652,6 +652,7 @@ Global flags: `--cwd PATH` resolves the ledger from elsewhere; `--version`.
 | Variable | Effect |
 |---|---|
 | `CTX_GATE=off` | Disable the done-gate entirely. The escape hatch. |
+| `CTX_UNIT` / `CTX_PLAN` | Claim a unit for **this process**. Overrides the shared pointer in `state.json`, so two sessions in one tree stop clobbering each other's focus. Worktree-tier units already get their own `.ctx/runtime/`, so they need neither. |
 | `CTX_GLOBAL_ROOT` | Move the global bundle store (default `~/.claude/ctx`) |
 | `CLAUDE_PROJECT_DIR` | Where ledger discovery starts |
 
@@ -689,6 +690,11 @@ plan:
 
 auto_load: []                 # bundles injected into every session
 redact: []                    # extra regexes scrubbed before any write
+
+verify_candidates: []         # extra commands `init` should consider, for a
+                              # toolchain no marker table anticipates:
+                              #   - bazel test //...
+                              #   - ./scripts/check.sh
 
 verify:                       # default checks inherited by new tasks/units
   - kind: cmd
@@ -728,6 +734,27 @@ verify:
   - kind: rubric
     about: the migration guide covers every breaking change
 ```
+
+**`cwd` and `env` — monorepos.** `cmd`, `exists` and `symbol` each take an
+optional `cwd:` relative to the repository root, and `cmd` also takes an `env:`
+map layered over the session's environment. Without them every command ran at the
+ledger's parent, so a repository whose ledger sits at the root could not express
+"run this in `apps/web`":
+
+```yaml
+verify:
+  - kind: cmd
+    run: pnpm test
+    cwd: apps/web
+    env:
+      CI: "1"
+  - kind: cmd
+    run: go test ./...
+    cwd: services/api
+```
+
+A `cwd` that does not exist is a configuration error, so it warns and passes
+rather than blocking — the same rule as a missing binary.
 
 ### Interface freeze
 
@@ -787,6 +814,11 @@ needs a model or a person.
 
 - The gate **fails closed** on a failing criterion and feeds back the exact check
   plus truncated output.
+- **Scope enforcement watches the shell too.** `PreToolUse` matches `Bash`
+  alongside the edit tools, so a `sed -i` or a redirect into a file outside `owns`
+  raises the same nudge — it used to walk straight past. Reading a shell command
+  is necessarily a heuristic, so the nudge is advisory; the `diff` kind reads git
+  and stays the authoritative answer on what actually changed.
 - **Infrastructure failure is not work failure.** A missing binary, exit 127, a
   timeout, or output matching an absent-tool signature (`No module named …`,
   `command not found`) warns and passes. Blocking on those would brick every
@@ -1015,7 +1047,7 @@ and they run on harness events rather than on the model remembering to call them
 |---|---|---|
 | `SessionStart` | Inject the budgeted, deterministic briefing | open |
 | `UserPromptSubmit` | **Silent** unless a drift nudge is queued | open |
-| `PreToolUse` | Queue a nudge on out-of-scope edits (L2) | open |
+| `PreToolUse` | Queue a nudge on out-of-scope edits (L2), including shell writes | open |
 | `PostToolUse` | Append to the journal; clear stale sign-offs | open |
 | `PreCompact` | Flush state, write a mechanical autosave | open |
 | `SessionEnd` | Finalise journal and digest | open |
@@ -1064,7 +1096,7 @@ git worktree prune          # if you used the session tier
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests      # 219 tests, no dependencies
+python3 -m unittest discover -s tests      # 248 tests, no dependencies
 claude plugin validate . --strict
 ```
 

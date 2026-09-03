@@ -6,6 +6,7 @@ resolve them here rather than each knowing about both shapes.
 """
 
 import datetime
+import os
 
 from . import config as config_mod, frontmatter, state
 
@@ -36,6 +37,14 @@ class Work:
     def criteria(self):
         return self.doc.list_items("acceptance criteria", "criteria")
 
+    @property
+    def attempt_key(self):
+        """Namespaced, because gate attempts are counted per key and unit names
+        are only unique inside their plan — two plans with an `01-api` shared a
+        counter, so one plan's failures escalated the other's work."""
+        plan = self.doc.meta.get("plan")
+        return f"{plan}/{self.key}" if self.level == "2" and plan else self.key
+
     def record(self, kind, note=""):
         signed = set(self.recorded)
         signed.add(str(kind))
@@ -60,10 +69,36 @@ class Work:
         self.doc.write(self.path)
 
 
+def claim():
+    """An explicit per-process claim from the environment, or (None, None).
+
+    `state.json` is machine-local, so its `unit` pointer describes the machine,
+    not the agent. Worktree-tier units are already isolated — each has its own
+    checkout and therefore its own `.ctx/runtime/` — but two sessions working the
+    same tree share one pointer, and the last `ctx unit` wins for both.
+
+    `CTX_UNIT` (with `CTX_PLAN`) is the way out: it belongs to one process, so a
+    terminal can say what it is working on without arguing with its neighbour.
+    """
+    unit = (os.environ.get("CTX_UNIT") or "").strip()
+    plan = (os.environ.get("CTX_PLAN") or "").strip()
+    return (unit or None), (plan or None)
+
+
 def active(layout, current=None):
     """The Work in progress, or None at L0 / when nothing is pointed at."""
     current = current or state.load(layout)
     level = config_mod.normalise_level(current.get("level"))
+
+    claimed_unit, claimed_plan = claim()
+    if claimed_unit:
+        plan = claimed_plan or current.get("plan")
+        if plan:
+            path = layout.plans / plan / "units" / f"{claimed_unit}.md"
+            doc = frontmatter.read(path)
+            if doc:
+                return Work(claimed_unit, path, doc, "2")
+
     if level == "1" and current.get("task"):
         slug = current["task"]
         path = layout.task_file(slug)

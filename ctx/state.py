@@ -5,11 +5,21 @@ that is not meant to be reviewed. Writes are atomic so a killed session cannot
 leave a half-written pointer that breaks the next SessionStart.
 """
 
+import contextlib
+import errno
 import json
 import os
 import tempfile
+import time
 
 from . import config as config_mod
+
+# A wave means several `ctx` processes writing this file at once. `os.replace`
+# already made each *write* atomic, but load-then-save is not: two processes that
+# both read before either wrote leave one of the updates gone, which is how
+# attempt counts under-count and a `unit` claim disappears.
+LOCK_TIMEOUT = 5.0
+LOCK_STALE_SECONDS = 30.0
 
 EMPTY = {
     "schema": config_mod.SCHEMA,
@@ -55,10 +65,50 @@ def save(layout, data):
     return data
 
 
+@contextlib.contextmanager
+def locked(layout):
+    """Hold the state lock for one read-modify-write, or give up and proceed.
+
+    Failing open is deliberate and consistent with every other hook: a lock we
+    cannot take is a reason to risk a lost update, never a reason to break a
+    session. A lock left behind by a killed process is reclaimed once it is
+    older than `LOCK_STALE_SECONDS`.
+    """
+    layout.runtime.mkdir(parents=True, exist_ok=True)
+    path = layout.runtime / "state.lock"
+    deadline = time.monotonic() + LOCK_TIMEOUT
+    handle = None
+    while handle is None and time.monotonic() < deadline:
+        try:
+            handle = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            try:
+                if time.time() - path.stat().st_mtime > LOCK_STALE_SECONDS:
+                    path.unlink()
+                    continue
+            except OSError:
+                pass
+            time.sleep(0.02)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EROFS):
+                break  # read-only checkout: nothing to serialise against
+            break
+    try:
+        yield
+    finally:
+        if handle is not None:
+            os.close(handle)
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
 def update(layout, **changes):
-    data = load(layout)
-    data.update(changes)
-    return save(layout, data)
+    with locked(layout):
+        data = load(layout)
+        data.update(changes)
+        return save(layout, data)
 
 
 def attempts(layout, key):
@@ -66,20 +116,22 @@ def attempts(layout, key):
 
 
 def bump_attempts(layout, key):
-    data = load(layout)
-    counts = data.setdefault("attempts", {})
-    counts[key] = int(counts.get(key, 0)) + 1
-    save(layout, data)
-    return counts[key]
+    with locked(layout):
+        data = load(layout)
+        counts = data.setdefault("attempts", {})
+        counts[key] = int(counts.get(key, 0)) + 1
+        save(layout, data)
+        return counts[key]
 
 
 def clear_attempts(layout, key=None):
-    data = load(layout)
-    if key is None:
-        data["attempts"] = {}
-    else:
-        data.get("attempts", {}).pop(key, None)
-    return save(layout, data)
+    with locked(layout):
+        data = load(layout)
+        if key is None:
+            data["attempts"] = {}
+        else:
+            data.get("attempts", {}).pop(key, None)
+        return save(layout, data)
 
 
 def set_nudge(layout, message):

@@ -16,6 +16,7 @@ import datetime
 import fnmatch
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -135,40 +136,45 @@ def on_pre_tool_use(layout, config, payload):
     current = state.load(layout)
     if config_mod.normalise_level(current.get("level")) != "2":
         return ""
-    target = _edit_target(payload)
-    if not target:
+    targets = _edit_targets(payload)
+    if not targets:
         return ""
     owns, forbid = _scope(layout, current)
     if not owns and not forbid:
         return ""
-    relative = _relative(layout, target)
-    if _matches(relative, forbid):
-        state.set_nudge(
-            layout,
-            f"{relative} is listed under `forbid` for unit {current.get('unit')} — "
-            "another unit owns it. Stop and report instead of editing.",
-        )
-    elif owns and not _matches(relative, owns):
-        state.set_nudge(
-            layout,
-            f"{relative} is outside the `owns` scope of unit {current.get('unit')} "
-            f"({', '.join(owns)}). Editing it breaks the wave's isolation guarantee.",
-        )
+    unit = work.claim()[0] or current.get("unit")
+    for target in targets:
+        relative = _relative(layout, target)
+        if _matches(relative, forbid):
+            state.set_nudge(
+                layout,
+                f"{relative} is listed under `forbid` for unit {unit} — "
+                "another unit owns it. Stop and report instead of editing.",
+            )
+            return ""
+        if owns and not _matches(relative, owns):
+            state.set_nudge(
+                layout,
+                f"{relative} is outside the `owns` scope of unit {unit} "
+                f"({', '.join(owns)}). Editing it breaks the wave's isolation "
+                "guarantee.",
+            )
+            return ""
     return ""
 
 
 def on_post_tool_use(layout, config, payload):
     """Disk-only. Injects nothing, so journalling is free in context terms."""
-    target = _edit_target(payload)
-    if not target:
+    targets = _edit_targets(payload)
+    if not targets:
         return ""
     current = state.load(layout)
-    kind = "write" if payload.get("tool_name") == "Write" else "edit"
-    marker = current.get("unit") or current.get("task")
-    journal.append(
-        layout, config, kind, _relative(layout, target),
-        f"unit={marker}" if current.get("unit") else (f"task={marker}" if marker else ""),
-    )
+    name = payload.get("tool_name")
+    kind = "write" if name == "Write" else ("shell" if name == "Bash" else "edit")
+    marker = work.claim()[0] or current.get("unit") or current.get("task")
+    note = f"unit={marker}" if marker else ""
+    for target in targets[:4]:  # a one-liner can touch several; cap the noise
+        journal.append(layout, config, kind, _relative(layout, target), note)
     # A judged sign-off must not outlive the code it signed off on.
     item = work.active(layout, current)
     if item is not None and item.clear_recorded():
@@ -218,7 +224,7 @@ def on_stop(layout, config, payload):
     )
 
     if verdict == verify.PASS:
-        state.clear_attempts(layout, item.key)
+        state.clear_attempts(layout, item.attempt_key)
         journal.append(layout, config, "gate", item.key, "pass")
         return ""
     if verdict == verify.ERROR:
@@ -227,12 +233,12 @@ def on_stop(layout, config, payload):
         return ""
 
     limit = max(1, int(gate.get("max_attempts", 3)))
-    attempts = state.bump_attempts(layout, item.key)
+    attempts = state.bump_attempts(layout, item.attempt_key)
     journal.append(layout, config, "gate", item.key, f"{verdict} ({attempts}/{limit})")
 
     if attempts > limit:
         item.set_status("verify_failed")
-        state.clear_attempts(layout, item.key)
+        state.clear_attempts(layout, item.attempt_key)
         state.set_nudge(
             layout,
             f"the done-gate for {item.key} failed {limit} times and has stopped "
@@ -290,14 +296,71 @@ HANDLERS = {
 
 _EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 
+# Shell verbs that write. `owns` isolation is the reason a wave can run in
+# parallel at all, and it used to be enforced only against the structured edit
+# tools — so one `sed -i` walked straight past it, and the journal never saw the
+# change either. Matching the shell is necessarily a heuristic, which is why the
+# result is an advisory nudge and never a block; `verify`'s `diff` kind reads git
+# and stays the authoritative answer.
+_WRITE_VERB = re.compile(
+    r"(?:^|[;&|]|&&|\|\|)\s*(?:sudo\s+|env\s+\S+=\S+\s+)*"
+    r"(sed|tee|cp|mv|rm|dd|patch|truncate|install|rsync|ln|touch|mkdir|"
+    r"chmod|chown|python3?|node|perl|awk)\b"
+)
+_GIT_WRITE = re.compile(r"\bgit\s+(checkout|restore|apply|clean|reset|rm|mv)\b")
+_REDIRECT = re.compile(r"(?:^|[^>\d])>{1,2}\s*(?!&)([^\s;&|)]+)")
+_HEREDOC_TO = re.compile(r">{1,2}\s*([^\s;&|)]+)\s*<<")
+_PATHLIKE = re.compile(r"^[^\s\-][^\s]*[/.][^\s]*$")
+# `s/a/b/`, `y|x|z|`, `1,3d` — a sed script, not a file. Without this the
+# expression in `sed -i 's/a/b/' src/x.py` reads as a second path.
+_SCRIPT_EXPR = re.compile(r"^[a-z]{1,2}[/|,#!]")
 
-def _edit_target(payload):
-    if payload.get("tool_name") not in _EDIT_TOOLS:
-        return ""
+
+def _bash_targets(command):
+    """Paths a shell command looks likely to write. Advisory, not exhaustive."""
+    text = str(command or "")
+    if not text:
+        return []
+    writes = bool(_WRITE_VERB.search(text)) or bool(_GIT_WRITE.search(text))
+    redirected = _REDIRECT.findall(text) + _HEREDOC_TO.findall(text)
+    if not writes and not redirected:
+        return []
+
+    found = list(redirected)
+    if writes:
+        for token in text.replace(";", " ").replace("|", " ").replace("&", " ").split():
+            cleaned = token.strip("\"'`()")
+            if cleaned.startswith("-") or "=" in cleaned.split("/")[0]:
+                continue
+            if _SCRIPT_EXPR.match(cleaned):
+                continue
+            if _PATHLIKE.match(cleaned):
+                found.append(cleaned)
+    out = []
+    for path in found:
+        cleaned = path.strip("\"'`")
+        if cleaned and cleaned not in out and not cleaned.startswith(("/dev/", "http")):
+            out.append(cleaned)
+    return out
+
+
+def _edit_targets(payload):
+    """Every path this tool call appears to write. Empty means nothing to do."""
     tool_input = payload.get("tool_input") or {}
     if not isinstance(tool_input, dict):
-        return ""
-    return str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
+        return []
+    name = payload.get("tool_name")
+    if name in _EDIT_TOOLS:
+        target = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
+        return [target] if target else []
+    if name == "Bash":
+        return _bash_targets(tool_input.get("command"))
+    return []
+
+
+def _edit_target(payload):
+    targets = _edit_targets(payload)
+    return targets[0] if targets else ""
 
 
 def _relative(layout, target):

@@ -186,27 +186,87 @@ def _python_exe():
     return sys.executable or "python3"
 
 
-def _verify_candidates(root, profile):
-    """Commands we would propose. Availability is checked; passing is not."""
+# (marker, commands). Data rather than an if-ladder so adding an ecosystem is a
+# line here — and so `ctx.yaml` can extend it without a code change. Ordered by
+# how commonly the marker is the project's real entry point.
+_ECOSYSTEMS = (
+    ("go.mod", ("go build ./...", "go test ./...")),
+    ("Cargo.toml", ("cargo check",)),
+    ("pom.xml", ("mvn -q -B test-compile",)),
+    ("build.gradle", ("./gradlew --console=plain compileJava",)),
+    ("build.gradle.kts", ("./gradlew --console=plain compileKotlin",)),
+    ("Gemfile", ("bundle exec rake test",)),
+    ("composer.json", ("composer run-script test",)),
+    ("mix.exs", ("mix compile --warnings-as-errors",)),
+    ("Package.swift", ("swift build",)),
+    ("*.sln", ("dotnet build --nologo",)),
+    ("*.csproj", ("dotnet build --nologo",)),
+    ("dbt_project.yml", ("dbt compile",)),
+    ("main.tf", ("terraform validate",)),
+    ("Chart.yaml", ("helm lint .",)),
+)
+
+# Node is special-cased because what to run is inside package.json, not implied
+# by its presence — and the workspace tools each front the same scripts.
+_NODE_RUNNERS = (
+    ("pnpm-workspace.yaml", "pnpm"), ("pnpm-lock.yaml", "pnpm"),
+    ("yarn.lock", "yarn"), ("bun.lockb", "bun"),
+)
+
+
+def _node_candidates(root):
+    manifest = root / "package.json"
+    if not manifest.is_file():
+        return []
+    text = manifest.read_text(encoding="utf-8", errors="replace")
+    runner = "npm"
+    for marker, name in _NODE_RUNNERS:
+        if (root / marker).exists():
+            runner = name
+            break
+    run = f"{runner} run" if runner == "npm" else runner
     out = []
-    if profile == "code":
-        if (root / "pyproject.toml").exists() or (root / "setup.py").exists():
-            out.append(f"{_python_exe()} -m pytest -q")
-        if (root / "package.json").exists():
-            text = (root / "package.json").read_text(encoding="utf-8", errors="replace")
-            if '"typecheck"' in text:
-                out.append("npm run typecheck")
-            elif '"tsc"' in text or (root / "tsconfig.json").exists():
-                out.append("npx tsc --noEmit")
-            if '"test"' in text:
-                out.append("npm test")
-        if (root / "go.mod").exists():
-            out.append("go build ./...")
-        if (root / "Cargo.toml").exists():
-            out.append("cargo check")
-    elif profile == "infra":
-        out.append("terraform validate")
+    if '"typecheck"' in text:
+        out.append(f"{run} typecheck")
+    elif '"tsc"' in text or (root / "tsconfig.json").exists():
+        out.append("npx tsc --noEmit")
+    if '"test"' in text:
+        out.append(f"{runner} test")
+    if '"lint"' in text:
+        out.append(f"{run} lint")
     return out
+
+
+def _verify_candidates(root, profile, extra=()):
+    """Commands we would propose. Availability is checked; passing is not.
+
+    `extra` comes from `verify_candidates` in ctx.yaml, so a house toolchain no
+    table could anticipate — bazel, a wrapper script, a Makefile target — is a
+    config line rather than a fork.
+    """
+    out = []
+    if (root / "pyproject.toml").exists() or (root / "setup.py").exists():
+        out.append(f"{_python_exe()} -m pytest -q")
+    out.extend(_node_candidates(root))
+    for marker, commands in _ECOSYSTEMS:
+        if next(root.glob(marker), None) is not None:
+            out.extend(commands)
+    if (root / "Makefile").exists():
+        text = (root / "Makefile").read_text(encoding="utf-8", errors="replace")
+        for target in ("test", "check", "build"):
+            if re.search(rf"(?m)^{target}\s*:", text):
+                out.append(f"make {target}")
+                break
+    for entry in extra or ():
+        if str(entry).strip():
+            out.append(str(entry).strip())
+
+    seen, unique = set(), []
+    for command in out:
+        if command not in seen:
+            seen.add(command)
+            unique.append(command)
+    return unique
 
 
 def _availability(command):
@@ -269,7 +329,11 @@ def cmd_init(args):
         directory.mkdir(parents=True, exist_ok=True)
 
     profile = args.profile or _detect_profile(root)
-    candidates = _verify_candidates(root, profile)
+    # Re-running init keeps any house commands already declared in ctx.yaml.
+    existing = config_mod.load(layout) if layout.config.is_file() else {}
+    candidates = _verify_candidates(
+        root, profile, existing.get("verify_candidates") or []
+    )
     accepted, rejected = [], []
     for command in candidates:
         available, why = _availability(command)
@@ -294,6 +358,7 @@ def cmd_init(args):
             "plan": dict(config_mod.DEFAULTS["plan"]),
             "auto_load": [],
             "redact": [],
+            "verify_candidates": list(existing.get("verify_candidates") or []),
             "verify": accepted or config_mod.PROFILES.get(profile, []),
         }
         layout.config.write_text(config_mod.render(settings), encoding="utf-8")
@@ -832,7 +897,7 @@ def cmd_verify(args):
             _echo(f"  {result.kind}: {result.message}")
 
     if verdict == verify.PASS:
-        state.clear_attempts(layout, item.key)
+        state.clear_attempts(layout, item.attempt_key)
     journal.append(layout, config, "gate", item.key, f"manual {verdict}")
     # Distinct exit codes so CI can tell "the work is wrong" from "the checks are
     # broken": 0 pass, 1 a criterion failed, 2 nothing could be run.
