@@ -97,11 +97,37 @@ claude plugin install ctx@context-ledger
 Verify it:
 
 ```bash
-claude plugin list                 # ctx@context-ledger  0.1.0  ✔ enabled
+claude plugin list                 # ctx@context-ledger  0.1.1  ✔ enabled
 claude plugin details ctx          # component inventory + token cost
 ```
 
-Update it later with `claude plugin update ctx`.
+## Updating
+
+```
+/plugin                            # → Manage plugins → ctx → Update
+```
+
+Or from a shell — and note this is **two commands**, not one:
+
+```bash
+claude plugin marketplace update context-ledger   # fetch the new commits
+claude plugin update ctx@context-ledger           # install them
+```
+
+`claude plugin update` does not fetch anything. It reads the marketplace clone
+already on disk, so without the first command it will cheerfully report that you
+are on the latest version while sitting on a months-old build. It also compares
+**declared version numbers, not commits** — it will follow the version backwards
+and downgrade you if the clone is stale.
+
+Restart Claude Code afterwards; the plugin is loaded at session start.
+
+Check what you are actually running, rather than trusting the update output:
+
+```bash
+claude plugin list                                # declared version
+ls ~/.claude/plugins/cache/context-ledger/ctx/    # one directory per installed version
+```
 
 ### Choosing an install scope
 
