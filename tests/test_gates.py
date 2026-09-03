@@ -18,13 +18,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ctx import (  # noqa: E402
-    frontmatter, journal, spec as spec_mod, state, verify, work,
+    frontmatter, journal, spec as spec_mod, state, trust, verify, work,
 )
 from support import Fixture  # noqa: E402
 
 
 def with_checks(layout, slug, checks, criteria=("first thing", "second thing")):
     """Point a task file at a specific set of verify checks."""
+    trust.accept(layout, checks)
     path = layout.task_file(slug)
     doc = frontmatter.read(path)
     doc.meta["verify"] = list(checks)
@@ -142,6 +143,7 @@ class TestAmbiguityGate(Fixture):
 
 class TestVerifyKinds(Fixture):
     def run_checks(self, checks, **kwargs):
+        self.trust(checks)
         return verify.run(
             self.layout, self.config, checks, cwd=self.root, key="k", **kwargs
         )
@@ -229,9 +231,10 @@ class TestVerifyKinds(Fixture):
 
     def test_timeout_is_a_config_error(self):
         config = dict(self.config, gate=dict(self.config["gate"], timeout_seconds=1))
+        checks = [{"kind": "cmd", "run": "sleep 5"}]
+        self.trust(checks)
         results, verdict = verify.run(
-            self.layout, config, [{"kind": "cmd", "run": "sleep 5"}],
-            cwd=self.root, key="slow",
+            self.layout, config, checks, cwd=self.root, key="slow",
         )
         self.assertEqual(results[0].status, verify.ERROR)
         self.assertIn("timed out", results[0].message)

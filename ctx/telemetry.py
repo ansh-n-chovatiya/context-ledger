@@ -26,6 +26,13 @@ def path_for(layout):
     return layout.runtime / FILENAME
 
 
+def enabled(config):
+    section = (config or {}).get("telemetry")
+    if not isinstance(section, dict):
+        return True
+    return bool(section.get("enabled", True))
+
+
 def record(layout, event, ms, **fields):
     """Append one measurement. Silent on any failure — never break a hook."""
     try:

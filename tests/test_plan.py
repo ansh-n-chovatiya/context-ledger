@@ -44,6 +44,7 @@ class PlanFixture(Fixture):
         frontmatter.Document(
             meta, f"## Objective\nDo {name}.\n\n## Acceptance criteria\n1. it works\n"
         ).write(path)
+        self.trust(meta["verify"])
         return path
 
 

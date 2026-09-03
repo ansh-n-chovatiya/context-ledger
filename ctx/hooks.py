@@ -46,13 +46,14 @@ def main(event, stream=None, out=None):
             # A decision object (the Stop gate). Exit 0; the JSON carries the verdict.
             json.dump(result, out)
             out.write("\n")
-            _measure(layout, event, started, decision=result.get("decision"))
+            _measure(layout, event, started, config, decision=result.get("decision"))
         else:
             if result:
                 out.write(result if result.endswith("\n") else result + "\n")
             # `chars` is what the session actually paid, as opposed to what
             # `ctx doctor` predicts it would pay.
-            _measure(layout, event, started, chars=len(result) if result else 0)
+            _measure(layout, event, started, config,
+                     chars=len(result) if result else 0)
         return 0
     except SystemExit:
         raise
@@ -76,7 +77,9 @@ def _read_payload(stream):
     return data if isinstance(data, dict) else {}
 
 
-def _measure(layout, event, started, **fields):
+def _measure(layout, event, started, config=None, **fields):
+    if config is not None and not telemetry.enabled(config):
+        return
     telemetry.record(layout, event, (time.perf_counter() - started) * 1000, **fields)
 
 

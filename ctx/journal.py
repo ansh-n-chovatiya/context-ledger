@@ -31,7 +31,12 @@ def append(layout, config, kind, target, note="", when=None):
     if not (config.get("journal") or {}).get("enabled", True):
         return None
     try:
-        stamp = (when or datetime.datetime.now()).strftime("%H:%M")
+        # `when` sets the day file as well as the time in the line. It used to
+        # set only the time, so a backdated entry landed in today's file and the
+        # parameter quietly meant something other than it said.
+        moment = when or datetime.datetime.now()
+        stamp = moment.strftime("%H:%M")
+        day = moment.date().isoformat()
         limit = int((config.get("journal") or {}).get("max_line_chars", 200))
         patterns = config.get("redact") or []
         parts = [stamp, str(kind), redact.scrub(str(target), patterns)]
@@ -41,12 +46,12 @@ def append(layout, config, kind, target, note="", when=None):
         if len(line) > limit:
             line = line[: limit - 1] + "…"
 
-        path = layout.journal_file(today())
+        path = layout.journal_file(day)
         path.parent.mkdir(parents=True, exist_ok=True)
         new = not path.exists()
         with path.open("a", encoding="utf-8") as handle:
             if new:
-                handle.write(f"# {today()}\n\n")
+                handle.write(f"# {day}\n\n")
             handle.write(line + "\n")
         return line
     except OSError:
@@ -110,6 +115,59 @@ def recent_paths(layout, count=6):
         if len(seen) >= count:
             break
     return seen
+
+
+def prune(layout, config, before=None, archive=True):
+    """Fold day files older than `before` into one archive per month.
+
+    One committed file per active day, forever, means hundreds a year in every
+    clone and every diff. Rolling them up keeps the history — the digest is a
+    tail, so it is unaffected either way — while collapsing the file count.
+
+    Returns (folded_paths, archive_paths).
+    """
+    if before is None:
+        keep = int((config.get("journal") or {}).get("keep_days", 0) or 0)
+        if keep <= 0:
+            return [], []
+        before = datetime.date.today() - datetime.timedelta(days=keep)
+
+    by_month, folded = {}, []
+    for path in sorted(layout.journal.glob("*.md")):
+        if path.name == "DIGEST.md" or path.name.startswith("archive-"):
+            continue
+        try:
+            day = datetime.date.fromisoformat(path.stem)
+        except ValueError:
+            continue
+        if day >= before:
+            continue
+        by_month.setdefault(day.strftime("%Y-%m"), []).append((day, path))
+        folded.append(path)
+
+    archives = []
+    for month in sorted(by_month):
+        target = layout.journal / f"archive-{month}.md"
+        lines = []
+        if target.is_file():
+            lines.append(target.read_text(encoding="utf-8").rstrip("\n"))
+        else:
+            lines.append(f"# {month} — archived journal")
+        for day, path in sorted(by_month[month]):
+            entries = _entry_lines(path)
+            if entries:
+                lines.append("")
+                lines.append(f"## {day.isoformat()}")
+                lines.extend(entries)
+        if archive:
+            target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            archives.append(target)
+        for _day, path in by_month[month]:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    return folded, archives
 
 
 def write_digest(layout, config):

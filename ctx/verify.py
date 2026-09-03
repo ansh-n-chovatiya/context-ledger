@@ -25,7 +25,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import redact
+from . import redact, trust
 
 MECHANICAL = ("diff", "exists", "symbol", "cmd")
 JUDGED = ("rubric", "human")
@@ -101,6 +101,11 @@ def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False)
     tail = int(gate.get("output_tail", 20))
     patterns = config.get("redact") or []
     deadline = time.monotonic() + budget
+    # A committed ctx.yaml is executable shell run by a hook, which never sees a
+    # permission prompt. Commands this machine has not accepted are reported, not
+    # executed. ERROR rather than FAIL: an unaccepted ledger is ungated, never
+    # broken.
+    accepted = trust.load(layout)
 
     for check in ordered(checks):
         kind = check["kind"]
@@ -112,7 +117,9 @@ def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False)
             result = _check_symbol(check, cwd)
         elif kind == "cmd":
             remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            if not trust.is_accepted(check, accepted):
+                result = Result("cmd", label_of(check), ERROR, trust.REASON)
+            elif remaining <= 0:
                 result = Result(
                     "cmd", label_of(check), ERROR,
                     f"the gate's {budget}s budget was spent before this check ran "

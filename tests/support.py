@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ctx import config as config_mod, hooks, paths  # noqa: E402
+from ctx import config as config_mod, hooks, paths, trust  # noqa: E402
 from ctx.cli import main as cli_main  # noqa: E402
 
 
@@ -71,6 +71,13 @@ class Fixture(unittest.TestCase):
         (self.root / "seed.txt").write_text("seed\n")
         run("git", "add", "-A")
         run("git", "commit", "-qm", "seed")
+
+    def trust(self, checks):
+        """Accept hand-written verify commands, as `ctx init` does for the ones
+        it proposes. Tests that write a `verify` block directly are standing in
+        for a developer authoring it locally, not for a cloned ledger."""
+        trust.accept(self.layout, checks or [])
+        return checks
 
     def write(self, relative, text=""):
         path = self.root / relative

@@ -24,7 +24,14 @@ DEFAULTS = {
     # Keyed `l0`/`l1`/`l2` rather than bare numbers: readable in ctx.yaml, and
     # it sidesteps the int-vs-string key ambiguity of hand-edited YAML.
     "briefing_chars": {"l0": 220, "l1": 900, "l2": 2600},
-    "journal": {"digest_lines": 12, "max_line_chars": 200, "enabled": True},
+    "journal": {
+        "digest_lines": 12, "max_line_chars": 200, "enabled": True,
+        # Days of journal history `ctx prune` keeps. 0 means keep everything.
+        "keep_days": 0,
+    },
+    # Hook timings and briefing sizes, written to gitignored `.ctx/runtime/`.
+    # Local-only, and switchable because a policy review will ask.
+    "telemetry": {"enabled": True},
     "gate": {
         "enabled": True,
         "max_attempts": 3,

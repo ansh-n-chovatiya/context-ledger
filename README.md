@@ -71,7 +71,7 @@ Three consequences follow, and they are the whole system:
 | **Claude Code** | any recent version with plugin support |
 | **Python 3** | 3.8+. Pre-installed on macOS and every Linux. No packages needed. |
 | **Git** | required only for the worktree tier and the `diff` verify kind. Levels 0 and 1 work fine without it. |
-| **OS** | macOS, Linux. Windows via WSL or Git Bash. |
+| **OS** | macOS, Linux, Windows. `bin/ctx` (POSIX) and `bin/ctx.cmd` (Windows) both wrap `bin/ctx.py`; `python3 -m ctx` works anywhere. CI runs the suite on all three. |
 
 Nothing is installed into your project. No `node_modules`, no `requirements.txt`
 entry, no `package.json` edit.
@@ -638,6 +638,8 @@ slash command costs always-on context:
 | `ctx resolve --question X --answer Y` | Record an answer | 0 / 1 |
 | `ctx plan-unit «name»` | Scaffold one unit file | 0 |
 | `ctx plan-check [name]` | Compute waves, check collisions | 0 / 1 |
+| `ctx trust [--yes]` | Review and accept the shell commands the gate will run on this machine | 0 / 1 |
+| `ctx prune [--before D]` | Fold journal days older than `D` (or `journal.keep_days`) into monthly archives | 0 / 1 |
 | `ctx unit «name» [--status S]` | Focus a unit, or record its outcome. `--status done` runs the unit's gate first and refuses if it does not pass; `--force` overrides | 0 / 1 |
 | `ctx worktree list\|remove` | Inspect or discard worktrees | 0 / 1 |
 | `ctx level «0\|1\|2»` | Set the level directly | 0 |
@@ -677,6 +679,13 @@ journal:
   enabled: true               # false disables journalling entirely
   digest_lines: 12            # entries kept in DIGEST.md
   max_line_chars: 200         # per-entry truncation
+  keep_days: 0                # `ctx prune` folds days older than this into a
+                              # monthly archive. 0 keeps everything.
+
+telemetry:
+  enabled: true               # hook timings and briefing sizes, written to
+                              # gitignored .ctx/runtime/. Local-only: nothing
+                              # is transmitted anywhere. false switches it off.
 
 gate:
   enabled: true               # false disables the done-gate
@@ -810,6 +819,28 @@ Override any of it with `--profile`. `init` also tells you when the only checks
 it configured are judged ones — otherwise a project looks gated when everything
 needs a model or a person.
 
+### Command trust
+
+`ctx.yaml` is committed, and `verify.cmd.run` is executed with `shell=True` **by a
+hook** — and hooks do not go through the tool permission prompt. So cloning a
+repository and escalating to L1 would otherwise run whatever that file says, with
+nothing asked first.
+
+Acceptance is therefore recorded per command, machine-locally, in gitignored
+`.ctx/runtime/verify.trust`:
+
+- `ctx init` accepts what it configured — you watched it propose and print them.
+- Anything else is reported by the gate as a configuration error and **not run**,
+  so an unaccepted ledger is *ungated*, never *broken*. Same policy as a missing
+  binary.
+- `ctx trust` lists what is pending, with the file each command came from.
+  `ctx trust --yes` accepts them. `ctx doctor` and `ctx ci` both report the count.
+
+Acceptance is per command, not per file, because a task or unit carries its own
+snapshot of the `verify` block — trusting `ctx.yaml` would say nothing about what
+a unit file actually runs. Changing a command's text, its `cwd` or its `env`
+makes it a new command and revokes acceptance.
+
 ### Failure policy
 
 - The gate **fails closed** on a failing criterion and feeds back the exact check
@@ -859,11 +890,14 @@ needs a model or a person.
       <name>.ctx.md           portable bundles
   journal/
       YYYY-MM-DD.md           append-only, date-partitioned (merge-safe)
+      archive-YYYY-MM.md      older days folded up by `ctx prune`
       DIGEST.md               mechanical tail, O(1) to read
   decisions/NNNN-slug.md      ADRs; immutable, superseded not edited
   runtime/                    GITIGNORED — machine-local only
       state.json              active level / spec / plan / unit
-      telemetry.jsonl         hook durations, size-capped
+      state.lock              held across a read-modify-write
+      verify.trust            commands accepted on this machine
+      telemetry.jsonl         hook durations, size-capped (switchable)
       verify/*.log            full verify output
       worktrees/              session-tier checkouts
 ```
@@ -892,12 +926,24 @@ jobs:
         run: git clone --depth 1 https://github.com/ansh-n-chovatiya/context-ledger /tmp/ctx
       - name: Ledger schema is current
         run: /tmp/ctx/bin/ctx migrate --check
+      - name: Accept this repo's verify commands
+        run: /tmp/ctx/bin/ctx trust --yes
       - name: Ledger checks
         run: /tmp/ctx/bin/ctx ci
 ```
 
-`ctx ci` fails on: a stale schema, a missing verify binary, an unanswered blocking
-question, a plan with ownership collisions, or a briefing that had to truncate.
+`ctx trust --yes` is explicit here for the same reason it exists at all: the
+commands live in a committed file, and a runner should say out loud that it
+accepts them. Drop the step and `ctx ci` reports them as pending instead.
+
+`ctx ci` fails on: a stale schema, a missing verify binary, a command this machine
+has not accepted, an unanswered blocking question, a plan with ownership
+collisions, or a briefing that had to truncate.
+
+**The plugin's own CI** is `.github/workflows/ci.yml`: the suite on macOS, Linux
+and Windows across Python 3.8–3.13, plus a job that scaffolds a throwaway ledger
+and runs `init`, `doctor`, `ci` and `migrate --check` against it — the path a
+consuming repository actually takes.
 
 ```
 ## ledger
@@ -1096,7 +1142,7 @@ git worktree prune          # if you used the session tier
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests      # 248 tests, no dependencies
+python3 -m unittest discover -s tests      # 272 tests, no dependencies
 claude plugin validate . --strict
 ```
 

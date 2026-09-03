@@ -116,6 +116,7 @@ class TestSubagentStopIsNotGated(Fixture):
         doc = frontmatter.read(path)
         doc.meta["verify"] = [{"kind": "cmd", "run": "exit 3"}]
         doc.write(path)
+        self.trust(doc.meta["verify"])
 
     def test_a_finishing_subagent_does_not_run_the_projects_test_suite(self):
         """Every subagent that stopped used to run the whole verify suite and
@@ -143,10 +144,10 @@ class TestGateBudgetAndOutput(Fixture):
         harness kills it, no decision is returned, and the gate silently stops
         applying. The second command must be refused, not merely slow."""
         config = dict(self.config, gate=dict(self.config["gate"], timeout_seconds=2))
+        checks = [{"kind": "cmd", "run": "sleep 3"}, {"kind": "cmd", "run": "true"}]
+        self.trust(checks)
         results, verdict = verify.run(
-            self.layout, config,
-            [{"kind": "cmd", "run": "sleep 3"}, {"kind": "cmd", "run": "true"}],
-            cwd=self.root, key="budget",
+            self.layout, config, checks, cwd=self.root, key="budget",
         )
         self.assertEqual(len(results), 2)
         self.assertEqual([r.status for r in results], [verify.ERROR, verify.ERROR])
@@ -157,10 +158,10 @@ class TestGateBudgetAndOutput(Fixture):
         """`redact` guarded the journal and bundles but not the block reason,
         which inlines raw command output straight into the transcript."""
         secret = "ghp_" + "a1B2c3D4e5F6g7H8i9J0"
+        checks = [{"kind": "cmd", "run": f"echo token={secret}; exit 1"}]
+        self.trust(checks)
         results, _verdict = verify.run(
-            self.layout, self.config,
-            [{"kind": "cmd", "run": f"echo token={secret}; exit 1"}],
-            cwd=self.root, key="leak",
+            self.layout, self.config, checks, cwd=self.root, key="leak",
         )
         self.assertEqual(results[0].status, verify.FAIL)
         self.assertNotIn(secret, results[0].message)
@@ -250,6 +251,7 @@ class TestUnitDoneIsGated(Fixture):
             },
             f"## Objective\nDo {name}.\n\n## Acceptance criteria\n1. it works\n",
         ).write(path)
+        self.trust(checks)
         self.cli("plan", self.slug, "--no-spec")
         return path
 
@@ -313,6 +315,7 @@ class TestWorktreeBranchScope(Fixture):
             },
             f"## Objective\nDo {name}.\n\n## Acceptance criteria\n1. it works\n",
         ).write(directory / f"{name}.md")
+        self.trust([{"kind": "cmd", "run": "true"}])
 
     def branches(self):
         code, out = wt.git(["branch", "--format=%(refname:short)"], self.root)

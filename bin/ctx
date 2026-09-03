@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Launcher so slash commands and CI can call the ledger without touching
-# PYTHONPATH themselves. Runs from wherever it is invoked, which is what lets
-# `ctx` resolve the nearest .ctx/ directory.
+# POSIX wrapper. The logic lives in bin/ctx.py so the shell is a convenience,
+# not a dependency — see bin/ctx.cmd for the Windows equivalent, and
+# `python3 -m ctx` for anywhere neither fits.
 set -euo pipefail
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHONPATH="${here}${PYTHONPATH:+:${PYTHONPATH}}" exec python3 -m ctx "$@"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if command -v python3 >/dev/null 2>&1; then
+  exec python3 "${here}/ctx.py" "$@"
+fi
+exec python "${here}/ctx.py" "$@"

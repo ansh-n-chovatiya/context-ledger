@@ -7,13 +7,13 @@
 | | Found | Fixed |
 |---|---|---|
 | Blocking | 9 | 9 |
-| Enterprise readiness | 11 | 6 |
+| Enterprise readiness | 11 | 11 |
 | Flow | 5 | 0 |
 | Record | 3 | 0 |
 
-**Status:** Waves 1 and 2 complete — F01–F11, F13, F15, F17, F21. Suite is 248
-tests (was 193); the 55 added pin the behaviour that was wrong, and they fail
-against their respective pre-fix trees. Waves 3 and 4 outstanding.
+**Status:** Waves 1–3 complete — F01–F21. Suite is 272 tests (was 193); the 79
+added pin the behaviour that was wrong rather than the shape of the fix. Wave 4
+(flow and documentation, F22–F28) outstanding.
 
 One correction found while fixing F02: worktree-tier units were **already**
 isolated, because each worktree is a checkout carrying its own `.ctx/` and
@@ -231,7 +231,7 @@ Turborepo. That set is most of what an enterprise actually runs.
 **Fix:** move candidates into a declarative table of *(marker file → probe → command)* so
 adding an ecosystem is data, not code — and so users can extend it in `ctx.yaml`.
 
-### F12 — Windows has no path through
+### F12 — Windows has no path through  ·  **fixed**
 
 `bin/ctx` · every file in `commands/`
 
@@ -254,7 +254,7 @@ are bare unit names, so they also collide across plans.
 **Fix:** an `O_EXCL` lockfile around the read-modify-write, and namespace attempt keys as
 `plan/unit`.
 
-### F14 — A committed `ctx.yaml` is executable shell
+### F14 — A committed `ctx.yaml` is executable shell  ·  **fixed**
 
 `ctx/verify.py:196` (`shell=True`) · `.ctx/ctx.yaml` is tracked
 
@@ -279,7 +279,7 @@ integration test dumping headers: all land in the transcript and any downstream 
 **Fix:** run `scrub` over the truncated excerpt in `_check_cmd`. One line, and it closes
 the last unguarded path.
 
-### F16 — The journal has no retention policy
+### F16 — The journal has no retention policy  ·  **fixed**
 
 `ctx/journal.py:44`
 
@@ -302,7 +302,7 @@ whatever the orchestrator types after reading a report the unit wrote about itse
 `--force` as the deliberate override. Right now the strongest guarantee in the system does
 not cover its most common path.
 
-### F18 — The plugin's own tests do not run anywhere
+### F18 — The plugin's own tests do not run anywhere  ·  **fixed**
 
 no `.github/` in the repository
 
@@ -314,7 +314,7 @@ pre-commit hook for the teams meant to adopt `ctx ci`.
 suite plus `ctx ci` against a fixture project. Publish a composite action so consumers get
 one line, not a copy-paste.
 
-### F19 — Telemetry has no configured off switch
+### F19 — Telemetry has no configured off switch  ·  **fixed**
 
 `ctx/telemetry.py` · `ctx/config.py` DEFAULTS
 
@@ -325,7 +325,7 @@ the answer that clears it.
 
 **Fix:** a config key, documented, defaulting to on.
 
-### F20 — Checks are copied into tasks at creation and never re-sync
+### F20 — Checks are copied into tasks at creation and never re-sync  ·  **fixed**
 
 `ctx/cli.py` → `cmd_task`, `cmd_plan`
 
@@ -479,12 +479,30 @@ after it is worth doing until it holds.
   feeding the same `owns`/`forbid` nudge and the journal. The heuristic is documented as
   advisory, with `diff` named as authoritative.
 
-### Wave 3 — ~1.5 days · F12 F14 F16 F18 F19 F20
+### Wave 3 — done · F12 F14 F16 F18 F19 F20
 
-- **Ship the operational surface.** CI matrix across three OSes and five Python versions; a
-  composite action for consumers; journal retention; a telemetry switch; a documented trust
-  boundary for `ctx.yaml`.
-- **Cover Windows.** Drop the bash dependency from the command files.
+- **Shipped the operational surface.** `.github/workflows/ci.yml` runs the suite on macOS,
+  Linux and Windows across Python 3.8–3.13, plus a job that scaffolds a throwaway ledger
+  and runs `init`/`doctor`/`ci`/`migrate --check` against it. `ctx prune` folds old journal
+  days into monthly archives, driven by `journal.keep_days`. `telemetry.enabled` is a
+  documented switch. `ctx doctor` reports work files whose `verify` block has drifted from
+  ctx.yaml.
+- **Made the trust boundary explicit.** Commands are accepted per command and
+  machine-locally; `ctx init` accepts what it configured, anything else is reported and not
+  run until `ctx trust`. Landing it broke 23 existing tests, which is the proof the control
+  is real — the fixture now accepts hand-written checks the way a developer authoring them
+  locally would.
+- **Covered Windows.** `bin/ctx.py` is the platform-neutral entry point; `bin/ctx` and
+  `bin/ctx.cmd` wrap it, and CI asserts all three report the same version.
+
+Two things found while doing it, both fixed here: `journal.append(when=…)` set only the
+time inside the line, not which day file it landed in, so the parameter meant something
+other than it said. And the README's "Python 3.8+" claim was untested — the suite now
+parses every module under the 3.8 grammar and CI pins a 3.8 job.
+
+A composite action for consumers was **not** shipped: the workflow in the README is a
+seven-line copy-paste, and an action to maintain is not obviously better than that. Say if
+you want one.
 
 ### Wave 4 — ~1 day · F22 F23 F24 F25 F26 F27 F28
 

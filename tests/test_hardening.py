@@ -233,6 +233,7 @@ class TestVerifyPlan(MigrateFixture):
             doc = frontmatter.read(path)
             doc.meta["verify"] = checks
             doc.write(path)
+            self.trust(checks)
         self.cli("plan", "p", "--no-spec")
         self.cli("plan-check", "p")
 

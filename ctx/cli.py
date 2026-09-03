@@ -16,7 +16,7 @@ import sys
 from . import (
     __version__, briefing, bundle, config as config_mod, dispatch, frontmatter,
     journal, migrate as migrate_mod, paths, plan as plan_mod, spec as spec_mod,
-    state, telemetry, verify, work, worktree,
+    state, telemetry, trust as trust_mod, verify, work, worktree,
 )
 
 GITIGNORE = "runtime/\n"
@@ -356,6 +356,7 @@ def cmd_init(args):
             "journal": dict(config_mod.DEFAULTS["journal"]),
             "gate": dict(config_mod.DEFAULTS["gate"]),
             "plan": dict(config_mod.DEFAULTS["plan"]),
+            "telemetry": dict(config_mod.DEFAULTS["telemetry"]),
             "auto_load": [],
             "redact": [],
             "verify_candidates": list(existing.get("verify_candidates") or []),
@@ -365,6 +366,10 @@ def cmd_init(args):
 
     (layout.root / ".gitignore").write_text(GITIGNORE, encoding="utf-8")
     config = config_mod.load(layout)
+    # Accept what init configured. You watched these being proposed and printed,
+    # which is the review `ctx trust` exists to force on a ledger that arrived
+    # from somewhere else.
+    trust_mod.accept(layout, config.get("verify") or [])
     journal.write_digest(layout, config)
     bundle.reindex(layout)
     if not layout.state.exists():
@@ -649,6 +654,56 @@ def _recent_hook_errors(text, hours=RECENT_ERROR_HOURS):
     return found
 
 
+def cmd_prune(args):
+    """Fold old journal day-files into monthly archives."""
+    layout, config = _loaded(args)
+    before = None
+    if args.before:
+        try:
+            before = datetime.date.fromisoformat(args.before)
+        except ValueError:
+            _echo(f"--before must be YYYY-MM-DD, got {args.before!r}")
+            return 1
+    folded, archives = journal.prune(layout, config, before=before,
+                                     archive=not args.discard)
+    if not folded:
+        keep = (config.get("journal") or {}).get("keep_days", 0)
+        _echo("nothing to prune"
+              + ("" if before or keep else
+                 " — set journal.keep_days in ctx.yaml, or pass --before"))
+        return 0
+    journal.write_digest(layout, config)
+    verb = "discarded" if args.discard else "archived"
+    _echo(f"{verb} {len(folded)} day file(s) into {len(archives)} archive(s)")
+    for path in archives:
+        _echo(f"  {layout.rel(path)}")
+    return 0
+
+
+def _verify_drift(layout, config):
+    """Work files whose `verify` block no longer matches the project default.
+
+    The block is snapshotted into each task and unit when the file is written,
+    which is defensible — a unit should be judged by the contract it was given.
+    The silence was not: fixing a broken command in ctx.yaml left every existing
+    task still carrying the old one, with nothing saying so.
+    """
+    default = [trust_mod.command_id(c) for c in (config.get("verify") or [])
+               if isinstance(c, dict) and c.get("kind") == "cmd"]
+    drifted = []
+    paths = list(layout.tasks.glob("*.md")) if layout.tasks.is_dir() else []
+    paths += list(layout.plans.glob("*/units/*.md")) if layout.plans.is_dir() else []
+    for path in sorted(paths):
+        doc = frontmatter.read(path)
+        if doc is None:
+            continue
+        theirs = [trust_mod.command_id(c) for c in (doc.meta.get("verify") or [])
+                  if isinstance(c, dict) and c.get("kind") == "cmd"]
+        if theirs != default:
+            drifted.append(path)
+    return drifted
+
+
 def cmd_doctor(args):
     layout, config = _loaded(args)
     problems = 0
@@ -705,6 +760,31 @@ def cmd_doctor(args):
             problems += 0 if code == 0 else 1
         else:
             _echo(f"  ok   {command} (available; pass --verify to run it)")
+
+    _echo("## command trust")
+    declared = trust_mod.declared(layout, config)
+    accepted = trust_mod.load(layout)
+    pending = [c for c, _s in declared if not trust_mod.is_accepted(c, accepted)]
+    if not declared:
+        _echo("  no shell commands declared — nothing to accept")
+    elif pending:
+        _echo(f"  MISS {len(pending)} of {len(declared)} command(s) not accepted "
+              "on this machine")
+        for check in pending[:4]:
+            _echo(f"       {check.get('run')}")
+        _echo("       these will not run until you review them: ctx trust")
+        problems += 1
+    else:
+        _echo(f"  ok   {len(declared)} command(s) accepted on this machine")
+
+    drifted = _verify_drift(layout, config)
+    if drifted:
+        _echo("## verify drift")
+        _echo(f"  warn {len(drifted)} work file(s) carry a `verify` block that no "
+              "longer matches ctx.yaml")
+        for path in drifted[:4]:
+            _echo(f"       {layout.rel(path)}")
+        _echo("       that is expected for finished work; re-scaffold if it is not")
 
     _echo("## plugin footprint")
     _echo("  the briefing above is the hook cost only; the plugin's own always-on")
@@ -1298,6 +1378,43 @@ def cmd_handoff(args):
 # phase 7 — hardening
 # --------------------------------------------------------------------------- #
 
+def cmd_trust(args):
+    """Review and accept the verify commands this machine will execute.
+
+    `ctx.yaml` is committed and its commands run with `shell=True` from a hook,
+    which never sees a permission prompt. Acceptance is machine-local, so a
+    cloned ledger is ungated until someone here has looked at what it runs.
+    """
+    layout, config = _loaded(args)
+    declared = trust_mod.declared(layout, config)
+    accepted = trust_mod.load(layout)
+
+    pending = [(c, s) for c, s in declared if not trust_mod.is_accepted(c, accepted)]
+    if not declared:
+        _echo("no verify commands declared anywhere in this ledger")
+        return 0
+    if not pending:
+        _echo(f"all {len(declared)} verify command(s) already accepted on this machine")
+        return 0
+
+    _echo(f"{len(pending)} command(s) not yet accepted on this machine:")
+    for check, source in pending:
+        where = f"  (cwd {check['cwd']})" if check.get("cwd") else ""
+        _echo(f"  {check.get('run')}{where}")
+        _echo(f"      from {source}")
+    if not args.yes:
+        _echo("")
+        _echo("These run with a shell, from a hook, without a permission prompt.")
+        _echo("Read them, then accept with: ctx trust --yes")
+        return 1
+
+    added = trust_mod.accept(layout, [c for c, _s in pending])
+    journal.append(layout, config, "trust", f"{len(added)} command(s)", "accepted")
+    _echo(f"accepted {len(added)} command(s) — recorded in "
+          f"{layout.rel(trust_mod.path_for(layout))}")
+    return 0
+
+
 def cmd_migrate(args):
     """Upgrade ledger files to the plugin's schema. `--check` never writes."""
     layout = _layout(args)
@@ -1430,6 +1547,13 @@ def cmd_ci(args):
     if not entries:
         _echo("  none configured")
 
+    _echo("## command trust")
+    declared = trust_mod.declared(layout, config)
+    accepted = trust_mod.load(layout)
+    pending = [c for c, _s in declared if not trust_mod.is_accepted(c, accepted)]
+    report("every verify command is accepted on this machine", not pending,
+           f"{len(pending)} awaiting review — run `ctx trust`")
+
     if current.get("spec"):
         _echo("## spec")
         ready, blocking = spec_mod.ready(layout, current["spec"])
@@ -1512,6 +1636,11 @@ def build_parser():
     p.add_argument("target")
     p.add_argument("--note", default=None)
     p.set_defaults(func=cmd_journal)
+
+    p = sub.add_parser("prune", help="fold old journal days into monthly archives")
+    p.add_argument("--before", default=None, help="YYYY-MM-DD; defaults to journal.keep_days")
+    p.add_argument("--discard", action="store_true", help="delete rather than archive")
+    p.set_defaults(func=cmd_prune)
 
     p = sub.add_parser("doctor", help="check layout, budgets, verify commands, gate")
     p.add_argument("--verify", action="store_true", help="actually run verify commands")
@@ -1601,6 +1730,10 @@ def build_parser():
                    help="discard uncommitted work in the worktree")
     p.set_defaults(func=cmd_worktree)
 
+    p = sub.add_parser("trust", help="review and accept the verify commands to run")
+    p.add_argument("--yes", action="store_true", help="accept the listed commands")
+    p.set_defaults(func=cmd_trust)
+
     p = sub.add_parser("migrate", help="upgrade ledger files to this plugin's schema")
     p.add_argument("--check", action="store_true",
                    help="report what needs migrating and exit 1; writes nothing")
@@ -1635,7 +1768,8 @@ def build_parser():
 # Gates and CI entry points must still fail loudly on a missing ledger. Every
 # other command is something a person typed, and a non-zero exit there makes
 # Claude Code abort the slash command before the prompt body can explain itself.
-HARD_FAIL = frozenset({"verify", "ci", "spec-ready", "plan-check", "doctor", "migrate"})
+HARD_FAIL = frozenset({"verify", "ci", "spec-ready", "plan-check", "doctor",
+                       "migrate", "trust"})
 
 
 def main(argv=None):

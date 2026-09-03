@@ -49,6 +49,7 @@ class WorktreeFixture(Fixture):
             },
             f"## Objective\nDo {name}.\n\n## Acceptance criteria\n1. it works\n",
         ).write(path)
+        self.trust(checks if checks is not None else [{"kind": "cmd", "run": "true"}])
         return path
 
     def plan_ready(self):

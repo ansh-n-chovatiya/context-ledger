@@ -1,0 +1,88 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.9", "3.13"]
+        include:
+          # The README claims 3.8+, so 3.8 gets tested rather than assumed.
+          # It is pinned to 22.04 because setup-python ships no 3.8 build for
+          # 24.04 or for arm64 macOS.
+          - os: ubuntu-22.04
+            python: "3.8"
+          # The interior versions only need one platform to stay honest.
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: ubuntu-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # The worktree tier runs real git, so the runner needs an identity.
+      - name: Configure git
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+          git config --global init.defaultBranch main
+
+      - name: Test
+        run: python -m unittest discover -s tests
+
+  ledger:
+    name: ledger self-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Configure git
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+
+      # Scaffold a ledger in a throwaway project and assert the headless checks
+      # hold. This is the path a consuming repository runs, so it is the one
+      # worth proving on every push.
+      - name: Scaffold and check
+        run: |
+          mkdir -p /tmp/fixture && cd /tmp/fixture
+          git init -q .
+          printf '[project]\nname = "fixture"\n' > pyproject.toml
+          git add -A && git commit -qm seed
+          "$GITHUB_WORKSPACE/bin/ctx" init
+          "$GITHUB_WORKSPACE/bin/ctx" doctor
+          "$GITHUB_WORKSPACE/bin/ctx" ci
+          "$GITHUB_WORKSPACE/bin/ctx" migrate --check
+
+      - name: Entry points agree
+        run: |
+          test "$(./bin/ctx --version)" = "$(python bin/ctx.py --version)"
+          test "$(./bin/ctx --version)" = "$(python -m ctx --version)"
+
+      - name: Version is in step with the manifest
+        run: |
+          python - <<'PY'
+          import json, pathlib, re
+          manifest = json.loads(pathlib.Path(".claude-plugin/plugin.json").read_text())
+          source = pathlib.Path("ctx/__init__.py").read_text()
+          declared = re.search(r'__version__ = "([^"]+)"', source).group(1)
+          assert manifest["version"] == declared, (manifest["version"], declared)
+          print("version", declared)
+          PY
