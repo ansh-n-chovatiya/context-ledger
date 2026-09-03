@@ -23,5 +23,9 @@ Stop the wave if any unit reports `interface_changed`. That invalidates what its
 siblings were coded against, and deciding what to do about it is a planning
 decision, not an implementation one.
 
-Record each outcome with `ctx unit <name> --status done`, then run `/ctx:start`
-again for the next wave.
+Record each outcome with `ctx unit <name> --status done`. That re-runs the unit's
+own verify checks before accepting it and refuses if they fail — a report claiming
+success is not evidence of it. If it refuses, the unit is not finished; send it
+back rather than reaching for `--force`.
+
+Then run `/ctx:start` again for the next wave.

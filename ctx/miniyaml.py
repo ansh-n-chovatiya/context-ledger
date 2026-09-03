@@ -106,12 +106,12 @@ def _mapping(lines, i, indent):
 def _scalar(text, lineno):
     quoted = _QUOTED.match(text)
     if quoted:
-        return quoted.group(2)
+        return _unescape(quoted.group(2))
     if text.startswith("[") and text.endswith("]"):
         inner = text[1:-1].strip()
         if not inner:
             return []
-        return [_scalar(p.strip(), lineno) for p in inner.split(",")]
+        return [_scalar(p, lineno) for p in _split_items(inner)]
     if text.startswith("{"):
         raise MiniYamlError(f"line {lineno}: inline maps are not supported")
     lowered = text.lower()
@@ -130,6 +130,51 @@ def _scalar(text, lineno):
     except ValueError:
         pass
     return text
+
+
+def _unescape(text):
+    r"""Undo what `_emit` did to a quoted scalar.
+
+    Without this the writer and the reader disagree: `_emit` escapes `"` as `\"`
+    but nothing ever put it back, so every save/load cycle added another
+    backslash. Unit frontmatter is rewritten on each status change, so the
+    damage compounded rather than staying put.
+    """
+    out, index = [], 0
+    while index < len(text):
+        char = text[index]
+        if char == "\\" and index + 1 < len(text) and text[index + 1] in "\"'\\":
+            out.append(text[index + 1])
+            index += 2
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _split_items(text):
+    """Split an inline list on commas that are not inside a quoted item."""
+    items, current, quote, escaped = [], [], "", False
+    for char in text:
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif quote:
+            current.append(char)
+            if char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+            current.append(char)
+        elif char == ",":
+            items.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+    items.append("".join(current).strip())
+    return items
 
 
 def dumps(value, indent=0):
@@ -174,7 +219,10 @@ def _emit(value):
         return str(value)
     text = str(value)
     if text == "" or text.strip() != text or _needs_quotes(text):
-        return '"%s"' % text.replace('"', '\\"')
+        # Backslash first, or escaping the quote would produce a backslash the
+        # reader then eats as an escape of its own.
+        escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+        return '"%s"' % escaped
     return text
 
 

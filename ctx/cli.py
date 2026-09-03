@@ -8,6 +8,7 @@ measurement all cost zero tokens when they run as code.
 import argparse
 import datetime
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -124,18 +125,65 @@ def _needs(what, *hints):
     return 0
 
 
+# (profile, marker, weight). Weight is how much evidence the marker really is.
+# A build manifest at the root says what the project *is*; a directory named
+# `docs` or `notebooks` says only that the project has some, which most projects
+# of every kind do.
+_PROFILE_MARKERS = (
+    ("code", "package.json", 10), ("code", "pyproject.toml", 10),
+    ("code", "go.mod", 10), ("code", "Cargo.toml", 10),
+    ("code", "pom.xml", 10), ("code", "build.gradle", 10),
+    ("code", "build.gradle.kts", 10), ("code", "Gemfile", 10),
+    ("code", "composer.json", 10), ("code", "mix.exs", 10),
+    ("code", "Package.swift", 10), ("code", "*.sln", 10),
+    ("code", "*.csproj", 10), ("code", "setup.py", 8),
+    ("code", "Makefile", 4),
+    ("infra", "main.tf", 10), ("infra", "Chart.yaml", 10),
+    ("infra", "terraform", 3),
+    ("data", "dbt_project.yml", 10), ("data", "notebooks", 2),
+    ("docs", "mkdocs.yml", 10), ("docs", "docusaurus.config.js", 10),
+    ("docs", "docs", 2),
+)
+
+# Ties break toward the profile that has real commands to propose.
+_PROFILE_ORDER = ("code", "infra", "data", "docs")
+
+
 def _detect_profile(root):
-    checks = (
-        ("infra", ("main.tf", "terraform")),
-        ("data", ("dbt_project.yml", "notebooks")),
-        ("docs", ("mkdocs.yml", "docusaurus.config.js", "docs")),
-        ("code", ("package.json", "pyproject.toml", "go.mod", "Cargo.toml", "pom.xml")),
-    )
-    for profile, markers in checks:
-        for marker in markers:
-            if (root / marker).exists():
-                return profile
+    """Score every marker rather than returning on the first one that matches.
+
+    First-match tested `docs` before `code`, and its markers included a bare
+    `docs` directory — so a Python project that documented itself came out as a
+    documentation project, which has no command candidates at all and fell back
+    to a judged check. Most repositories have a `docs/`, so most repositories
+    were mis-profiled into an ungated ledger.
+    """
+    scores = {}
+    for profile, marker, weight in _PROFILE_MARKERS:
+        if next(root.glob(marker), None) is not None:
+            scores[profile] = scores.get(profile, 0) + weight
+    if not scores:
+        return "code"
+    best = max(scores.values())
+    for profile in _PROFILE_ORDER:
+        if scores.get(profile) == best:
+            return profile
     return "code"
+
+
+def _python_exe():
+    """An interpreter name that will still resolve when the gate runs.
+
+    `python` is absent from Homebrew and python.org installs, so proposing
+    `python -m pytest` had `_runnable` reject it and `init` wrote `verify: []` —
+    an ungated ledger, from the feature whose whole job is to configure the gate.
+    A bare name rather than `sys.executable` because ctx.yaml is committed and
+    shared; an absolute path from one machine is wrong on every other.
+    """
+    for candidate in ("python3", "python"):
+        if shutil.which(candidate):
+            return candidate
+    return sys.executable or "python3"
 
 
 def _verify_candidates(root, profile):
@@ -143,7 +191,7 @@ def _verify_candidates(root, profile):
     out = []
     if profile == "code":
         if (root / "pyproject.toml").exists() or (root / "setup.py").exists():
-            out.append("python -m pytest -q")
+            out.append(f"{_python_exe()} -m pytest -q")
         if (root / "package.json").exists():
             text = (root / "package.json").read_text(encoding="utf-8", errors="replace")
             if '"typecheck"' in text:
@@ -161,9 +209,39 @@ def _verify_candidates(root, profile):
     return out
 
 
+def _availability(command):
+    """(can_it_start, why_not). The reason is user-facing, so it must be true.
+
+    PATH alone is not enough for the interpreter forms: `python3 -m pytest` with
+    pytest absent exits 1 from an interpreter that is very much present, so a
+    PATH check accepts a command the gate can never actually run — and reports
+    the wrong reason when it does reject one.
+    """
+    parts = command.split()
+    if not parts:
+        return False, "empty command"
+    if shutil.which(parts[0]) is None:
+        return False, f"{parts[0]} is not on PATH"
+    if os.path.basename(parts[0]).startswith("python") and "-m" in parts[:3]:
+        module = parts[parts.index("-m") + 1:parts.index("-m") + 2]
+        if module:
+            probe = (
+                "import importlib.util, sys; "
+                f"sys.exit(0 if importlib.util.find_spec({module[0]!r}) else 1)"
+            )
+            try:
+                ok = subprocess.run(
+                    [parts[0], "-c", probe], capture_output=True, timeout=20
+                ).returncode == 0
+            except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+                return False, f"could not probe {module[0]}: {exc}"
+            if not ok:
+                return False, f"{parts[0]} cannot import {module[0]}"
+    return True, ""
+
+
 def _runnable(command):
-    binary = command.split()[0]
-    return shutil.which(binary) is not None
+    return _availability(command)[0]
 
 
 def _run(command, cwd, timeout):
@@ -194,8 +272,9 @@ def cmd_init(args):
     candidates = _verify_candidates(root, profile)
     accepted, rejected = [], []
     for command in candidates:
-        if not _runnable(command):
-            rejected.append((command, "binary not on PATH"))
+        available, why = _availability(command)
+        if not available:
+            rejected.append((command, why))
             continue
         if args.verify_now:
             code, output = _run(command, root, args.timeout)
@@ -478,9 +557,44 @@ def cmd_journal(args):
     return 0
 
 
+# A hook failure is worth blocking on while it is still happening. One from
+# March is history: `hook-errors.log` never rotated and doctor counted its mere
+# existence as a problem, so a single transient failure left the command exiting
+# 1 forever — a red build nobody could turn green without knowing to delete a
+# file by hand.
+RECENT_ERROR_HOURS = 24
+_ERROR_HEADER = re.compile(r"^--- (\d{4}-\d{2}-\d{2}T[\d:.]+) (.+) ---$")
+
+
+def _recent_hook_errors(text, hours=RECENT_ERROR_HOURS):
+    """Events that failed inside the window. Entries written before stamping
+    existed carry no timestamp and are never counted as live."""
+    cutoff = datetime.datetime.now() - datetime.timedelta(hours=hours)
+    found = []
+    for line in text.splitlines():
+        match = _ERROR_HEADER.match(line.strip())
+        if not match:
+            continue
+        try:
+            when = datetime.datetime.fromisoformat(match.group(1))
+        except ValueError:
+            continue
+        if when >= cutoff:
+            found.append(match.group(2))
+    return found
+
+
 def cmd_doctor(args):
     layout, config = _loaded(args)
     problems = 0
+
+    if args.clear:
+        if layout.errors.is_file():
+            layout.errors.unlink()
+            _echo(f"cleared {layout.rel(layout.errors)}")
+        else:
+            _echo("no hook errors to clear")
+        _echo("")
 
     _echo("## layout")
     for directory in layout.dirs():
@@ -515,8 +629,9 @@ def cmd_doctor(args):
             _echo(f"  ok   {kind} (no command to probe)")
             continue
         command = str(entry.get("run") or "")
-        if not _runnable(command):
-            _echo(f"  MISS {command} — binary not on PATH")
+        available, why = _availability(command)
+        if not available:
+            _echo(f"  MISS {command} — {why}")
             problems += 1
         elif args.verify:
             code, output = _run(command, layout.root.parent, args.timeout)
@@ -537,11 +652,19 @@ def cmd_doctor(args):
           + ("  (CTX_GATE=off in this environment)" if disabled else ""))
 
     if layout.errors.is_file():
-        lines = layout.errors.read_text(encoding="utf-8", errors="replace").splitlines()
+        text = layout.errors.read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines()
+        recent = _recent_hook_errors(text)
         _echo(f"## hook errors ({len(lines)} lines in {layout.rel(layout.errors)})")
         for line in lines[-6:]:
             _echo(f"  {line}")
-        problems += 1
+        if recent:
+            _echo(f"  FAIL {len(recent)} failure(s) in the last {RECENT_ERROR_HOURS}h: "
+                  + ", ".join(sorted(set(recent))))
+            problems += 1
+        else:
+            _echo(f"  ok   none in the last {RECENT_ERROR_HOURS}h — stale log; "
+                  "clear it with `ctx doctor --clear`")
 
     _echo("")
     _echo(f"{problems} problem(s)" if problems else "all checks passed")
@@ -973,6 +1096,40 @@ def cmd_worktree(args):
     return 0
 
 
+def _gate_before_done(layout, config, slug, unit):
+    """Non-zero exit code when this unit has not earned `done`, else None.
+
+    Only the worktree `merge` path used to verify before completing a unit. For
+    `subagent` — the default tier, and the one the dispatch brief pushes hardest
+    — `done` was whatever the orchestrator typed after reading a report the unit
+    had written about itself. The strongest guarantee in the system did not cover
+    its most common path.
+    """
+    if not verify.ordered(unit.checks):
+        _echo(f"refusing to mark {unit.name} done — it has no usable verify checks")
+        _echo("add a `verify` block to the unit file, or pass --force to override")
+        return 1
+
+    results, verdict = verify.run(
+        layout, config, unit.checks, cwd=layout.root.parent,
+        key=f"{slug}/{unit.name}", owns=unit.owns, recorded=unit.recorded,
+        judged=False,
+    )
+    if verdict in (verify.FAIL, verify.PENDING):
+        _echo(f"refusing to mark {unit.name} done — the gate did not pass")
+        for result in results:
+            _echo(result.line())
+        _echo("")
+        _echo("Fix the failing criterion, or pass --force if you are deliberately")
+        _echo("overriding the gate — which is a decision worth saying out loud.")
+        journal.append(layout, config, "unit", unit.name, f"done refused ({verdict})")
+        return 1
+    if verdict == verify.ERROR:
+        _echo(f"warning: no check could run for {unit.name} — that is a ctx.yaml")
+        _echo("problem, not a work failure, so this is not blocking")
+    return None
+
+
 def cmd_unit(args):
     """Focus a unit so the done-gate applies to it, or record its outcome."""
     layout, config = _loaded(args)
@@ -991,6 +1148,11 @@ def cmd_unit(args):
         _echo(f"no unit {args.name!r} in plan {slug}. Units in plan {slug}:")
         _list_units(layout, slug)
         return 1
+
+    if args.status == "done" and not args.force:
+        refusal = _gate_before_done(layout, config, slug, unit)
+        if refusal:
+            return refusal
 
     unit.set(status=args.status)
     if args.status == "done":
@@ -1198,7 +1360,8 @@ def cmd_ci(args):
         if entry.get("kind") != "cmd":
             continue
         command = str(entry.get("run") or "")
-        report(f"available: {command}", _runnable(command), "binary not on PATH")
+        available, why = _availability(command)
+        report(f"available: {command}", available, why)
     if not entries:
         _echo("  none configured")
 
@@ -1287,6 +1450,8 @@ def build_parser():
 
     p = sub.add_parser("doctor", help="check layout, budgets, verify commands, gate")
     p.add_argument("--verify", action="store_true", help="actually run verify commands")
+    p.add_argument("--clear", action="store_true",
+                   help="delete the hook error log before checking")
     p.add_argument("--timeout", type=int, default=300)
     p.set_defaults(func=cmd_doctor)
 
@@ -1391,6 +1556,8 @@ def build_parser():
     p.add_argument("name", nargs="?", default=None)
     p.add_argument("--plan", default=None)
     p.add_argument("--status", choices=list(plan_mod.STATUSES), default="running")
+    p.add_argument("--force", action="store_true",
+                   help="mark done even though the unit's gate did not pass")
     p.set_defaults(func=cmd_unit)
 
     p = sub.add_parser("handoff", help="write a resume packet for a session or person")

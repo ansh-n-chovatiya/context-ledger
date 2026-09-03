@@ -30,7 +30,10 @@ DEFAULTS = {
         "max_attempts": 3,
         "output_head": 40,
         "output_tail": 20,
-        "timeout_seconds": 240,  # must stay under the Stop hook timeout (300s)
+        # Budget for the whole gate, not per command. Per-command it could not be
+        # enforced: three commands at 240s each outlive the 300s Stop hook, and a
+        # killed hook returns no decision, so the gate silently stopped applying.
+        "timeout_seconds": 240,
     },
     "plan": {"wave_budget_tokens": 250000},
     "auto_load": [],

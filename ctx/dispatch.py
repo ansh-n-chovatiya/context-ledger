@@ -156,7 +156,9 @@ def instructions(layout, slug, level, units, budget, worktrees=()):
         "ask for the rest rather than assuming.",
         "2. If a unit says it had to change a published interface, **stop the wave**. "
         "That invalidates its siblings' assumptions and is a planning decision.",
-        "3. Mark it: `ctx unit <name> --status done`.",
+        "3. Mark it: `ctx unit <name> --status done`. That runs the unit's own "
+        "checks first and refuses if they do not pass — a report claiming success "
+        "is not evidence of it. Pass `--force` only as a decision you say out loud.",
         "4. When the wave is clear, `ctx start` again for the next one.",
     ]
     return "\n".join(lines)

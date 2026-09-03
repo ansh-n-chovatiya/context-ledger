@@ -1,7 +1,7 @@
 {
   "name": "ctx",
   "displayName": "Context Ledger",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Durable specs, plans, decisions and memory on disk — so sessions become disposable, compaction stops losing state, and 'done' is something a gate can refuse to sign off on.",
   "author": {
     "name": "Ansh Chovatiya"

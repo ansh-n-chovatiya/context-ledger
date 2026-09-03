@@ -22,6 +22,10 @@ violation never pays for a test run.
 import os
 import re
 import subprocess
+import time
+from pathlib import Path
+
+from . import redact
 
 MECHANICAL = ("diff", "exists", "symbol", "cmd")
 JUDGED = ("rubric", "human")
@@ -80,13 +84,23 @@ def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False)
 
     `judged=False` (the hook's mode) does not evaluate `rubric`/`human`; it only
     reports them PENDING unless their kind appears in `recorded`.
+
+    `gate.timeout_seconds` is the budget for the **whole run**, not for each
+    command. Per-command it was unenforceable: three commands at 240s each can
+    run for twelve minutes against a Stop hook the harness kills at five, and a
+    killed hook returns no decision at all — so an over-long suite silently
+    stopped gating anything. Spending one shared budget makes that case an
+    explicit ERROR instead.
+
     Returns (results, verdict).
     """
     results = []
     gate = config.get("gate") or {}
-    timeout = int(gate.get("timeout_seconds", 600))
+    budget = max(1, int(gate.get("timeout_seconds", 240)))
     head = int(gate.get("output_head", 40))
     tail = int(gate.get("output_tail", 20))
+    patterns = config.get("redact") or []
+    deadline = time.monotonic() + budget
 
     for check in ordered(checks):
         kind = check["kind"]
@@ -97,7 +111,17 @@ def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False)
         elif kind == "symbol":
             result = _check_symbol(check, cwd)
         elif kind == "cmd":
-            result = _check_cmd(layout, check, cwd, key, timeout, head, tail)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                result = Result(
+                    "cmd", label_of(check), ERROR,
+                    f"the gate's {budget}s budget was spent before this check ran "
+                    "— split the suite or raise gate.timeout_seconds",
+                )
+            else:
+                result = _check_cmd(
+                    layout, check, cwd, key, remaining, head, tail, patterns
+                )
         else:
             result = _check_judged(check, kind, recorded, judged)
         results.append(result)
@@ -147,7 +171,7 @@ def _check_exists(check, cwd):
     pattern = check.get("matches")
     if pattern and os.path.isfile(target):
         try:
-            body = open(target, encoding="utf-8", errors="replace").read()
+            body = Path(target).read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             return Result("exists", raw, ERROR, str(exc))
         try:
@@ -173,7 +197,7 @@ def _check_symbol(check, cwd):
     if not os.path.exists(target):
         return Result("symbol", raw, FAIL, "file does not exist")
     try:
-        body = open(target, encoding="utf-8", errors="replace").read()
+        body = Path(target).read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return Result("symbol", raw, ERROR, str(exc))
     missing = [name for name in names if name not in body]
@@ -187,7 +211,7 @@ def _check_symbol(check, cwd):
     return Result("symbol", raw, PASS)
 
 
-def _check_cmd(layout, check, cwd, key, timeout, head, tail):
+def _check_cmd(layout, check, cwd, key, timeout, head, tail, patterns=()):
     command = str(check.get("run") or "")
     if not command:
         return Result("cmd", "<none>", ERROR, "no command configured")
@@ -198,7 +222,7 @@ def _check_cmd(layout, check, cwd, key, timeout, head, tail):
         )
     except subprocess.TimeoutExpired:
         # Infrastructure, not work: a hung command must not block forever.
-        return Result("cmd", command, ERROR, f"timed out after {timeout}s")
+        return Result("cmd", command, ERROR, f"timed out after {round(timeout)}s")
     except OSError as exc:
         return Result("cmd", command, ERROR, f"could not run: {exc}")
 
@@ -214,8 +238,12 @@ def _check_cmd(layout, check, cwd, key, timeout, head, tail):
         # session in a project whose toolchain simply is not installed.
         return Result("cmd", command, ERROR, f"tool not available: {missing}")
 
+    # The log stays raw: it is gitignored, machine-local, and redacting it would
+    # hide the very line someone is debugging. The excerpt does not — it is
+    # inlined into the model's context and from there into every transcript and
+    # downstream log, which is exactly the path `redact` exists to guard.
     log_path = _write_log(layout, key, command, output)
-    excerpt = truncate(output, head, tail)
+    excerpt = redact.scrub(truncate(output, head, tail), patterns)
     message = f"exit {completed.returncode}\n{excerpt}"
     if log_path is not None:
         message += f"\n(full output: {log_path})"

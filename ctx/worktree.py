@@ -137,10 +137,28 @@ def listing(layout):
     return out
 
 
-def remove(layout, unit_name, delete_branch=True, force=False):
-    """Discard a worktree. This is how a failed unit is thrown away."""
+def branch_of(layout, unit_name):
+    """The branch this worktree is actually on, according to git."""
+    for name, _path, branch in listing(layout):
+        if name == unit_name:
+            return branch
+    return ""
+
+
+def remove(layout, unit_name, plan_slug=None, delete_branch=True, force=False):
+    """Discard a worktree. This is how a failed unit is thrown away.
+
+    Exactly one branch is deleted, resolved before the tree goes. The previous
+    version looped over every directory in `.ctx/plans/` deleting
+    `ctx/<plan>/<unit>` for each — so discarding `01-api` in one plan also
+    destroyed `01-api` in an unrelated one, and with it any commits that branch
+    was the only reference to. Numbered kebab names make that collision likely,
+    not exotic.
+    """
     root = repo_root(layout)
     path = path_for(layout, unit_name)
+    branch = branch_for(plan_slug, unit_name) if plan_slug else branch_of(layout, unit_name)
+
     args = ["worktree", "remove", str(path)]
     if force:
         args.append("--force")
@@ -148,10 +166,8 @@ def remove(layout, unit_name, delete_branch=True, force=False):
     if code != 0 and path.exists():
         return output.strip()
     git(["worktree", "prune"], root)
-    if delete_branch:
-        for plan_dir in (layout.plans.iterdir() if layout.plans.is_dir() else []):
-            branch = branch_for(plan_dir.name, unit_name)
-            git(["branch", "-D", branch], root)
+    if delete_branch and branch:
+        git(["branch", "-D", branch], root)
     return ""
 
 
@@ -274,7 +290,7 @@ def merge(layout, config, plan_slug, unit_name, skip_gate=False):
         ]
 
     messages.append(f"merged {branch} ({len(touched)} file(s))")
-    error = remove(layout, unit_name)
+    error = remove(layout, unit_name, plan_slug)
     messages.append(
         f"worktree kept (could not remove: {error})" if error
         else "worktree and branch removed"

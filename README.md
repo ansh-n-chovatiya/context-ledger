@@ -620,6 +620,7 @@ runnable in CI and in scripts. Run via `bin/ctx` in the plugin directory.
 ```bash
 ctx status
 ctx doctor --verify        # actually run the verify commands
+ctx doctor --clear         # drop a stale hook error log, then check
 ```
 
 These have **no slash command by design** — none is a conversation, and every
@@ -637,7 +638,7 @@ slash command costs always-on context:
 | `ctx resolve --question X --answer Y` | Record an answer | 0 / 1 |
 | `ctx plan-unit «name»` | Scaffold one unit file | 0 |
 | `ctx plan-check [name]` | Compute waves, check collisions | 0 / 1 |
-| `ctx unit «name» [--status S]` | Focus a unit, or record its outcome | 0 / 1 |
+| `ctx unit «name» [--status S]` | Focus a unit, or record its outcome. `--status done` runs the unit's gate first and refuses if it does not pass; `--force` overrides | 0 / 1 |
 | `ctx worktree list\|remove` | Inspect or discard worktrees | 0 / 1 |
 | `ctx level «0\|1\|2»` | Set the level directly | 0 |
 | `ctx briefing` | Print exactly what SessionStart would inject | 0 |
@@ -681,7 +682,7 @@ gate:
   max_attempts: 3             # blocks before it escalates to you
   output_head: 40             # failure output: leading lines kept
   output_tail: 20             # trailing lines kept
-  timeout_seconds: 240        # per verify command; stay under 300
+  timeout_seconds: 240        # budget for the whole gate, not per command
 
 plan:
   wave_budget_tokens: 250000  # a wave over this refuses to dispatch
@@ -760,16 +761,27 @@ signed off on. So verify last.
 commands detected from your toolchain; the others fall back to judged checks,
 because no command can decide whether prose is right.
 
-| Profile | Detected by | Fallback |
-|---|---|---|
-| `code` | `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `pom.xml` | none — commands are detected |
-| `infra` | `main.tf`, `terraform/` | `human` — review before applying |
-| `docs` | `mkdocs.yml`, `docusaurus.config.js`, `docs/` | `rubric` |
-| `research` | *(explicit `--profile`)* | `rubric` |
-| `data` | `dbt_project.yml`, `notebooks/` | `human` |
+Markers are **scored, not first-matched**, and weighted by how much they really
+tell you. A build manifest at the root says what a project *is*; a directory
+named `docs/` or `notebooks/` says only that the project has some, which projects
+of every kind do. Highest score wins, and ties break toward the profile that has
+commands to propose.
 
-`init` tells you when the only checks it configured are judged ones — otherwise a
-project looks gated when everything needs a model or a person.
+| Profile | Strong markers (10) | Weak markers (2–4) | Fallback |
+|---|---|---|---|
+| `code` | `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `pom.xml`, `build.gradle[.kts]`, `Gemfile`, `composer.json`, `mix.exs`, `Package.swift`, `*.sln`, `*.csproj` | `setup.py` (8), `Makefile` (4) | none — commands are detected |
+| `infra` | `main.tf`, `Chart.yaml` | `terraform/` (3) | `human` — review before applying |
+| `docs` | `mkdocs.yml`, `docusaurus.config.js` | `docs/` (2) | `rubric` |
+| `data` | `dbt_project.yml` | `notebooks/` (2) | `human` |
+| `research` | *(explicit `--profile`)* | | `rubric` |
+
+So a Python service that documents itself is `code`, not `docs`. Under the old
+first-match order `docs/` won outright, which quietly left most repositories with
+no runnable gate at all.
+
+Override any of it with `--profile`. `init` also tells you when the only checks
+it configured are judged ones — otherwise a project looks gated when everything
+needs a model or a person.
 
 ### Failure policy
 
@@ -781,6 +793,18 @@ project looks gated when everything needs a model or a person.
   session in a project whose toolchain isn't installed.
 - Bounded at `gate.max_attempts`. Then it marks the work `verify_failed`, stops
   blocking, and escalates to you.
+- **`gate.timeout_seconds` is the budget for the whole gate**, not for each
+  command. A check that starts after the budget is spent is reported as a
+  configuration error rather than run. Per command the limit was unenforceable:
+  three commands at 240s each outlive the 300s `Stop` hook, and a killed hook
+  returns no decision — so an over-long suite silently stopped gating anything.
+- **The gate runs on `Stop`, not `SubagentStop`.** It belongs to the session that
+  owns the work. Firing on every finishing subagent meant an unrelated search
+  agent ran the whole test suite and could be blocked against criteria it had
+  never touched.
+- Failure output is scrubbed by `redact` before it reaches the model. The full
+  log under `.ctx/runtime/verify/` is left raw — it is gitignored and local, and
+  redacting it would hide the line you are debugging.
 - `CTX_GATE=off` disables it outright.
 
 ---
@@ -866,6 +890,7 @@ can decide them.
 ```bash
 ctx doctor                 # layout, budgets, verify availability, gate state
 ctx doctor --verify        # …and actually run the verify commands
+ctx doctor --clear         # drop a stale hook error log first
 ctx budget                 # predicted vs measured context cost
 ctx telemetry              # hook durations, injected briefing sizes
 ctx migrate --check        # is the ledger schema current?
@@ -994,7 +1019,7 @@ and they run on harness events rather than on the model remembering to call them
 | `PostToolUse` | Append to the journal; clear stale sign-offs | open |
 | `PreCompact` | Flush state, write a mechanical autosave | open |
 | `SessionEnd` | Finalise journal and digest | open |
-| `Stop` / `SubagentStop` | **The done-gate** | **closed** |
+| `Stop` | **The done-gate** | **closed** |
 
 Note what isn't here: nothing depends on the model *choosing* to record state.
 Persistence is a property of the harness, which is why it survives compaction,
@@ -1039,7 +1064,7 @@ git worktree prune          # if you used the session tier
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests      # 175 tests, no dependencies
+python3 -m unittest discover -s tests      # 219 tests, no dependencies
 claude plugin validate . --strict
 ```
 

@@ -12,6 +12,7 @@ without a live session. Two invariants:
   ships.
 """
 
+import datetime
 import fnmatch
 import json
 import os
@@ -78,11 +79,31 @@ def _measure(layout, event, started, **fields):
     telemetry.record(layout, event, (time.perf_counter() - started) * 1000, **fields)
 
 
+# The log is append-only across the life of a project, and `ctx doctor` reads it.
+# Without a bound, one bad afternoon leaves a megabyte of tracebacks that every
+# doctor run re-reads; without a timestamp, doctor cannot tell a failure from
+# this morning from one in March and had to treat both as a live problem.
+ERROR_LOG_MAX_BYTES = 64 * 1024
+ERROR_LOG_KEEP_LINES = 200
+
+
 def _log_error(layout, event, detail):
     try:
         layout.runtime.mkdir(parents=True, exist_ok=True)
+        _rotate_errors(layout.errors)
+        stamp = datetime.datetime.now().isoformat(timespec="seconds")
         with layout.errors.open("a", encoding="utf-8") as handle:
-            handle.write(f"--- {event} ---\n{detail}\n")
+            handle.write(f"--- {stamp} {event} ---\n{detail}\n")
+    except OSError:
+        pass
+
+
+def _rotate_errors(path):
+    try:
+        if not path.is_file() or path.stat().st_size <= ERROR_LOG_MAX_BYTES:
+            return
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines(True)
+        path.write_text("".join(lines[-ERROR_LOG_KEEP_LINES:]), encoding="utf-8")
     except OSError:
         pass
 
@@ -244,6 +265,14 @@ def _gate_reason(item, results, attempts, limit):
     return "\n".join(lines)
 
 
+# `SubagentStop` is deliberately absent. It used to run `on_stop`, which meant
+# every subagent that finished — an exploratory search, the `verifier` itself,
+# any unrelated Task — ran the project's whole verify suite and could be blocked
+# `max_attempts` times against acceptance criteria it had never touched. Under a
+# dispatched wave that was N concurrent test runs against one shared tree, all
+# judging whichever unit the single `state.unit` pointer happened to hold.
+#
+# The gate belongs to the session that owns the work, so it fires on `Stop`.
 HANDLERS = {
     "SessionStart": on_session_start,
     "UserPromptSubmit": on_user_prompt_submit,
@@ -252,7 +281,6 @@ HANDLERS = {
     "PreCompact": on_pre_compact,
     "SessionEnd": on_session_end,
     "Stop": on_stop,
-    "SubagentStop": on_stop,
 }
 
 
