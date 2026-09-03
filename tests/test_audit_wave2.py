@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ctx import (  # noqa: E402
     cli, frontmatter, hooks, plan as plan_mod, state, verify, work,
 )
-from support import Fixture  # noqa: E402
+from support import OK, Fixture  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -76,7 +76,7 @@ class TestPerProcessClaim(Fixture):
                     "ctx_schema": 1, "unit": name, "plan": self.slug,
                     "tier": "subagent", "depends_on": [], "owns": [f"src/{name}.py"],
                     "reads": [], "forbid": [], "budget_tokens": 1000,
-                    "status": "pending", "verify": [{"kind": "cmd", "run": "true"}],
+                    "status": "pending", "verify": [{"kind": "cmd", "run": OK}],
                 },
                 f"## Objective\nDo {name}.\n\n## Acceptance criteria\n1. it works\n",
             ).write(directory / f"{name}.md")
@@ -158,7 +158,7 @@ class TestBashScopeEnforcement(Fixture):
                 "ctx_schema": 1, "unit": "01-keys", "plan": self.slug,
                 "tier": "subagent", "depends_on": [], "owns": ["src/keys.py"],
                 "reads": [], "forbid": ["src/clock.py"], "budget_tokens": 1000,
-                "status": "pending", "verify": [{"kind": "cmd", "run": "true"}],
+                "status": "pending", "verify": [{"kind": "cmd", "run": OK}],
             },
             "## Objective\nDo it.\n\n## Acceptance criteria\n1. it works\n",
         ).write(directory / "01-keys.md")

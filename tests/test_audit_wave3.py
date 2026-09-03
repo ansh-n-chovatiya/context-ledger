@@ -13,7 +13,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from ctx import journal, telemetry, trust, verify  # noqa: E402
-from support import Fixture  # noqa: E402
+from support import OK, Fixture  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -23,7 +23,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 # --------------------------------------------------------------------------- #
 
 class TestCommandTrust(Fixture):
-    CHECK = [{"kind": "cmd", "run": "true"}]
+    CHECK = [{"kind": "cmd", "run": OK}]
 
     def test_an_unaccepted_command_is_reported_rather_than_run(self):
         """ctx.yaml is committed and its commands run with `shell=True` from a
@@ -57,7 +57,7 @@ class TestCommandTrust(Fixture):
         )
 
     def test_changing_cwd_or_env_is_a_new_command(self):
-        base = {"kind": "cmd", "run": "true"}
+        base = {"kind": "cmd", "run": OK}
         self.trust([base])
         accepted = trust.load(self.layout)
         self.assertTrue(trust.is_accepted(base, accepted))

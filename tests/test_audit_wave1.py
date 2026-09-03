@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ctx import (  # noqa: E402
     cli, frontmatter, hooks, miniyaml, plan as plan_mod, verify, worktree as wt,
 )
-from support import Fixture  # noqa: E402
+from support import OK, Fixture  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -272,7 +272,7 @@ class TestUnitDoneIsGated(Fixture):
         self.assertEqual(self.status_of("01-api"), "pending", "nothing was written")
 
     def test_a_passing_unit_is_marked_done(self):
-        self.unit("01-api", [{"kind": "cmd", "run": "true"}])
+        self.unit("01-api", [{"kind": "cmd", "run": OK}])
         code, out = self.cli("unit", "01-api", "--status", "done")
         self.assertEqual(code, 0, out)
         self.assertEqual(self.status_of("01-api"), "done")
@@ -313,11 +313,11 @@ class TestWorktreeBranchScope(Fixture):
                 "ctx_schema": 1, "unit": name, "plan": plan_slug, "tier": "session",
                 "depends_on": [], "owns": [f"src/{plan_slug}.py"], "reads": [],
                 "forbid": [], "budget_tokens": 1000, "status": "pending",
-                "verify": [{"kind": "cmd", "run": "true"}],
+                "verify": [{"kind": "cmd", "run": OK}],
             },
             f"## Objective\nDo {name}.\n\n## Acceptance criteria\n1. it works\n",
         ).write(directory / f"{name}.md")
-        self.trust([{"kind": "cmd", "run": "true"}])
+        self.trust([{"kind": "cmd", "run": OK}])
 
     def branches(self):
         code, out = wt.git(["branch", "--format=%(refname:short)"], self.root)

@@ -9,7 +9,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from ctx import frontmatter, journal, plan as plan_mod, state  # noqa: E402
-from support import Fixture  # noqa: E402
+from support import OK, Fixture  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -57,10 +57,10 @@ class TestNext(Fixture):
             {"ctx_schema": 1, "unit": "01-keys", "plan": "auth", "tier": "subagent",
              "depends_on": [], "owns": ["src/keys.py"], "reads": [], "forbid": [],
              "budget_tokens": 1000, "status": "pending",
-             "verify": [{"kind": "cmd", "run": "true"}]},
+             "verify": [{"kind": "cmd", "run": OK}]},
             "## Objective\nx\n\n## Acceptance criteria\n1. y\n",
         ).write(directory / "01-keys.md")
-        self.trust([{"kind": "cmd", "run": "true"}])
+        self.trust([{"kind": "cmd", "run": OK}])
         self.cli("plan", "auth")
         self.cli("plan-check", "auth")
         self.assertIn("/ctx:start", self.next_line())
@@ -168,10 +168,10 @@ class TestOrchestratorDiscipline(Fixture):
             {"ctx_schema": 1, "unit": "01-keys", "plan": "auth", "tier": "subagent",
              "depends_on": [], "owns": ["src/keys.py"], "reads": [], "forbid": [],
              "budget_tokens": 1000, "status": "pending",
-             "verify": [{"kind": "cmd", "run": "true"}]},
+             "verify": [{"kind": "cmd", "run": OK}]},
             "## Objective\nx\n\n## Acceptance criteria\n1. y\n",
         ).write(directory / "01-keys.md")
-        self.trust([{"kind": "cmd", "run": "true"}])
+        self.trust([{"kind": "cmd", "run": OK}])
         self.cli("plan", "auth", "--no-spec")
         self.cli("plan-check", "auth")
 

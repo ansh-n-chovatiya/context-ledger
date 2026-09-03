@@ -10,6 +10,7 @@ not have to wait for a Windows runner to surface it.
 """
 
 import os
+import re
 import sys
 import unittest
 import unittest.mock
@@ -85,18 +86,25 @@ class TestNoPosixOnlyAssumptionsInVerifyCommands(unittest.TestCase):
 
     ROOT = Path(__file__).resolve().parent
 
-    BANNED = ('"run": "sleep ', '"run": "test -f', '"run": \'[ ', '; exit 1"')
+    # Matched by shape, not by literal: the first version of this check listed
+    # `; exit 1` and sailed past `; exit 3`, which is precisely the command that
+    # then passed on Windows by echoing its own text.
+    RUN_VALUE = re.compile(r'"run":\s*"([^"]+)"')
+    NOT_PORTABLE = re.compile(
+        r"(^|\s)(true|false|sleep|test|seq|touch|cat)(\s|$)|;|\$\(|\[ |&&"
+    )
 
     def test_no_test_declares_a_posix_only_verify_command(self):
         for path in sorted(self.ROOT.glob("test_*.py")):
             if path.name == Path(__file__).name:
-                continue  # this file necessarily contains the literals
-            text = path.read_text(encoding="utf-8")
-            for banned in self.BANNED:
-                with self.subTest(path=path.name, snippet=banned):
-                    self.assertNotIn(
-                        banned, text,
-                        "use self.py(...) so the command runs on every platform",
+                continue  # this file necessarily contains the examples
+            for command in self.RUN_VALUE.findall(path.read_text(encoding="utf-8")):
+                if command.startswith('"') or "-c " in command:
+                    continue  # already routed through self.py(...)
+                with self.subTest(path=path.name, command=command):
+                    self.assertIsNone(
+                        self.NOT_PORTABLE.search(command),
+                        f"{command!r} does not survive cmd.exe — use self.py(...)",
                     )
 
 

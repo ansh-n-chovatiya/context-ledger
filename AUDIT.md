@@ -41,10 +41,19 @@ product bugs and the rest were POSIX assumptions in the tests:
   on Windows, where CI lost one increment in eighty — and giving up means taking
   the lost update the lock exists to prevent. Raised to thirty.
 
-The rest were tests asserting nothing on Windows: `true`, `sleep`, `test -f`,
-`[ ... ]` and `;` are not portable through `cmd.exe`. They now run through this
-interpreter via a `self.py(...)` helper, and `tests/test_portability.py` fails
-the build if a POSIX-only verify command comes back.
+The rest were tests asserting nothing on Windows: `true`, `false`, `sleep`,
+`test -f`, `[ ... ]` and `;` do not survive `cmd.exe`. They now run through this
+interpreter, and `tests/test_portability.py` fails the build if a POSIX-only
+verify command comes back.
+
+Two rounds were needed, and the second is the more interesting one. The first
+lint listed banned literals and included `; exit 1` — so it sailed straight past
+`; exit 3`, which is exactly the command that then passed on Windows by echoing
+its own text. Rewritten to match by *shape*, it immediately flagged 23 more:
+every `run: "true"`. Those had passed on CI only because GitHub's Windows runners
+happen to carry Git's `usr/bin/true.exe` on PATH. On a plain Windows box each one
+would have inverted silently. A check written against examples finds the examples;
+a check written against the shape finds the class.
 
 One correction found while fixing F02: worktree-tier units were **already**
 isolated, because each worktree is a checkout carrying its own `.ctx/` and

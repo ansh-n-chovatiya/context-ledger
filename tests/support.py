@@ -18,6 +18,13 @@ from ctx import config as config_mod, hooks, paths, trust  # noqa: E402
 from ctx.cli import main as cli_main  # noqa: E402
 
 
+# A verify command that exits 0 anywhere. `true` is a POSIX builtin: on Windows
+# it resolves only if Git's usr/bin happens to be on PATH, so a test using it
+# asserts nothing on a plain Windows box — it just happened to work on CI.
+OK = '"%s" -c pass' % sys.executable
+FAILS = '"%s" -c "import sys; sys.exit(1)"' % sys.executable
+
+
 class Fixture(unittest.TestCase):
     """A throwaway project with an initialised ledger."""
 

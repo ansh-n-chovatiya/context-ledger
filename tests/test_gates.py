@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ctx import (  # noqa: E402
     frontmatter, journal, spec as spec_mod, state, trust, verify, work,
 )
-from support import Fixture  # noqa: E402
+from support import FAILS, OK, Fixture  # noqa: E402
 
 
 def with_checks(layout, slug, checks, criteria=("first thing", "second thing")):
@@ -150,7 +150,7 @@ class TestVerifyKinds(Fixture):
 
     def test_cost_ordering_puts_cheap_checks_first(self):
         checks = [
-            {"kind": "rubric"}, {"kind": "cmd", "run": "true"},
+            {"kind": "rubric"}, {"kind": "cmd", "run": OK},
             {"kind": "exists", "path": "."}, {"kind": "diff"},
         ]
         self.assertEqual(
@@ -162,13 +162,14 @@ class TestVerifyKinds(Fixture):
         self.assertEqual(verify.ordered(["nonsense", {"kind": "bogus"}, None]), [])
 
     def test_passing_command(self):
-        results, verdict = self.run_checks([{"kind": "cmd", "run": "true"}])
+        results, verdict = self.run_checks([{"kind": "cmd", "run": OK}])
         self.assertEqual(verdict, verify.PASS)
         self.assertEqual(results[0].status, verify.PASS)
 
     def test_failing_command_blocks_and_writes_a_full_log(self):
         results, verdict = self.run_checks(
-            [{"kind": "cmd", "run": "echo boom-detail; exit 3"}]
+            [{"kind": "cmd", "run": self.py(
+                "import sys; print('boom-detail'); sys.exit(3)")}]
         )
         self.assertEqual(verdict, verify.FAIL)
         self.assertIn("exit 3", results[0].message)
@@ -312,7 +313,7 @@ class TestDoneGate(Fixture):
 
     def test_l0_never_blocks(self):
         self.cli("task", "gated")
-        with_checks(self.layout, "gated", [{"kind": "cmd", "run": "false"}])
+        with_checks(self.layout, "gated", [{"kind": "cmd", "run": FAILS}])
         self.cli("drop")
         self.assertIsNone(self.stop(), "L0 has no gate — that is what makes it free")
 
@@ -328,11 +329,11 @@ class TestDoneGate(Fixture):
         self.assertIn("attempt 1 of 3", reason)
 
     def test_passing_work_is_allowed_through_and_clears_attempts(self):
-        self.arm([{"kind": "cmd", "run": "false"}])
+        self.arm([{"kind": "cmd", "run": FAILS}])
         self.stop()
         self.assertEqual(state.attempts(self.layout, "gated"), 1)
 
-        with_checks(self.layout, "gated", [{"kind": "cmd", "run": "true"}])
+        with_checks(self.layout, "gated", [{"kind": "cmd", "run": OK}])
         self.assertIsNone(self.stop())
         self.assertEqual(state.attempts(self.layout, "gated"), 0)
 
@@ -429,7 +430,7 @@ class TestVerifyCommand(Fixture):
         self.cli("task", "gated")
         with_checks(
             self.layout, "gated",
-            [{"kind": "exists", "path": "missing.txt"}, {"kind": "cmd", "run": "true"}],
+            [{"kind": "exists", "path": "missing.txt"}, {"kind": "cmd", "run": OK}],
         )
         code, out = self.cli("verify")
         self.assertEqual(code, 1)
@@ -438,7 +439,7 @@ class TestVerifyCommand(Fixture):
 
     def test_pass_reports_zero(self):
         self.cli("task", "gated")
-        with_checks(self.layout, "gated", [{"kind": "cmd", "run": "true"}])
+        with_checks(self.layout, "gated", [{"kind": "cmd", "run": OK}])
         code, out = self.cli("verify")
         self.assertEqual(code, 0)
         self.assertIn("PASS", out)

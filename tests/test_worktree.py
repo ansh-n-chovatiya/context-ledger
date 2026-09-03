@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ctx import (  # noqa: E402
     frontmatter, plan as plan_mod, state, verify, worktree as wt,
 )
-from support import Fixture  # noqa: E402
+from support import OK, Fixture  # noqa: E402
 
 
 class WorktreeFixture(Fixture):
@@ -45,11 +45,11 @@ class WorktreeFixture(Fixture):
                 "ctx_schema": 1, "unit": name, "plan": self.slug, "tier": tier,
                 "depends_on": list(depends_on), "owns": list(owns), "reads": [],
                 "forbid": [], "budget_tokens": 1000, "status": "pending",
-                "verify": checks if checks is not None else [{"kind": "cmd", "run": "true"}],
+                "verify": checks if checks is not None else [{"kind": "cmd", "run": OK}],
             },
             f"## Objective\nDo {name}.\n\n## Acceptance criteria\n1. it works\n",
         ).write(path)
-        self.trust(checks if checks is not None else [{"kind": "cmd", "run": "true"}])
+        self.trust(checks if checks is not None else [{"kind": "cmd", "run": OK}])
         return path
 
     def plan_ready(self):
@@ -388,7 +388,7 @@ class TestInterfaceFreeze(Fixture):
     def test_symbol_runs_before_cmd_but_after_exists(self):
         order = [
             c["kind"] for c in verify.ordered([
-                {"kind": "cmd", "run": "true"}, {"kind": "symbol"},
+                {"kind": "cmd", "run": OK}, {"kind": "symbol"},
                 {"kind": "exists", "path": "."}, {"kind": "diff"},
             ])
         ]

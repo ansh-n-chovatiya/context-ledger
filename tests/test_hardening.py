@@ -22,9 +22,9 @@ from ctx import (  # noqa: E402
     briefing, bundle, config as config_mod, frontmatter, migrate as migrate_mod,
     plan as plan_mod, state, telemetry,
 )
-from support import Fixture  # noqa: E402
+from support import OK, Fixture  # noqa: E402
 
-CHECK = [{"kind": "cmd", "run": "true"}]
+CHECK = [{"kind": "cmd", "run": OK}]
 
 
 class MigrateFixture(Fixture):
