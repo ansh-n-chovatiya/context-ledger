@@ -392,9 +392,12 @@ def cmd_init(args):
             _echo("  a gate that decides objectively")
         else:
             _echo("  no verify commands configured — add them to ctx.yaml before L1/L2")
-    _echo("L0 is active: work is journalled to disk, and the hook briefing costs")
-    _echo("~30 tokens per session (cap 61). See `claude plugin details ctx` for the")
-    _echo("plugin's own always-on footprint, which is separate and larger.")
+    measured = briefing.measure(layout, config, state.load(layout))
+    _echo(f"L0 is active: work is journalled to disk, and the hook briefing costs "
+          f"~{measured['approx_tokens']} tokens per session "
+          f"(cap ~{round(measured['cap'] / 3.6)}).")
+    _echo("`ctx budget` reports that as it changes. The plugin's own always-on")
+    _echo("footprint is separate and larger: `claude plugin details ctx`.")
     return 0
 
 
@@ -432,6 +435,17 @@ def cmd_status(args):
             nxt = plan_mod.next_wave(layout, current["plan"])
             _echo(f"   next: {'wave %d — /ctx:start' % nxt if nxt else 'plan complete'}")
 
+    if current.get("plan") and not (work.claim()[0] or current.get("unit")):
+        stray = _orchestrator_edits(layout, current["plan"])
+        if stray:
+            _echo("")
+            _echo("orchestrator discipline:")
+            _echo(f"  {len(stray)} file(s) edited from this session during an active")
+            _echo("  wave, owned by no unit. The orchestrator dispatches and reads")
+            _echo("  reports; editing source here is what makes its context grow.")
+            for path in stray[:5]:
+                _echo(f"    {path}")
+
     entries, earlier = journal.tail(layout, 8)
     _echo("")
     _echo("recent journal:")
@@ -440,6 +454,27 @@ def cmd_status(args):
     if earlier:
         _echo(f"  … {earlier} earlier entries")
     return 0
+
+
+def _orchestrator_edits(layout, slug):
+    """Files this session edited during a wave that belong to no unit.
+
+    Reads are the discipline that actually matters, and they are not observable
+    without a PostToolUse hook on every `Read` — a process spawn per file read,
+    which is too much to charge everyone for a diagnostic. Edits are free: they
+    are already journalled, and an orchestrator editing source is the same
+    mistake showing through.
+    """
+    owned = []
+    for unit in plan_mod.load_units(layout, slug):
+        owned.extend(unit.owns)
+    stray = []
+    for path in journal.recent_paths(layout, 20):
+        if path.startswith(".ctx/"):
+            continue
+        if not plan_mod.covers_any(path, owned) and path not in stray:
+            stray.append(path)
+    return stray
 
 
 def cmd_briefing(args):
@@ -511,6 +546,11 @@ def cmd_task(args):
     journal.append(layout, config, "task", slug, "opened")
     _echo(f"L1 tracked · task {slug}")
     _echo(f"file {layout.rel(path)}")
+    # Splitting a name from an objective is punctuation-guessing on the command
+    # people type most. Showing what it decided turns a silent wrong guess into
+    # a visible one, which is the difference between a bug and a prompt.
+    _echo(f"read as · name: {slug} · objective: {args.objective or '(none given)'}")
+    _echo("If that split is wrong: ctx task «name» --objective \"…\" --force")
     _echo("Fill in Objective and Acceptance criteria, then work normally.")
     return 0
 
@@ -1378,6 +1418,142 @@ def cmd_handoff(args):
 # phase 7 — hardening
 # --------------------------------------------------------------------------- #
 
+def _next_action(layout, config):
+    """(command, why). The one thing worth doing, from state alone.
+
+    Everything this reads was already on disk and already decidable; it was just
+    spread across `status`, `ask`, `plan-check` and `start`, so using the tool
+    meant knowing which level you were at and which command that level implied.
+    """
+    current = state.load(layout)
+    level = config_mod.normalise_level(current.get("level"))
+
+    behind, ahead = migrate_mod.pending(layout)
+    if ahead:
+        return "ctx migrate", "ledger files are newer than this plugin — upgrade it"
+    if behind:
+        return "ctx migrate", f"{len(behind)} ledger file(s) are on an older schema"
+
+    accepted = trust_mod.load(layout)
+    pending = [c for c, _s in trust_mod.declared(layout, config)
+               if not trust_mod.is_accepted(c, accepted)]
+    if pending:
+        return "ctx trust", (
+            f"{len(pending)} verify command(s) will not run until this machine "
+            "accepts them"
+        )
+
+    if level == "2":
+        spec = current.get("spec")
+        plan = current.get("plan")
+        if spec and not plan:
+            ready, blocking = spec_mod.ready(layout, spec)
+            if not ready:
+                return "/ctx:ask", (
+                    f"spec {spec} has {len(blocking)} unanswered blocking "
+                    "question(s); planning around them is the failure this exists "
+                    "to prevent"
+                )
+            return f"/ctx:plan {spec}", f"spec {spec} is ready to decompose"
+        if plan:
+            _grouped, problems = plan_mod.check(layout, plan)
+            if problems:
+                return "/ctx:doctor", (
+                    f"plan {plan} has {len(problems)} problem(s); nothing "
+                    "dispatches until they are fixed — `ctx plan-check` names them"
+                )
+            unit = work.claim()[0] or current.get("unit")
+            if unit:
+                return "/ctx:verify", f"unit {unit} is in progress — run its gate"
+            wave = plan_mod.next_wave(layout, plan)
+            if wave:
+                return "/ctx:start", f"plan {plan} has wave {wave} ready to dispatch"
+            return "/ctx:handoff", f"plan {plan} is complete — write the resume packet"
+        return "/ctx:spec", "at L2 with nothing active"
+
+    if level == "1":
+        task = current.get("task")
+        if not task:
+            return "/ctx:task", "at L1 with no task file"
+        item = work.active(layout, current)
+        if item is None:
+            return "/ctx:task", f"task {task} has no file on disk"
+        attempts = (current.get("attempts") or {}).get(item.attempt_key, 0)
+        if attempts:
+            return "/ctx:verify", (
+                f"the gate has blocked {task} {attempts} time(s) — see what is failing"
+            )
+        return "/ctx:verify", f"task {task} is active — run its gate when you are done"
+
+    recent = journal.recent_paths(layout, 3)
+    if recent:
+        return "/ctx:resume", "at L0 with recent work — pick up where you left off"
+    return "/ctx:task «goal»", (
+        "at L0 with nothing recorded. Stay here for anything you could finish in "
+        "one sitting; escalate only when criteria are worth writing down"
+    )
+
+
+def cmd_next(args):
+    """Name the single most useful next action, and why."""
+    layout, config = _loaded(args)
+    command, why = _next_action(layout, config)
+    _echo(f"next: {command}")
+    _echo(f"      {why}")
+    return 0
+
+
+def cmd_escalate(args):
+    """L1 -> L2, carrying the task file's objective and criteria into a spec.
+
+    Escalation used to mean abandoning the task and starting a spec from scratch,
+    at exactly the moment — work turning out larger than expected — when throwing
+    away the objective and criteria already written costs the most.
+    """
+    layout, config = _loaded(args)
+    current = state.load(layout)
+    slug = args.name or current.get("task")
+    if not slug:
+        return _needs(
+            "task name",
+            "Nothing is active at L1. Start one with /ctx:task, or name the task",
+            "to escalate: ctx escalate «task-name»",
+        )
+    slug = bundle.slugify(slug)
+    doc = frontmatter.read(layout.task_file(slug))
+    if doc is None:
+        _echo(f"no task file at {layout.rel(layout.task_file(slug))}")
+        return 1
+
+    objective = doc.section("objective", "goal").strip()
+    criteria = doc.list_items("acceptance criteria", "criteria")
+    spec_slug = bundle.slugify(args.spec or slug)
+    path, qpath = spec_mod.create(layout, spec_slug, objective, config.get("verify"))
+
+    # Only seed a spec we just created; never overwrite one already being worked.
+    spec_doc = frontmatter.read(path)
+    if criteria and "<checkable" in spec_doc.body:
+        spec_doc.body = spec_doc.body.replace(
+            "1. <checkable — name the observable, not the implementation>",
+            "\n".join(f"{i}. {c}" for i, c in enumerate(criteria, 1)),
+        )
+        spec_doc.meta["escalated_from"] = f"tasks/{slug}.md"
+        spec_doc.write(path)
+
+    doc.meta["status"] = "escalated"
+    doc.meta["escalated_to"] = f"specs/{spec_slug}/spec.md"
+    doc.write(layout.task_file(slug))
+
+    state.update(layout, level="2", spec=spec_slug, task=None)
+    journal.append(layout, config, "level", "L2", f"escalated {slug} -> {spec_slug}")
+    _echo(f"L2 planned · spec {spec_slug} (from task {slug})")
+    _echo(f"spec      {layout.rel(path)}")
+    _echo(f"questions {layout.rel(qpath)}")
+    _echo(f"carried over: objective and {len(criteria)} criterion/criteria")
+    _echo("The task file is kept and marked `escalated` — it is the record of why.")
+    return 0
+
+
 def cmd_trust(args):
     """Review and accept the verify commands this machine will execute.
 
@@ -1729,6 +1905,13 @@ def build_parser():
     p.add_argument("--force", action="store_true",
                    help="discard uncommitted work in the worktree")
     p.set_defaults(func=cmd_worktree)
+
+    sub.add_parser("next", help="the single most useful next action, from state").set_defaults(func=cmd_next)
+
+    p = sub.add_parser("escalate", help="L1 to L2, carrying the task into a spec")
+    p.add_argument("name", nargs="?", default=None)
+    p.add_argument("--spec", default=None, help="name the spec differently")
+    p.set_defaults(func=cmd_escalate)
 
     p = sub.add_parser("trust", help="review and accept the verify commands to run")
     p.add_argument("--yes", action="store_true", help="accept the listed commands")

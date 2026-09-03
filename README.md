@@ -187,8 +187,8 @@ initialised .ctx  profile=code  level=L0
   verify  npm run typecheck  (available; not yet run)
   verify  npm test  (available; not yet run)
 L0 is active: work is journalled to disk, and the hook briefing costs
-~30 tokens per session (cap 61). See `claude plugin details ctx` for the
-plugin's own always-on footprint, which is separate and larger.
+~26 tokens per session (cap ~61). `ctx budget` reports that as it changes. The
+plugin's own always-on footprint is separate and larger: `claude plugin details ctx`.
 ```
 
 That's the whole setup. `init` detects your project type, proposes verification
@@ -217,8 +217,8 @@ actually matters here.
 
 | Level | You write | Gates active | Briefing | Reach for it when |
 |---|---|---|---|---|
-| **L0 · trace** *(default)* | nothing | none | ~30 tok | Anything you'd finish in one sitting without a checklist. |
-| **L1 · tracked** | one task file | done-gate | ~96 tok | Criteria worth writing down; still one agent's work. |
+| **L0 · trace** *(default)* | nothing | none | ≤61 tok | Anything you'd finish in one sitting without a checklist. |
+| **L1 · tracked** | one task file | done-gate | ≤250 tok | Criteria worth writing down; still one agent's work. |
 | **L2 · planned** | spec + plan + units | ambiguity + done | ≤722 tok | Several pieces that could genuinely run independently. |
 
 ```
@@ -582,6 +582,8 @@ the point.
 | `/ctx:init` | Scaffold `.ctx/`, detect profile, propose verify commands |
 | `/ctx:status` | Level, active work, briefing budget, wave board, recent journal |
 | `/ctx:resume` | Expanded prior state, on demand |
+| `/ctx:next` | **Start here.** Names the single most useful next action, from ledger state |
+| `/ctx:escalate` | Promote the active task to a spec, carrying its criteria across |
 | `/ctx:doctor` | Check layout, budgets, verify commands, gate state |
 | **Level 1** | |
 | `/ctx:task «name» [objective]` | Track one change at L1 with a done-gate |
@@ -999,17 +1001,22 @@ Two separate costs, and they're often confused:
 
 | | Cost | When |
 |---|---|---|
-| **Plugin always-on** | ~557 tok | every session, every project, at user scope |
-| **Hook briefing** | ~30 tok (L0) · ~96 (L1) · ≤722 (L2) | every session in a ledger project |
+| **Plugin always-on** | measure it — see below | every session, every project, at user scope |
+| **Hook briefing** | capped at 61 tok (L0) · 250 (L1) · 722 (L2) | every session in a ledger project |
 | **Hooks themselves** | 0 | harness-side; no model context at all |
 | **Per turn** | 0 | `UserPromptSubmit` is silent unless drift is detected |
 
-So a real L0 session costs roughly **587 tokens**. Measure it yourself rather
-than trusting this figure as it ages:
+Both halves are measurable, so this file does not hardcode either — a figure
+written down in two places is a figure that will eventually disagree with itself,
+which is a poor look for a tool whose pitch is honest context accounting:
 
 ```bash
-claude plugin details ctx
+ctx budget                  # this project's briefing: predicted and measured
+claude plugin details ctx   # the plugin's own always-on footprint
 ```
+
+`ctx budget` reports the briefing per level *and* the median actually injected
+across recorded sessions, so the cap is observable rather than aspirational.
 
 Four design decisions keep it there:
 
@@ -1142,7 +1149,7 @@ git worktree prune          # if you used the session tier
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests      # 272 tests, no dependencies
+python3 -m unittest discover -s tests      # stdlib only, no dependencies
 claude plugin validate . --strict
 ```
 

@@ -8,12 +8,16 @@
 |---|---|---|
 | Blocking | 9 | 9 |
 | Enterprise readiness | 11 | 11 |
-| Flow | 5 | 0 |
-| Record | 3 | 0 |
+| Flow | 5 | 4 |
+| Record | 3 | 3 |
 
-**Status:** Waves 1–3 complete — F01–F21. Suite is 272 tests (was 193); the 79
-added pin the behaviour that was wrong rather than the shape of the fix. Wave 4
-(flow and documentation, F22–F28) outstanding.
+**Status:** 27 of 28 fixed. Suite is 298 tests (was 193); the 105 added pin the
+behaviour that was wrong rather than the shape of the fix.
+
+**F22 (command consolidation) is deliberately not done** — it is the one finding
+that is a product decision rather than a defect, and collapsing verbs people have
+muscle memory for is a breaking change worth asking about rather than imposing.
+See the finding for the options.
 
 One correction found while fixing F02: worktree-tier units were **already**
 isolated, because each worktree is a checkout carrying its own `.ctx/` and
@@ -352,9 +356,9 @@ caught.
 
 ## 4. Flow
 
-### F22 — Nineteen slash commands for a tool that argues against ceremony
+### F22 — Too many slash commands for a tool that argues against ceremony  ·  **open, needs a decision**
 
-`commands/` · 19 files
+`commands/` · 20 files (18 at audit time; `next` and `escalate` added since)
 
 `save`, `load`, `list` and `promote` are four commands over one noun. `status`, `resume`
 and `doctor` overlap heavily in what they print. The skill file warns that "a system that
@@ -364,7 +368,13 @@ same failure wearing a different coat.
 **Fix:** collapse the bundle verbs into one `/ctx:context` with subcommands. Target ten
 surfaced commands; keep the rest reachable through the CLI.
 
-### F23 — There is no "what now"
+**Status:** open. This is the one finding that is a product decision rather than a defect —
+`/ctx:save` and `/ctx:load` are the memory verbs people learn first, and removing them is a
+breaking change for existing users in exchange for a tidier palette. `/ctx:next` (F23) took
+most of the pressure off by removing the need to *know* the palette at all. Raised rather
+than decided.
+
+### F23 — There is no "what now"  ·  **fixed**
 
 `commands/`
 
@@ -377,7 +387,7 @@ Nothing exposes that inference to the user.
 else reachable but unprompted. This is the highest-leverage addition on the list — it turns
 three levels of machinery into one entry point.
 
-### F24 — Escalation is a cliff, not a ramp
+### F24 — Escalation is a cliff, not a ramp  ·  **fixed**
 
 `ctx/cli.py` → `cmd_task`, `cmd_spec`
 
@@ -389,7 +399,7 @@ already written is most expensive.
 **Fix:** `ctx escalate` that seeds the spec's Intent and Acceptance criteria from the
 active task and links back to it.
 
-### F25 — Name-versus-objective splitting is guesswork
+### F25 — Name-versus-objective splitting is guesswork  ·  **fixed**
 
 `ctx/cli.py:67-94`
 
@@ -401,7 +411,7 @@ heuristic, sitting on the most-used command.
 **Fix:** have the command file pass the name and objective as distinct flags, and let the
 prompt do the splitting — a model is better at this than a regex, and it can ask.
 
-### F26 — The orchestrator is asked to obey a rule nothing checks
+### F26 — The orchestrator is asked to obey a rule nothing checks  ·  **fixed**
 
 `ctx/dispatch.py:79` · `commands/start.md`
 
@@ -418,7 +428,7 @@ aspirational — the same move the briefing budget already makes.
 
 ## 5. Record
 
-### F27 — The two cost figures disagree, and the model reads the wrong one
+### F27 — The two cost figures disagree, and the model reads the wrong one  ·  **fixed**
 
 `README.md:899-904` vs `skills/ledger/SKILL.md:50-53`
 
@@ -430,7 +440,7 @@ worst possible place to be inconsistent.
 **Fix:** measure once, write it in one place, and have the other reference it. Better: have
 `ctx budget` print the live figure and stop hardcoding it in prose.
 
-### F28 — Stale test count, and one documented invocation that fails
+### F28 — Stale test count, and one documented invocation that fails  ·  **fixed**
 
 `README.md:1042`
 
@@ -504,12 +514,26 @@ A composite action for consumers was **not** shipped: the workflow in the README
 seven-line copy-paste, and an action to maintain is not obviously better than that. Say if
 you want one.
 
-### Wave 4 — ~1 day · F22 F23 F24 F25 F26 F27 F28
+### Wave 4 — done except F22 · F23 F24 F25 F26 F27 F28
 
-- **Streamline the flow.** `/ctx:next` as the single entry point; collapse the four bundle
-  verbs; `ctx escalate` for L1 → L2; explicit name and objective flags.
-- **Reconcile the record.** One source for the cost figures; `tests/__init__.py`; the count
-  asserted in CI rather than in prose.
+- **Streamlined the flow.** `/ctx:next` reads state and names the one action — blocked spec
+  to `/ctx:ask`, ready spec to `/ctx:plan`, dispatchable wave to `/ctx:start`, unaccepted
+  command to `ctx trust`. `ctx escalate` carries a task's objective and criteria into a spec
+  and keeps the task file as the record of why the work grew. `ctx task` now prints the
+  name/objective split it made and how to correct it, so a wrong guess is visible.
+- **Measured what the orchestrator rule can measure.** `ctx status` reports source files
+  edited during an active wave that no unit owns. Reads — the discipline that actually
+  matters — stay unobserved: catching them needs a `PostToolUse` hook on every `Read`, a
+  process spawn per file read, which is too much to charge everyone for a diagnostic. Said
+  plainly rather than half-built.
+- **Reconciled the record.** Neither README nor SKILL.md hardcodes the plugin's always-on
+  cost now; both point at `ctx budget` and `claude plugin details ctx`, and a test asserts
+  the stale figures never come back. `tests/__init__.py` makes the discovery form people
+  reach for first actually work. The README no longer claims a test count.
+
+Found while doing it: SKILL.md referenced `/ctx:budget`, which is CLI-only — a dead end the
+model would walk into. Fixed, plus a test that every `/ctx:` reference in the docs resolves
+to a shipped command file.
 
 ---
 

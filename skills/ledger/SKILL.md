@@ -47,12 +47,19 @@ is lost to compaction; state in a file is not. Practical consequences:
 
 ## Cost discipline
 
-The briefing injected at session start is capped per level: 61 tokens at L0, 250
-at L1, 722 at L2 — measured around 30 and 96 in practice for L0 and L1. On top of
-that the plugin costs ~425 always-on tokens per session regardless of level, so a
-real L0 session is around 455. When `/ctx:doctor` reports a budget as OVER, the
-fix is to shorten the objective and criteria on disk, not to raise the cap.
-Raising it recreates the problem the ledger exists to solve.
+The briefing injected at session start is capped per level — 61 tokens at L0, 250
+at L1, 722 at L2 — and typically lands well under the cap. The plugin's own
+always-on cost is separate and larger.
+
+Do not quote a figure from memory for either. Two hardcoded numbers in two files
+is how they came to disagree in the first place. Run them instead:
+
+- `ctx budget` — this project's briefing, predicted and measured
+- `claude plugin details ctx` — the plugin's own always-on footprint
+
+When `/ctx:doctor` reports a budget as OVER, the fix is to shorten the objective
+and criteria on disk, not to raise the cap. Raising it recreates the problem the
+ledger exists to solve.
 
 Two habits that keep cost down:
 
