@@ -3,7 +3,7 @@ description: Land a unit's worktree branch after its gate passes
 allowed-tools: Bash, Read
 argument-hint: «unit-name»
 ---
-!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" merge $ARGUMENTS`
+!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" merge "$ARGUMENTS"`
 
 Read the result above.
 

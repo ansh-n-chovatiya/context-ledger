@@ -49,6 +49,81 @@ def _echo(*parts):
     print(*parts)
 
 
+# Slash commands splice whatever the user typed into a shell command line, so an
+# argument reaches argparse either as one quoted token or as loose words,
+# depending on the command file and on what the text contains. Both shapes have
+# to mean the same thing, which is what the three helpers below are for.
+_SEPARATORS = ("—", "–", "--", "-", ":", "|")
+
+
+def _free_text(words):
+    """Trailing words as one string, minus the dash a user puts before prose."""
+    parts = list(words or [])
+    while parts and parts[0] in _SEPARATORS:
+        parts.pop(0)
+    return " ".join(parts).strip()
+
+
+def _split_name(args):
+    """Separate the name from the prose that follows it, if any.
+
+    Command files quote `$ARGUMENTS` so an apostrophe cannot split the shell
+    command apart, which means everything the user typed can arrive as a single
+    token. Three shapes have to be told apart, and only punctuation can do it:
+
+      `add-auth let users log in`   → name `add-auth`, objective the rest
+      `export-api — expose flows`   → name `export-api`, objective the rest
+      `Fix Token Refresh`           → one title, no objective
+
+    A kebab-case first word or an explicit dash means a name was given and prose
+    follows. Plain words with neither are a title, and slicing one up would
+    produce a task called `fix`.
+    """
+    words = (args.name or "").split() + list(getattr(args, "rest", None) or [])
+    if not words:
+        args.name, args.rest = None, []
+        return None
+    for index, word in enumerate(words):
+        if index and word in _SEPARATORS:
+            args.name, args.rest = " ".join(words[:index]), words[index + 1:]
+            return args.name
+    if len(words) > 1 and "-" in words[0]:
+        args.name, args.rest = words[0], words[1:]
+        return args.name
+    args.name, args.rest = " ".join(words), []
+    return args.name
+
+
+def _named(args):
+    """`name` plus any trailing words, for commands whose name is one token."""
+    words = ([args.name] if getattr(args, "name", None) else []) + list(
+        getattr(args, "rest", None) or []
+    )
+    return _free_text(words)
+
+
+def _active_slug(layout, explicit, key):
+    """The named or currently-active spec/plan slug, or "" when there is none.
+
+    `slugify("")` returns "context", so slugifying an empty fallback invents a
+    slug and makes every `if not slug` guard below unreachable.
+    """
+    name = explicit or state.load(layout).get(key)
+    return bundle.slugify(name) if name else ""
+
+
+def _needs(what, *hints):
+    """No name was given. Say what is missing and let the prompt body ask.
+
+    Exiting 0 is deliberate: a non-zero exit makes Claude Code abort the whole
+    slash command, so the user sees an argparse dump instead of a question.
+    """
+    _echo(f"no {what} given.")
+    for hint in hints:
+        _echo(hint)
+    return 0
+
+
 def _detect_profile(root):
     checks = (
         ("infra", ("main.tf", "terraform")),
@@ -260,7 +335,16 @@ def cmd_level(args):
 def cmd_task(args):
     """Escalate to L1: exactly one file, no spec directory, no plan."""
     layout, config = _loaded(args)
+    _split_name(args)
+    if not args.name:
+        return _needs(
+            "task name",
+            "Ask what this change should be called — a short kebab-case name —",
+            "then run: ctx task «name» --objective \"«one sentence»\"",
+        )
     slug = bundle.slugify(args.name)
+    if not args.objective:
+        args.objective = _free_text(args.rest) or None
     path = layout.task_file(slug)
     if not path.exists() or args.force:
         meta = {
@@ -295,6 +379,12 @@ def cmd_drop(args):
 
 def cmd_save(args):
     layout, config = _loaded(args)
+    args.name = _named(args)
+    if not args.name:
+        return _needs(
+            "bundle name",
+            "Ask what to call this context, then run: ctx save «name» --stdin",
+        )
     if args.stdin:
         body = sys.stdin.read()
     elif args.file:
@@ -314,34 +404,63 @@ def cmd_save(args):
 
 def cmd_load(args):
     layout, _config = _loaded(args)
-    path = bundle.resolve(layout, args.name)
+    name = _named(args)
+    if not name:
+        _echo("no bundle name given. Saved contexts:")
+        _list_bundles(layout)
+        _echo("Ask which one to load, then run: ctx load «name»")
+        return 0
+    path = bundle.resolve(layout, name)
     if path is None:
-        _echo(f"no context named {args.name!r} — /ctx:list to see what exists")
-        return 1
+        _echo(f"no context named {name!r}. Saved contexts:")
+        _list_bundles(layout)
+        return 0
     sys.stdout.write(path.read_text(encoding="utf-8"))
     return 0
 
 
 def cmd_promote(args):
     layout, config = _loaded(args)
-    target = bundle.promote(layout, args.name)
+    name = _named(args)
+    if not name:
+        _echo("no bundle name given. Saved contexts:")
+        _list_bundles(layout)
+        _echo("Ask which one to promote, then run: ctx promote «name»")
+        return 0
+    target = bundle.promote(layout, name)
     if target is None:
-        _echo(f"no context named {args.name!r}")
-        return 1
-    journal.append(layout, config, "promote", args.name, "to global store")
+        _echo(f"no context named {name!r}. Saved contexts:")
+        _list_bundles(layout)
+        return 0
+    journal.append(layout, config, "promote", name, "to global store")
     _echo(f"promoted to {target}")
     return 0
 
 
-def cmd_list(args):
-    layout, _config = _loaded(args)
+def _list_units(layout, slug):
+    units = plan_mod.load_units(layout, slug)
+    if not units:
+        _echo("  none yet — ctx plan-unit «NN-name»")
+        return units
+    for unit in units:
+        _echo(f"  {unit.name:<24}{unit.status}")
+    return units
+
+
+def _list_bundles(layout):
     rows = bundle.listing(layout)
     if not rows:
-        _echo("no saved contexts — /ctx:save «name»")
-        return 0
+        _echo("  none saved yet — /ctx:save «name»")
+        return rows
     width = max(len(name) for _s, name, _p, _sum in rows)
     for scope, name, _path, summary in rows:
-        _echo(f"{scope:<8} {name:<{width}}  {summary}")
+        _echo(f"  {scope:<8} {name:<{width}}  {summary}")
+    return rows
+
+
+def cmd_list(args):
+    layout, _config = _loaded(args)
+    _list_bundles(layout)
     return 0
 
 
@@ -436,8 +555,16 @@ def cmd_doctor(args):
 def cmd_spec(args):
     """Escalate to L2 and scaffold the spec. Gate 1 lives in its questions file."""
     layout, config = _loaded(args)
+    _split_name(args)
+    if not args.name:
+        return _needs(
+            "spec name",
+            "Ask what to call this piece of work, then run:",
+            "ctx spec «short-name» «what you want»",
+        )
     slug = bundle.slugify(args.name)
-    path, qpath = spec_mod.create(layout, slug, args.intent or "", config.get("verify"))
+    intent = args.intent or _free_text(args.rest)
+    path, qpath = spec_mod.create(layout, slug, intent, config.get("verify"))
     state.update(layout, level="2", spec=slug)
     journal.append(layout, config, "spec", slug, "opened")
     _echo(f"L2 planned · spec {slug}")
@@ -459,10 +586,10 @@ def cmd_question(args):
 def cmd_ask(args):
     """List what still has to be answered before anything gets built."""
     layout, _config = _loaded(args)
-    slug = bundle.slugify(args.name or state.load(layout).get("spec") or "")
+    slug = _active_slug(layout, args.name, "spec")
     if not slug:
         _echo("no active spec — /ctx:spec «intent» first")
-        return 1
+        return 0
     blocking, non_blocking, resolved = spec_mod.questions(layout, slug)
     if blocking:
         _echo(f"BLOCKING ({len(blocking)}) — these must be answered before planning:")
@@ -483,7 +610,10 @@ def cmd_ask(args):
 
 def cmd_resolve(args):
     layout, config = _loaded(args)
-    slug = bundle.slugify(args.name or state.load(layout).get("spec") or "")
+    slug = _active_slug(layout, args.name, "spec")
+    if not slug:
+        _echo("no active spec — /ctx:spec «intent» first")
+        return 0
     if not spec_mod.resolve(layout, slug, args.question, args.answer):
         _echo(f"no open question matching {args.question!r}")
         return 1
@@ -500,7 +630,11 @@ def cmd_resolve(args):
 def cmd_spec_ready(args):
     """Gate 1 as an exit code, so CI can enforce it too."""
     layout, _config = _loaded(args)
-    slug = bundle.slugify(args.name or state.load(layout).get("spec") or "")
+    slug = _active_slug(layout, args.name, "spec")
+    if not slug:
+        # A gate, so this stays non-zero: "no spec" is not "spec is ready".
+        _echo("no active spec — nothing to gate")
+        return 1
     ready, blocking = spec_mod.ready(layout, slug)
     if ready:
         _echo(f"spec {slug}: ready")
@@ -513,12 +647,20 @@ def cmd_spec_ready(args):
 
 def cmd_decide(args):
     layout, config = _loaded(args)
-    slug = bundle.slugify(args.title)
+    # Taking the title as loose words means an apostrophe or a quote in it can
+    # no longer split the shell command apart.
+    title = _free_text(args.title)
+    if not title:
+        return _needs(
+            "decision title",
+            "Ask what was decided in one line, then run: ctx decide «title»",
+        )
+    slug = bundle.slugify(title)
     path = spec_mod.write_decision(
-        layout, args.title, slug, args.context or "", args.decision or "",
+        layout, title, slug, args.context or "", args.decision or "",
         args.consequences or "",
     )
-    journal.append(layout, config, "decide", layout.rel(path), args.title[:60])
+    journal.append(layout, config, "decide", layout.rel(path), title[:60])
     _echo(f"wrote {layout.rel(path)}")
     return 0
 
@@ -537,7 +679,7 @@ def cmd_verify(args):
     item = work.active(layout)
     if item is None:
         _echo("nothing active to verify — /ctx:task or /ctx:spec first")
-        return 1
+        return 0
 
     if args.sign_off:
         item.record(args.sign_off, args.note or "")
@@ -588,8 +730,16 @@ def cmd_verify(args):
 def cmd_plan(args):
     """Scaffold a plan. Gate 1 is enforced here: an ambiguous spec cannot be planned."""
     layout, config = _loaded(args)
+    if not args.name:
+        return _needs(
+            "plan name",
+            "Ask what to call the plan, then run: ctx plan «name»",
+        )
     slug = bundle.slugify(args.name)
-    spec_slug = bundle.slugify(args.spec or slug)
+    # The plan rarely shares the spec's name, so fall back to the spec that is
+    # actually active before assuming they match.
+    active_spec = state.load(layout).get("spec")
+    spec_slug = bundle.slugify(args.spec or active_spec or slug)
 
     if spec_mod.spec_path(layout, spec_slug).is_file():
         ready, blocking = spec_mod.ready(layout, spec_slug)
@@ -602,7 +752,7 @@ def cmd_plan(args):
     elif not args.no_spec:
         _echo(f"no spec at {layout.rel(spec_mod.spec_path(layout, spec_slug))}")
         _echo("run /ctx:spec first, or pass --no-spec to plan without one")
-        return 1
+        return 0
 
     plan_mod.create(layout, slug, spec_slug)
     created = []
@@ -629,10 +779,10 @@ def cmd_plan(args):
 
 def cmd_plan_unit(args):
     layout, config = _loaded(args)
-    slug = bundle.slugify(args.plan or state.load(layout).get("plan") or "")
+    slug = _active_slug(layout, args.plan, "plan")
     if not slug:
         _echo("no active plan — /ctx:plan «slug» first")
-        return 1
+        return 0
     path, fresh = plan_mod.scaffold_unit(
         layout, slug, args.name, objective=args.objective or "",
         tier=args.tier, owns=args.owns or [],
@@ -645,10 +795,10 @@ def cmd_plan_unit(args):
 def cmd_plan_check(args):
     """Validate, compute waves from depends_on, and derive plan.json."""
     layout, config = _loaded(args)
-    slug = bundle.slugify(args.name or state.load(layout).get("plan") or "")
+    slug = _active_slug(layout, args.name, "plan")
     if not slug:
         _echo("no active plan — /ctx:plan «slug» first")
-        return 1
+        return 0
 
     grouped, problems = plan_mod.check(layout, slug)
     if problems:
@@ -685,16 +835,19 @@ def cmd_plan_check(args):
 def cmd_start(args):
     """Print the dispatch brief for a wave. Spawns nothing itself."""
     layout, config = _loaded(args)
-    slug = bundle.slugify(args.name or state.load(layout).get("plan") or "")
+    slug = _active_slug(layout, args.name, "plan")
     if not slug:
         _echo("no active plan — /ctx:plan «slug» first")
-        return 1
+        return 0
 
     level, units, problems, budget = dispatch.prepare(layout, config, slug, args.wave)
     if problems:
+        # Nothing is dispatched, and the reason is the output. Exiting non-zero
+        # would abort `/ctx:start` and throw that reason away.
+        _echo(f"plan {slug}: not ready to dispatch — nothing was started")
         for problem in problems:
             _echo(f"  - {problem}")
-        return 1
+        return 0
     if not units:
         _echo(f"wave {level}: nothing left to dispatch")
         return 0
@@ -722,10 +875,15 @@ def cmd_start(args):
 def cmd_merge(args):
     """Land a unit's worktree branch. Refuses past a failed gate or stray writes."""
     layout, config = _loaded(args)
-    slug = bundle.slugify(args.plan or state.load(layout).get("plan") or "")
+    slug = _active_slug(layout, args.plan, "plan")
     if not slug:
         _echo("no active plan — /ctx:plan «slug» first")
-        return 1
+        return 0
+    if not args.name:
+        _echo(f"no unit name given. Units in plan {slug}:")
+        _list_units(layout, slug)
+        _echo("Ask which unit to merge, then run: ctx merge «unit-name»")
+        return 0
 
     ok, messages = worktree.merge(
         layout, config, slug, args.name, skip_gate=args.skip_gate
@@ -818,15 +976,20 @@ def cmd_worktree(args):
 def cmd_unit(args):
     """Focus a unit so the done-gate applies to it, or record its outcome."""
     layout, config = _loaded(args)
-    current = state.load(layout)
-    slug = bundle.slugify(args.plan or current.get("plan") or "")
+    slug = _active_slug(layout, args.plan, "plan")
     if not slug:
         _echo("no active plan — /ctx:plan «slug» first")
-        return 1
+        return 0
+
+    if not args.name:
+        _echo(f"no unit name given. Units in plan {slug}:")
+        _list_units(layout, slug)
+        return 0
 
     unit = plan_mod.find_unit(layout, slug, args.name)
     if unit is None:
-        _echo(f"no unit {args.name!r} in plan {slug}")
+        _echo(f"no unit {args.name!r} in plan {slug}. Units in plan {slug}:")
+        _list_units(layout, slug)
         return 1
 
     unit.set(status=args.status)
@@ -1092,24 +1255,28 @@ def build_parser():
     p.set_defaults(func=cmd_level)
 
     p = sub.add_parser("task", help="escalate to L1 with a single task file")
-    p.add_argument("name")
+    p.add_argument("name", nargs="?", default=None)
+    p.add_argument("rest", nargs="*", help="objective, as loose words")
     p.add_argument("--objective", default=None)
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_task)
 
     p = sub.add_parser("save", help="write a portable context bundle")
-    p.add_argument("name")
+    p.add_argument("name", nargs="?", default=None)
+    p.add_argument("rest", nargs="*", help="more of the name, as loose words")
     p.add_argument("--stdin", action="store_true", help="read the bundle body from stdin")
     p.add_argument("--file", default=None)
     p.add_argument("--tag", action="append", default=[])
     p.set_defaults(func=cmd_save)
 
     p = sub.add_parser("load", help="print a bundle: project, then global, then path")
-    p.add_argument("name")
+    p.add_argument("name", nargs="?", default=None)
+    p.add_argument("rest", nargs="*", help="more of the name, as loose words")
     p.set_defaults(func=cmd_load)
 
     p = sub.add_parser("promote", help="copy a bundle into the global store")
-    p.add_argument("name")
+    p.add_argument("name", nargs="?", default=None)
+    p.add_argument("rest", nargs="*", help="more of the name, as loose words")
     p.set_defaults(func=cmd_promote)
 
     p = sub.add_parser("journal", help="append one entry")
@@ -1124,7 +1291,8 @@ def build_parser():
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("spec", help="escalate to L2 and scaffold a spec")
-    p.add_argument("name")
+    p.add_argument("name", nargs="?", default=None)
+    p.add_argument("rest", nargs="*", help="intent, as loose words")
     p.add_argument("--intent", default=None)
     p.set_defaults(func=cmd_spec)
 
@@ -1149,7 +1317,7 @@ def build_parser():
     p.set_defaults(func=cmd_spec_ready)
 
     p = sub.add_parser("decide", help="record an ADR")
-    p.add_argument("title")
+    p.add_argument("title", nargs="*", help="the decision, as loose words")
     p.add_argument("--context", default=None)
     p.add_argument("--decision", default=None)
     p.add_argument("--consequences", default=None)
@@ -1164,7 +1332,7 @@ def build_parser():
     p.set_defaults(func=cmd_verify)
 
     p = sub.add_parser("plan", help="scaffold a plan (refuses if the spec is ambiguous)")
-    p.add_argument("name")
+    p.add_argument("name", nargs="?", default=None)
     p.add_argument("--spec", default=None)
     p.add_argument("--unit", action="append", default=[])
     p.add_argument("--no-spec", action="store_true", help="plan without a spec")
@@ -1190,7 +1358,7 @@ def build_parser():
     p.set_defaults(func=cmd_start)
 
     p = sub.add_parser("merge", help="land a unit's worktree branch after its gate passes")
-    p.add_argument("name")
+    p.add_argument("name", nargs="?", default=None)
     p.add_argument("--plan", default=None)
     p.add_argument("--skip-gate", action="store_true",
                    help="merge without running the unit's verify checks")
@@ -1220,7 +1388,7 @@ def build_parser():
     p.set_defaults(func=cmd_ci)
 
     p = sub.add_parser("unit", help="focus a unit, or record its outcome")
-    p.add_argument("name")
+    p.add_argument("name", nargs="?", default=None)
     p.add_argument("--plan", default=None)
     p.add_argument("--status", choices=list(plan_mod.STATUSES), default="running")
     p.set_defaults(func=cmd_unit)
@@ -1232,6 +1400,12 @@ def build_parser():
     return parser
 
 
+# Gates and CI entry points must still fail loudly on a missing ledger. Every
+# other command is something a person typed, and a non-zero exit there makes
+# Claude Code abort the slash command before the prompt body can explain itself.
+HARD_FAIL = frozenset({"verify", "ci", "spec-ready", "plan-check", "doctor", "migrate"})
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
@@ -1239,6 +1413,9 @@ def main(argv=None):
     except SystemExit as exc:
         message = str(exc)
         if message and not message.isdigit():
-            print(message, file=sys.stderr)
-            return 2
+            if args.command in HARD_FAIL:
+                print(message, file=sys.stderr)
+                return 2
+            print(message)
+            return 0
         raise

@@ -233,10 +233,14 @@ class TestGateOnePlansOnlyReadySpecs(PlanFixture):
         self.assertEqual(state.load(self.layout)["plan"], self.slug)
 
     def test_a_missing_spec_is_refused_unless_waived(self):
+        # The refusal is the missing plan directory, not the exit code: exiting
+        # non-zero would abort `/ctx:plan` before it could say what to do.
         code, out = self.cli("plan", "no-such-plan")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
         self.assertIn("run /ctx:spec first", out)
+        self.assertFalse(plan_mod.readme_path(self.layout, "no-such-plan").exists())
         self.assertEqual(self.cli("plan", "no-such-plan", "--no-spec")[0], 0)
+        self.assertTrue(plan_mod.readme_path(self.layout, "no-such-plan").exists())
 
 
 class TestDispatch(PlanFixture):
@@ -264,8 +268,12 @@ class TestDispatch(PlanFixture):
         self.unit("02-b", owns=["src/x.py"])
         self.cli("plan", self.slug, "--no-spec")
         code, out = self.cli("start")
-        self.assertEqual(code, 1)
+        # The refusal is that no brief is emitted and the reason is printed.
+        # Exiting non-zero would abort `/ctx:start` and discard that reason.
+        self.assertEqual(code, 0)
         self.assertIn("both own", out)
+        self.assertIn("nothing was started", out)
+        self.assertNotIn("Dispatch these", out)
 
     def test_wave_budget_cap_blocks_dispatch(self):
         from ctx import miniyaml
@@ -280,8 +288,10 @@ class TestDispatch(PlanFixture):
         self.layout.config.write_text(miniyaml.dumps(data) + "\n", encoding="utf-8")
 
         code, out = self.cli("start")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
         self.assertIn("budget", out)
+        self.assertIn("nothing was started", out)
+        self.assertNotIn("Dispatch these", out)
 
     def test_session_tier_without_a_repo_says_why(self):
         """The fixture has no real git repo, so this must fail loudly, not silently."""

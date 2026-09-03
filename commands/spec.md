@@ -3,7 +3,10 @@ description: Turn an intent into checkable criteria, asking before assuming
 allowed-tools: Bash, Read, Grep, Glob, Edit, AskUserQuestion
 argument-hint: «short-name» — «what you want»
 ---
-!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" spec $ARGUMENTS`
+!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" spec "$ARGUMENTS"`
+
+If it reported that no name was given, ask what to call this piece of work and
+what they want, run it again, then continue.
 
 Now do the work this command exists for: **surface what you would otherwise assume.**
 

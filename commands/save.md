@@ -3,7 +3,7 @@ description: Save current understanding as a portable context bundle
 allowed-tools: Bash
 argument-hint: «name» [--tag x]
 ---
-Compose a context bundle for `$1` and write it.
+Compose a context bundle named `$ARGUMENTS` and write it.
 
 Use exactly these sections in this order. The fixed schema is what lets another
 session, another person, or a different model entirely pick the file up:

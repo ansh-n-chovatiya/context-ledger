@@ -448,10 +448,14 @@ class TestVerifyCommand(Fixture):
         self.assertEqual(code, 2, "2 = nothing could run")
         self.assertIn("ctx.yaml problem", out)
 
-    def test_refuses_when_nothing_is_active(self):
+    def test_says_so_when_nothing_is_active(self):
+        # Exit 0, because there is no gate to fail — L0 has nothing to verify.
+        # A non-zero exit here would abort the whole `/ctx:verify` slash command
+        # before the prompt body could explain what to do instead.
         code, out = self.cli("verify")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
         self.assertIn("nothing active", out)
+        self.assertNotIn("PASS", out)
 
     def test_warns_when_no_checks_are_configured(self):
         self.cli("task", "gated")

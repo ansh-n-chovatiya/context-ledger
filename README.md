@@ -558,11 +558,11 @@ the point.
 | `/ctx:resume` | Expanded prior state, on demand |
 | `/ctx:doctor` | Check layout, budgets, verify commands, gate state |
 | **Level 1** | |
-| `/ctx:task «name»` | Track one change at L1 with a done-gate |
+| `/ctx:task «name» [objective]` | Track one change at L1 with a done-gate |
 | `/ctx:verify` | Run the done-gate by hand; `--sign-off rubric\|human` |
 | `/ctx:drop` | Return to L0 trace, keeping the journal |
 | **Level 2** | |
-| `/ctx:spec «name»` | Intent → checkable criteria → blocking questions |
+| `/ctx:spec «name» [— intent]` | Intent → checkable criteria → blocking questions |
 | `/ctx:ask [name]` | Show and ask what's still blocking a spec |
 | `/ctx:plan «name»` | Decompose a ready spec into dispatchable units |
 | `/ctx:start [--wave N]` | Dispatch brief for the next wave |
@@ -574,6 +574,17 @@ the point.
 | `/ctx:list` | Saved bundles, project and global |
 | `/ctx:promote «name»` | Copy a bundle to the global store |
 | `/ctx:handoff [name]` | Resume packet for another session, person or model |
+
+Arguments are free text, not shell tokens. Claude Code splices what you typed
+into the command line unquoted, so `/ctx:task add-search let users search flows`
+and `/ctx:decide don't cache refresh tokens` both work without quoting. Every
+command run with no arguments reports what it needs instead of failing, because
+a non-zero exit aborts the slash command before its prompt can ask you.
+
+**Exit codes.** A command exits non-zero only when a check *failed* or a refusal
+is deliberate — a failing gate, an unanswered blocking question, an ownership
+collision, a merge that did not land. Having nothing to do yet (no ledger, no
+active task, no plan, no name given) exits 0 and says so.
 
 ### CLI
 

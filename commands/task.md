@@ -3,9 +3,12 @@ description: Track one change at L1 with a done-gate
 allowed-tools: Bash, Read, Edit
 argument-hint: «short-name» [objective]
 ---
-!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" task $ARGUMENTS`
+!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" task "$ARGUMENTS"`
 
-Now open the task file printed above and fill in two sections:
+If it reported that no name was given, ask the user for a short kebab-case
+name and a one-sentence objective, run it again, and continue from there.
+
+Otherwise open the task file printed above and fill in two sections:
 
 **Objective** — one sentence, present tense, describing the observable outcome.
 
