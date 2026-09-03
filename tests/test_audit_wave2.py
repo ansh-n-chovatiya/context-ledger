@@ -218,7 +218,7 @@ class TestCheckWorkingDirectory(Fixture):
         self.write("apps/web/marker.txt", "here\n")
         results, verdict = verify.run(
             self.layout, self.config,
-            self.trust([{"kind": "cmd", "run": "test -f marker.txt", "cwd": "apps/web"}]),
+            self.trust([{"kind": "cmd", "run": self.py("import os, sys; sys.exit(0 if os.path.isfile('marker.txt') else 1)"), "cwd": "apps/web"}]),
             cwd=self.root, key="mono",
         )
         self.assertEqual(verdict, verify.PASS, results[0].message)
@@ -227,7 +227,7 @@ class TestCheckWorkingDirectory(Fixture):
         self.write("apps/web/marker.txt", "here\n")
         _results, verdict = verify.run(
             self.layout, self.config,
-            self.trust([{"kind": "cmd", "run": "test -f marker.txt"}]),
+            self.trust([{"kind": "cmd", "run": self.py("import os, sys; sys.exit(0 if os.path.isfile('marker.txt') else 1)")}]),
             cwd=self.root, key="mono",
         )
         self.assertEqual(verdict, verify.FAIL)
@@ -235,7 +235,7 @@ class TestCheckWorkingDirectory(Fixture):
     def test_a_missing_cwd_is_a_configuration_error_not_a_work_failure(self):
         results, verdict = verify.run(
             self.layout, self.config,
-            self.trust([{"kind": "cmd", "run": "true", "cwd": "apps/nope"}]),
+            self.trust([{"kind": "cmd", "run": self.py("pass"), "cwd": "apps/nope"}]),
             cwd=self.root, key="mono",
         )
         self.assertEqual(verdict, verify.ERROR, "never blocking")
@@ -244,8 +244,9 @@ class TestCheckWorkingDirectory(Fixture):
     def test_env_is_layered_over_the_session(self):
         results, verdict = verify.run(
             self.layout, self.config,
-            self.trust([{"kind": "cmd", "run": '[ "$CTX_PROBE" = "yes" ]',
-                         "env": {"CTX_PROBE": "yes"}}]),
+            self.trust([{"kind": "cmd", "run": self.py(
+                "import os, sys; sys.exit(0 if os.environ.get('CTX_PROBE') == 'yes' else 1)"),
+                "env": {"CTX_PROBE": "yes"}}]),
             cwd=self.root, key="env",
         )
         self.assertEqual(verdict, verify.PASS, results[0].message)

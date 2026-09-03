@@ -21,6 +21,31 @@ Five behaviours were mutated to confirm the suite catches them: ownership
 collision detection, the trust boundary, the `SubagentStop` binding, the gate
 time budget, and output redaction. All five are caught.
 
+## Found by CI, after the audit closed
+
+The first run of the new workflow passed on macOS and Linux — including the
+Python 3.8 job that proves the README's floor — and **failed on Windows**, which
+is exactly what shipping it was for. Nine failures, of which two were real
+product bugs and the rest were POSIX assumptions in the tests:
+
+- **`Layout.rel` emitted OS-native separators.** `.ctx/` is committed, so a
+  Windows session writing `src\a.py` where a mac session writes `src/a.py` is
+  divergence in a tracked file — merge noise, and two spellings of one path for
+  scope matching to disagree over. It now always emits `/`.
+- **`Layout.rel` also failed to relativise through a symlink.** It resolved the
+  path but not the root, so on macOS — where `/var` is a symlink — it fell back
+  to the absolute path its own docstring says must never reach a briefing. Both
+  sides are resolved now. This one had been latent since before the audit;
+  writing the cross-platform test is what surfaced it.
+- **The state lock gave up too early.** Five seconds was enough locally and not
+  on Windows, where CI lost one increment in eighty — and giving up means taking
+  the lost update the lock exists to prevent. Raised to thirty.
+
+The rest were tests asserting nothing on Windows: `true`, `sleep`, `test -f`,
+`[ ... ]` and `;` are not portable through `cmd.exe`. They now run through this
+interpreter via a `self.py(...)` helper, and `tests/test_portability.py` fails
+the build if a POSIX-only verify command comes back.
+
 One correction found while fixing F02: worktree-tier units were **already**
 isolated, because each worktree is a checkout carrying its own `.ctx/` and
 therefore its own gitignored `runtime/`. The pointer only ever collided between

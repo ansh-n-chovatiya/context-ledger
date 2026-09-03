@@ -179,7 +179,8 @@ class TestVerifyKinds(Fixture):
 
     def test_gate_feedback_is_truncated(self):
         results, _ = self.run_checks(
-            [{"kind": "cmd", "run": "for i in $(seq 1 400); do echo line$i; done; exit 1"}]
+            [{"kind": "cmd", "run": self.py(
+                "import sys; [print(f'line{i}') for i in range(1, 401)]; sys.exit(1)")}]
         )
         message = results[0].message
         self.assertIn("lines omitted", message)
@@ -231,7 +232,7 @@ class TestVerifyKinds(Fixture):
 
     def test_timeout_is_a_config_error(self):
         config = dict(self.config, gate=dict(self.config["gate"], timeout_seconds=1))
-        checks = [{"kind": "cmd", "run": "sleep 5"}]
+        checks = [{"kind": "cmd", "run": self.py("import time; time.sleep(5)")}]
         self.trust(checks)
         results, verdict = verify.run(
             self.layout, config, checks, cwd=self.root, key="slow",
@@ -316,7 +317,8 @@ class TestDoneGate(Fixture):
         self.assertIsNone(self.stop(), "L0 has no gate — that is what makes it free")
 
     def test_incomplete_work_cannot_end_its_session(self):
-        self.arm([{"kind": "cmd", "run": "echo missing-criterion-2; exit 1"}])
+        self.arm([{"kind": "cmd", "run": self.py(
+            "import sys; print('missing-criterion-2'); sys.exit(1)")}])
         decision = self.stop()
         self.assertEqual(decision["decision"], "block")
         reason = decision["reason"]

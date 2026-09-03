@@ -193,10 +193,12 @@ class TestFullFlow(Fixture):
             {"ctx_schema": 1, "unit": "01-keys", "plan": "auth", "tier": "session",
              "depends_on": [], "owns": ["src/keys.py"], "reads": [], "forbid": [],
              "budget_tokens": 1000, "status": "pending",
-             "verify": [{"kind": "cmd", "run": "test -f src/keys.py"}]},
+             "verify": [{"kind": "cmd", "run": self.py(
+                 "import os, sys; sys.exit(0 if os.path.isfile(os.path.join('src', 'keys.py')) else 1)")}]},
             "## Objective\nBuild keys.\n\n## Acceptance criteria\n1. it exists\n",
         ).write(directory / "01-keys.md")
-        self.trust([{"kind": "cmd", "run": "test -f src/keys.py"}])
+        self.trust([{"kind": "cmd", "run": self.py(
+            "import os, sys; sys.exit(0 if os.path.isfile(os.path.join('src', 'keys.py')) else 1)")}])
         self.cli("plan", "auth", "--no-spec")
         self.assertEqual(self.cli("plan-check", "auth")[0], 0)
         self.git("add", "-A")

@@ -70,11 +70,22 @@ class Layout:
         return self.journal / f"{day}.md"
 
     def rel(self, path):
-        """Repo-relative display path — briefings must never leak absolutes."""
+        """Repo-relative display path, always with forward slashes.
+
+        Briefings must never leak absolutes, and the separator must not depend on
+        who ran the command: the journal, the digest and every unit's `owns` list
+        are committed and shared, so a Windows session writing `src\\a.py` where a
+        mac session writes `src/a.py` is divergence in a tracked file — merge
+        noise, and two spellings of one path for scope matching to disagree over.
+        """
         try:
-            return str(Path(path).resolve().relative_to(self.root.parent))
-        except ValueError:
-            return str(path)
+            # Both sides resolved: comparing a resolved path against an
+            # unresolved root fails for any project reached through a symlink,
+            # and the fallback is the absolute path this exists to avoid.
+            relative = str(Path(path).resolve().relative_to(self.root.resolve().parent))
+        except (ValueError, OSError):
+            relative = str(path)
+        return relative.replace(os.sep, "/") if os.sep != "/" else relative
 
     # Directories that are created by init and expected to exist thereafter.
     def dirs(self):

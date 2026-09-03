@@ -116,9 +116,7 @@ class TestWorktreeLifecycle(WorktreeFixture):
         self.assertEqual(wt.remove(self.layout, "01-a", force=True), "")
 
     def test_no_repo_is_reported_not_crashed_on(self):
-        import shutil
-
-        shutil.rmtree(self.root / ".git")
+        self.rmtree(self.root / ".git")
         self.assertIn("not a git repository", wt.check_repo(self.layout))
 
 

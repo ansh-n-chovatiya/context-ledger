@@ -4,6 +4,8 @@ import contextlib
 import io
 import json
 import os
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -64,13 +66,38 @@ class Fixture(unittest.TestCase):
         run = lambda *a: subprocess.run(
             a, cwd=str(self.root), capture_output=True, text=True, env=env, check=True
         )
-        (self.root / ".git").exists() and __import__("shutil").rmtree(self.root / ".git")
+        (self.root / ".git").exists() and self.rmtree(self.root / ".git")
         run("git", "init", "-q", "-b", "main")
         run("git", "config", "user.email", "t@example.com")
         run("git", "config", "user.name", "Test")
         (self.root / "seed.txt").write_text("seed\n")
         run("git", "add", "-A")
         run("git", "commit", "-qm", "seed")
+
+    def rmtree(self, path):
+        """Delete a tree that may contain read-only files.
+
+        Git marks objects in `.git/objects` read-only, and Windows refuses to
+        unlink a read-only file — so a plain `shutil.rmtree` on a repository
+        raises PermissionError there and nowhere else.
+        """
+        def clear_readonly(func, target, _exc):
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=clear_readonly)
+        else:
+            shutil.rmtree(path, onerror=lambda f, t, e: clear_readonly(f, t, e))
+
+    def py(self, code):
+        """A verify command that runs `code` in this interpreter.
+
+        Portable in a way `true`, `sleep`, `test -f` and `[ ... ]` are not: the
+        gate runs commands through the platform shell, which is cmd.exe on
+        Windows. Keep `code` free of double quotes — cmd groups on them.
+        """
+        return f'"{sys.executable}" -c "{code}"'
 
     def trust(self, checks):
         """Accept hand-written verify commands, as `ctx init` does for the ones

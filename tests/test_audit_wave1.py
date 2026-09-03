@@ -144,7 +144,8 @@ class TestGateBudgetAndOutput(Fixture):
         harness kills it, no decision is returned, and the gate silently stops
         applying. The second command must be refused, not merely slow."""
         config = dict(self.config, gate=dict(self.config["gate"], timeout_seconds=2))
-        checks = [{"kind": "cmd", "run": "sleep 3"}, {"kind": "cmd", "run": "true"}]
+        checks = [{"kind": "cmd", "run": self.py("import time; time.sleep(3)")},
+                  {"kind": "cmd", "run": self.py("pass")}]
         self.trust(checks)
         results, verdict = verify.run(
             self.layout, config, checks, cwd=self.root, key="budget",
@@ -158,7 +159,8 @@ class TestGateBudgetAndOutput(Fixture):
         """`redact` guarded the journal and bundles but not the block reason,
         which inlines raw command output straight into the transcript."""
         secret = "ghp_" + "a1B2c3D4e5F6g7H8i9J0"
-        checks = [{"kind": "cmd", "run": f"echo token={secret}; exit 1"}]
+        checks = [{"kind": "cmd", "run": self.py(
+            f"import sys; print(chr(39)+chr(39)); print('token={secret}'); sys.exit(1)")}]
         self.trust(checks)
         results, _verdict = verify.run(
             self.layout, self.config, checks, cwd=self.root, key="leak",

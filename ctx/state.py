@@ -18,8 +18,13 @@ from . import config as config_mod
 # already made each *write* atomic, but load-then-save is not: two processes that
 # both read before either wrote leave one of the updates gone, which is how
 # attempt counts under-count and a `unit` claim disappears.
-LOCK_TIMEOUT = 5.0
-LOCK_STALE_SECONDS = 30.0
+#
+# The timeout is generous because giving up means taking the lost update the
+# lock exists to prevent. Five seconds was not enough on Windows under a wave —
+# CI lost one increment in eighty — where creating and unlinking a file costs
+# far more than it does on a POSIX filesystem.
+LOCK_TIMEOUT = 30.0
+LOCK_STALE_SECONDS = 60.0
 
 EMPTY = {
     "schema": config_mod.SCHEMA,

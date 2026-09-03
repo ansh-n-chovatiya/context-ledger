@@ -2,6 +2,7 @@
 
 import ast
 import datetime
+import os
 import json
 import pathlib
 import subprocess
@@ -244,9 +245,12 @@ class TestShippedSurface(unittest.TestCase):
         self.assertTrue((ROOT / "bin/ctx.py").is_file())
 
     def test_every_entry_point_reports_the_same_version(self):
+        # `bin/ctx` is a bash script; on Windows the shipped wrapper is the .cmd,
+        # which is the whole point of having both.
+        wrapper = ROOT / ("bin/ctx.cmd" if os.name == "nt" else "bin/ctx")
         versions = set()
         for command in (
-            [str(ROOT / "bin/ctx"), "--version"],
+            [str(wrapper), "--version"],
             [sys.executable, str(ROOT / "bin/ctx.py"), "--version"],
             [sys.executable, "-m", "ctx", "--version"],
         ):
