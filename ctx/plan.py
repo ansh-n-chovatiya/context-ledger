@@ -424,13 +424,13 @@ class _OwnsIndex:
     `_overlap` asks four questions of a pattern pair — equality, either side
     living under the other as a directory, and fnmatch in either direction — so
     the index keeps one structure per question. Case folding follows fnmatch,
-    which normcases both sides; the prefix rules are plain string comparisons and
-    are deliberately *not* folded, exactly as `_covers` has them.
+    which is case-sensitive on every platform; the prefix rules are plain string
+    comparisons, exactly as `_covers` has them.
     """
 
     def __init__(self, units):
         self._exact = {}    # pattern -> {unit position}: equality
-        self._folded = {}   # normcase(pattern) -> {position}: fnmatch, magic-free
+        self._folded = {}   # _fold(pattern) -> {position}: fnmatch, magic-free
         self._under = {}    # ancestor of a pattern -> {position}: pattern under path
         self._globs = {}    # literal head -> [glob pattern]: path matched by pattern
         seen = set()
@@ -445,17 +445,17 @@ class _OwnsIndex:
                 if _MAGIC.search(pattern):
                     if pattern not in seen:
                         seen.add(pattern)
-                        head = os.path.normcase(_literal_head(pattern))
+                        head = _fold(_literal_head(pattern))
                         self._globs.setdefault(head, []).append(pattern)
                 else:
                     self._folded.setdefault(
-                        os.path.normcase(pattern), set()
+                        _fold(pattern), set()
                     ).add(position)
         # The one question no key can answer in advance: a *query* that is itself
         # a glob may match patterns spread anywhere under its literal head, so
         # those are found by bisecting a sorted list instead.
         self._sorted = sorted(
-            (os.path.normcase(pattern), pattern) for pattern in self._exact
+            (_fold(pattern), pattern) for pattern in self._exact
         )
 
     def owners_of(self, raw):
@@ -467,7 +467,7 @@ class _OwnsIndex:
         hit = self._exact.get(path)
         if hit:
             found |= hit                                    # path == pattern
-        hit = self._folded.get(os.path.normcase(path))
+        hit = self._folded.get(_fold(path))
         if hit:
             found |= hit                                    # fnmatch, magic-free
         for ancestor in _ancestors(path):
@@ -478,14 +478,14 @@ class _OwnsIndex:
         if hit:
             found |= hit                                    # pattern under path
         if self._globs:
-            for head in _heads(os.path.normcase(path)):
+            for head in _heads(_fold(path)):
                 for pattern in self._globs.get(head, ()):
-                    if fnmatch.fnmatch(path, pattern):
+                    if fnmatch.fnmatchcase(path, pattern):
                         found |= self._exact[pattern]       # path matched by glob
         if _MAGIC.search(path):
-            head = os.path.normcase(_literal_head(path))
+            head = _fold(_literal_head(path))
             for pattern in self._candidates(head):
-                if fnmatch.fnmatch(pattern, path):
+                if fnmatch.fnmatchcase(pattern, path):
                     found |= self._exact[pattern]           # pattern matched by glob
         return found
 
@@ -506,6 +506,18 @@ def covers_any(path, patterns):
     return any(_covers(path, pattern) for pattern in patterns or ())
 
 
+def _fold(text):
+    """The identity, named — scope matching must not vary by platform.
+
+    This was `os.path.normcase`, which on Windows lowercases and rewrites "/" to
+    "\\". The index folded its keys that way while `_covers` compared forward
+    slashes, so on Windows the two disagreed about who owned `src/auth.py` and
+    a real ownership collision went unreported. Keeping the seam as a function
+    makes the decision visible rather than implied by an absent call.
+    """
+    return text
+
+
 def _covers(path, pattern):
     path = str(path).replace(os.sep, "/").rstrip("/")
     pattern = str(pattern).replace(os.sep, "/").rstrip("/")
@@ -513,7 +525,7 @@ def _covers(path, pattern):
         return False
     if path == pattern:
         return True
-    if fnmatch.fnmatch(path, pattern):
+    if fnmatch.fnmatchcase(path, pattern):
         return True
     return path.startswith(pattern + "/")
 

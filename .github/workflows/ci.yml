@@ -58,12 +58,12 @@ jobs:
         shell: cmd
         run: |
           for /f %%v in ('python bin\ctx.py --version') do set EXPECTED=%%v
-          for /f %%v in ('bin\ctx.cmd --version') do set ACTUAL=%%v
+          for /f %%v in ('call bin\ctx.cmd --version') do set ACTUAL=%%v
           if not "%EXPECTED%"=="%ACTUAL%" exit /b 1
       - name: A failing command exits non-zero
         shell: cmd
         run: |
-          bin\ctx.cmd --cwd . doctor --verify
+          call bin\ctx.cmd --cwd . doctor --verify
           if not errorlevel 1 (
             echo expected a non-zero exit from a ledger-less doctor run
             exit /b 1

@@ -449,7 +449,7 @@ def _within(path, scope):
         cleaned = str(pattern).replace(os.sep, "/").rstrip("/")
         if not cleaned:
             continue
-        if fnmatch.fnmatch(normalised, cleaned):
+        if fnmatch.fnmatchcase(normalised, cleaned):
             return True
         if normalised == cleaned or normalised.startswith(cleaned + "/"):
             return True

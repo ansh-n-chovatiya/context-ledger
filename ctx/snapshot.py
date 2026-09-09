@@ -85,7 +85,7 @@ def _ignored(relpath, name, ignore):
     """True when a path segment or the whole relative path is excluded."""
     import fnmatch
 
-    if any(fnmatch.fnmatch(name, pattern) for pattern in ignore):
+    if any(fnmatch.fnmatchcase(name, pattern) for pattern in ignore):
         return True
     return any(
         relpath == pattern or relpath.startswith(pattern.rstrip("/") + "/")
@@ -134,9 +134,9 @@ def covers(relpath, patterns):
             return True
         if normalised.startswith(pattern + "/"):
             return True
-        if fnmatch.fnmatch(normalised, pattern):
+        if fnmatch.fnmatchcase(normalised, pattern):
             return True
-        if fnmatch.fnmatch(normalised, pattern.rstrip("/") + "/*"):
+        if fnmatch.fnmatchcase(normalised, pattern.rstrip("/") + "/*"):
             return True
     return False
 

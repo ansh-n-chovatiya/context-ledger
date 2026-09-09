@@ -93,8 +93,15 @@ class Fixture(unittest.TestCase):
         raises PermissionError there and nowhere else.
         """
         def clear_readonly(func, target, _exc):
-            os.chmod(target, stat.S_IWRITE)
-            func(target)
+            try:
+                os.chmod(target, stat.S_IWRITE)
+                func(target)
+            except FileNotFoundError:
+                # Git runs background maintenance on a repository it has just
+                # been used in, and its lock file can appear and vanish inside
+                # `.git/objects` while this walk is in progress. A file that is
+                # already gone is the outcome this function wanted.
+                pass
 
         if sys.version_info >= (3, 12):
             shutil.rmtree(path, onexc=clear_readonly)
