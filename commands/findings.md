@@ -44,3 +44,13 @@ fresh review of the whole unit.
 If `ctx review` reported the round cap, stop fixing. The loop is not converging
 and more rounds will not change that — rule on each remaining finding, park it,
 and record the ruling.
+
+## Escalations
+
+If a listed `escalations:` block shows up, it means a failed round moved the
+*fix*'s model tier — `models.escalate_on_failed_round` is on and a round left
+a blocking finding open, so the next fix round dispatches on a dearer model
+than this one ran on. It is a fact about the round, never a finding's status:
+nothing here is `open`/`addressed`/`disputed`/`parked` because of it, and
+agreeing with it or disputing it is not a thing to do. Just dispatch the next
+fix round on the model it names.

@@ -29,18 +29,6 @@ fenced blocks in the body instead, and the fence grows past any run of backticks
 in the text for the same reason: the store must not be corruptible by the
 content it is asked to hold. The body is also what someone opening the file in
 an editor reads, which the frontmatter list never was.
-
-A fourth thing follows the first rule rather than bending it: **an escalated
-round is not a new status.** When a fix round fails with escalation turned on,
-`Ledger.bump_round` may move the round to a dearer model tier — but that move
-is recorded as a fact about the round (which round, which tier to which tier,
-and why), never as somewhere a `Finding` can sit instead of
-`open`/`addressed`/`disputed`/`parked`. `STATUSES` does not grow for it, no
-`Finding` field changes because of it, and — same as evidence and rulings —
-the record lives in the body, fenced, for the same miniyaml reason. With
-`models.escalate_on_failed_round` at its default `false`, nothing calls the
-escalation path at all, so a ledger written by a project that never turns the
-flag on is byte-identical to one written before this feature existed.
 """
 
 import datetime
@@ -63,14 +51,9 @@ MAX_ROUNDS = 3
 
 _HEADING = re.compile(r"^###\s+\[(\d+)\]\s+([A-Za-z]+)\s*/\s*([A-Za-z]+)\s*(?:—\s*(.*))?$")
 _FIELD = re.compile(r"^-\s+(where|round|source)\s*:\s*(.*)$")
-_BLOCK = re.compile(r"^(evidence|ruling|reason)\s*:\s*$")
+_BLOCK = re.compile(r"^(evidence|ruling)\s*:\s*$")
 _FENCE = re.compile(r"^(`{3,})\s*$")
 _BACKTICKS = re.compile(r"`+")
-
-# Deliberately distinct from `_HEADING`: an escalation heading has no `[id]`
-# directly after `###`, so a hand-edited file can never make a Finding parse
-# as an Escalation or the reverse.
-_ESC_HEADING = re.compile(r"^###\s+escalation\s+\[(\d+)\]\s+(\S+)\s*->\s*(\S+)\s*$")
 
 PREAMBLE = """A reviewer raised these; the unit's implementer resolves them. A finding leaves
 `open` only by being fixed (`addressed`), refuted with evidence (`disputed`), or
@@ -92,13 +75,11 @@ def load(layout, slug, unit_name):
     doc = frontmatter.read(path)
     if doc is None:
         return Ledger(path, slug, unit_name)
-    findings, escalations = _parse_body(doc.body)
     ledger = Ledger(
         path, slug,
         str(doc.meta.get("unit") or unit_name),
-        findings=findings,
+        findings=_parse_body(doc.body),
         round_number=_int(doc.meta.get("round"), 1),
-        escalations=escalations,
     )
     return ledger
 
@@ -137,40 +118,13 @@ class Finding:
         return f"[{self.id}] {self.severity}: {self.summary}{where}"
 
 
-class Escalation:
-    """A fact about a round, not a status: the round moved from one model
-    tier to a dearer one, and why. Never attached to a `Finding` — see the
-    module docstring's fourth decision."""
-
-    def __init__(self, round_number, from_model, to_model, reason=""):
-        self.round = int(round_number)
-        self.from_model = _oneline(from_model)
-        self.to_model = _oneline(to_model)
-        self.reason = str(reason or "").strip()
-
-    def __repr__(self):
-        return f"<Escalation round {self.round} {self.from_model}->{self.to_model}>"
-
-    def as_dict(self):
-        return {
-            "round": self.round, "from": self.from_model, "to": self.to_model,
-            "reason": self.reason,
-        }
-
-    def line(self):
-        """One line, for a journal entry or a briefing."""
-        head = f"round {self.round}: {self.from_model} -> {self.to_model}"
-        return f"{head} ({self.reason})" if self.reason else head
-
-
 class Ledger:
-    def __init__(self, path, slug, unit, findings=None, round_number=1, escalations=None):
+    def __init__(self, path, slug, unit, findings=None, round_number=1):
         self.path = path
         self.slug = slug
         self.unit = unit
         self.findings = list(findings or [])
         self.round = int(round_number)
-        self.escalations = list(escalations or [])
 
     def __repr__(self):
         return f"<Ledger {self.slug}/{self.unit} {len(self.findings)} findings>"
@@ -252,55 +206,12 @@ class Ledger:
         self.save()
         return True, ""
 
-    def bump_round(self, config=None, model=None, reason=None):
+    def bump_round(self):
         """Start the next fix round. The caller compares against MAX_ROUNDS —
-        this module counts, it does not decide when to give up, and nothing
-        here moves that ceiling: escalation changes the seat a round runs on,
-        never how many rounds there are.
-
-        `config` and `model` are optional, and every 0.7.0 caller — and every
-        0.8 caller with `models.escalate_on_failed_round` at its default
-        `false` — omits them or hits the flag check below and gets exactly
-        the old behaviour: round bumped, ledger saved, nothing else written.
-        That is what "byte-identical when escalation is disabled" means in
-        practice: the disabled path never reaches the code that would make
-        the file different.
-
-        With both given and the flag on, a failed round also escalates:
-        `config.tier_up` names the next dearer tier for `model`, and — only
-        if it actually moved — the round, the tier change and `reason` (or a
-        generated one) are recorded in the ledger. `tier_up` already answers
-        "no dearer tier" and "not a tracked model" by returning `model`
-        unchanged rather than raising, so this calls it after every failed
-        round without first checking whether escalation is still possible,
-        exactly as `config.tier_up`'s own docstring describes.
-        """
+        this module counts, it does not decide when to give up."""
         self.round += 1
-        self._maybe_escalate(config, model, reason)
         self.save()
         return self.round
-
-    def _maybe_escalate(self, config, model, reason):
-        """Record a tier escalation for the round just started, or do
-        nothing. Returns the `Escalation` recorded, or `None`."""
-        if config is None or model is None:
-            return None
-        models_cfg = config.get("models") or {}
-        if not models_cfg.get("escalate_on_failed_round", False):
-            return None
-        new_model = config_mod.tier_up(config, model)
-        if new_model == model:
-            # Already the dearest tier, or `model` was never in `models.tiers`
-            # at all — an explicit unit `model:`, which `tier_up` leaves alone
-            # on purpose. Either way there is no move to record.
-            return None
-        text = str(reason or "").strip() or (
-            f"round {self.round - 1} still had blocking findings open on "
-            f"{model}; round {self.round} escalates to {new_model}"
-        )
-        record = Escalation(self.round, model, new_model, text)
-        self.escalations.append(record)
-        return record
 
     def save(self):
         meta = {
@@ -359,39 +270,22 @@ class Ledger:
         lines = [f"# Review findings — {self.unit}", "", PREAMBLE, "", "## Findings", ""]
         if not self.findings:
             lines.append("_None raised yet._")
-        else:
-            for finding in self.findings:
-                heading = f"### [{finding.id}] {finding.severity} / {finding.status}"
-                if finding.summary:
-                    heading += f" — {finding.summary}"
-                lines.append(heading)
-                if finding.where:
-                    lines.append(f"- where: {finding.where}")
-                lines.append(f"- round: {finding.round}")
-                lines.append(f"- source: {finding.source}")
-                for label, text in (("evidence", finding.evidence), ("ruling", finding.ruling)):
-                    if not text:
-                        continue
-                    fence = _fence_for(text)
-                    lines.extend(["", f"{label}:", fence, text, fence])
-                lines.append("")
-        # Escalations only exist when the caller opted into
-        # `models.escalate_on_failed_round`, so this section — and the blank
-        # line it needs — is entirely absent otherwise. That is the whole
-        # byte-identical-when-disabled guarantee: this branch never runs.
-        if self.escalations:
-            if lines and lines[-1] != "":
-                lines.append("")
-            lines.append("## Escalations")
-            lines.append("")
-            for esc in self.escalations:
-                lines.append(f"### escalation [{esc.round}] {esc.from_model} -> {esc.to_model}")
-                if esc.reason:
-                    fence = _fence_for(esc.reason)
-                    lines.extend(["", "reason:", fence, esc.reason, fence])
-                lines.append("")
-        if not self.findings and not self.escalations:
             return "\n".join(lines) + "\n"
+        for finding in self.findings:
+            heading = f"### [{finding.id}] {finding.severity} / {finding.status}"
+            if finding.summary:
+                heading += f" — {finding.summary}"
+            lines.append(heading)
+            if finding.where:
+                lines.append(f"- where: {finding.where}")
+            lines.append(f"- round: {finding.round}")
+            lines.append(f"- source: {finding.source}")
+            for label, text in (("evidence", finding.evidence), ("ruling", finding.ruling)):
+                if not text:
+                    continue
+                fence = _fence_for(text)
+                lines.extend(["", f"{label}:", fence, text, fence])
+            lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
 
@@ -400,12 +294,10 @@ class Ledger:
 # --------------------------------------------------------------------------- #
 
 def _parse_body(body):
-    """Findings and escalation records out of the markdown. Tolerant on read,
-    like every other reader here: a hand-edited file with one mangled entry
-    still yields the rest. Returns `(findings, escalations)`."""
+    """Findings out of the markdown. Tolerant on read, like every other reader
+    here: a hand-edited file with one mangled finding still yields the rest."""
     lines = (body or "").splitlines()
-    findings, escalations = [], []
-    current, kind, index = None, None, 0
+    out, current, index = [], None, 0
     while index < len(lines):
         line = lines[index]
         heading = _HEADING.match(line.rstrip())
@@ -414,48 +306,35 @@ def _parse_body(body):
                 heading.group(1), heading.group(2), heading.group(4) or "",
                 status=heading.group(3),
             )
-            kind = "finding"
-            findings.append(current)
-            index += 1
-            continue
-        esc_heading = _ESC_HEADING.match(line.rstrip())
-        if esc_heading:
-            current = Escalation(esc_heading.group(1), esc_heading.group(2), esc_heading.group(3))
-            kind = "escalation"
-            escalations.append(current)
+            out.append(current)
             index += 1
             continue
         if current is None:
             index += 1
             continue
 
-        if kind == "finding":
-            field = _FIELD.match(line.strip())
-            if field:
-                key, value = field.group(1), field.group(2).strip()
-                if key == "round":
-                    current.round = _int(value, current.round)
-                elif key == "where":
-                    current.where = value
-                else:
-                    current.source = value or "reviewer"
-                index += 1
-                continue
+        field = _FIELD.match(line.strip())
+        if field:
+            key, value = field.group(1), field.group(2).strip()
+            if key == "round":
+                current.round = _int(value, current.round)
+            elif key == "where":
+                current.where = value
+            else:
+                current.source = value or "reviewer"
+            index += 1
+            continue
 
         block = _BLOCK.match(line.strip())
         if block:
             text, index = _read_block(lines, index + 1)
-            label = block.group(1)
-            if kind == "finding" and label in ("evidence", "ruling"):
-                if label == "evidence":
-                    current.evidence = text
-                else:
-                    current.ruling = text
-            elif kind == "escalation" and label == "reason":
-                current.reason = text
+            if block.group(1) == "evidence":
+                current.evidence = text
+            else:
+                current.ruling = text
             continue
         index += 1
-    return findings, escalations
+    return out
 
 
 def _read_block(lines, index):

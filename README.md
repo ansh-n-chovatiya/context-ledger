@@ -98,7 +98,7 @@ claude plugin install ctx@context-ledger
 Verify it:
 
 ```bash
-claude plugin list                 # ctx@context-ledger  0.7.0  ✔ enabled
+claude plugin list                 # ctx@context-ledger  0.8.0  ✔ enabled
 claude plugin details ctx          # component inventory + token cost
 ```
 

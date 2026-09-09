@@ -1,5 +1,87 @@
 # Changelog
 
+## 0.8.0
+
+Model selection stops following the seat and starts following the task; bug fixes
+gain phases a machine can refuse on; and three claims this project had been
+making without evidence are now asserted by tests. Three bugs were found on the
+way that nothing in the plan had asked about.
+
+### Added
+
+- **Task-shaped model selection.** `model_for` now scores the unit it is about
+  to dispatch — `budget_tokens`, `owns` breadth, `reads` breadth, `depends_on`,
+  a judged verify check, a published interface, `kind: bug` — and maps the score
+  to a tier. Weights and thresholds live in `ctx.yaml` under `complexity`, and
+  the dispatch line prints the score with every input that produced it, so a
+  wrong tier is diagnosable without re-running anything. An explicit `model:` in
+  a unit's frontmatter still wins over every heuristic, and a model absent from
+  `models.tiers` is never auto-escalated.
+- **`models.tiers`** — an ordered, cheapest-first model list, the one place a
+  model name may appear. `config.tier_up` walks it.
+- **Package-driven reviewer tier.** A review package under
+  `review.small_package_bytes` with zero scope violations draws a cheaper seat;
+  over it, or with any violation, the floor holds.
+- **Round escalation, off by default.** With
+  `models.escalate_on_failed_round: true`, a failed fix round raises the runner
+  one tier and the ledger records the tier moved from, to, and why. Default
+  `false`: escalation is a cost hypothesis, and nobody pays for one until the
+  telemetry can settle it.
+- **`phases:` and `kind: bug`.** Any unit may declare ordered phases. `kind: bug`
+  expands to a gated preset — `reproduce`, `locate`, `fix`, `guard` — where
+  `reproduce` is satisfied only by a recorded **non-zero** exit, `fix` is locked
+  until both `reproduce` and `locate` are recorded, and the fix must re-run the
+  *same* command to zero. "No fix before a failing reproduction" is now something
+  the code refuses on rather than something a document asks for. `ctx phase`
+  drives it and surfaces the refusal verbatim.
+- **`test_first` verify kind.** Fails when the implementation snapshot precedes
+  every recorded failing run of the unit's test paths. A unit with no recorded
+  runs fails rather than passing silently.
+- **Telemetry that can answer "was the expensive model worth it".** Dispatch and
+  review record `model` and `role`; `ctx telemetry` reports per-role spend.
+
+### Fixed
+
+- **`ctx init` silently dropped every new top-level default.** The generated
+  `ctx.yaml` was built from a hand-enumerated key list, so any default added to
+  the code never reached the file — a default that only lives in Python is a
+  default nobody can find. Now built from `DEFAULTS` with overrides layered on
+  top, deep-copied so a loaded config cannot mutate the module's own defaults.
+- **Multi-line list items lost every line after the first.** A wrapped
+  acceptance criterion or question was truncated at its first physical line
+  everywhere it was read — the review package a reviewer grades against, the
+  SessionStart briefing, and the done-gate. Fixed at the source in
+  `frontmatter.list_items` and `spec`'s question readers, so all five consumers
+  are repaired at once.
+- **Every wave of two or more units deadlocked its own gate.** `subagent`-tier
+  units share one working tree, and the scope check knew only the reviewed
+  unit's `owns` — so a sibling's write to its *own declared path* was reported
+  as a Critical violation the package called "not open to argument". Since
+  `review` is a mechanical gate check and Criticals block, N units produced N-1
+  false Criticals apiece. `review.wave_scope` now excludes paths declared by
+  units still running in the same wave; a path nobody declared is still a
+  violation, and the package says what it actually checked.
+
+### Proven
+
+Claims the project had been making in its own rationale, now asserted in
+`tests/test_unproven_claims.py`:
+
+- Two units in one wave, forced concurrent through a barrier, produce review
+  packages whose owned-path attribution is byte-identical to the same unit built
+  alone. This is what a commit range cannot do, and it had never been tested.
+- A session killed mid-fix-loop — a real process, really terminated — resumes
+  with its round number, open findings and unit under review intact.
+- An escalated dispatch cannot widen what `trust.py` has accepted: the entire
+  global trust tree is byte-identical across a real escalation.
+
+### Decisions
+
+- Harness portability declined (ADR 0001): eight variants multiply the
+  maintenance surface and no P0/P1 capability depends on any of them.
+- Complexity bands map to `models.tiers` positionally, clamped (ADR 0002), so
+  the tier list stays the one list every module consults.
+
 ## 0.7.0
 
 The security and correctness release. Everything below came out of an adversarial

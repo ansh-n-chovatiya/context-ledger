@@ -34,6 +34,21 @@ stop rather than guessing what was meant.
 5. **Run the `verify` checks yourself** before reporting. Do not report success
    on unverified work.
 
+## A unit with `kind: bug`, or its own `phases:` list
+
+Some units gate through named phases before the work counts as done —
+`kind: bug` always gates through `reproduce` → `locate` → `fix` → `guard`,
+whether or not it also lists `phases:`; anything else gates through exactly
+what it declared, in that order. Run `ctx phase «unit»` with no phase named
+first — it lists what is already recorded and which phase is open right now,
+rather than you inferring it from the unit file. Record each phase as you
+clear it (`ctx phase «unit» «phase» --command … --exit-code … --evidence …`);
+the command refuses, and prints why, if you try to record one whose
+prerequisite has not been recorded yet — for a bug unit, most often `fix`
+before `reproduce` has a run that genuinely failed. That refusal is the
+mechanism, not a suggestion: fix the missing prerequisite first, do not retype
+the same command hoping the gate relents.
+
 ## Return
 
 Your final message is the report the orchestrator acts on. No preamble, no

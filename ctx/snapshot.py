@@ -260,6 +260,69 @@ def load(layout, key):
     return data if isinstance(data, dict) else None
 
 
+TEST_RUNS_SUBDIR = "test_runs"
+
+
+def test_runs_dir(layout):
+    return layout.runtime / TEST_RUNS_SUBDIR
+
+
+def _test_runs_path(layout, key):
+    return test_runs_dir(layout) / f"{_safe(key)}.json"
+
+
+def record_test_run(layout, key, paths, exit_code, when=None):
+    """Append one test run's exit status and timestamp under a key.
+
+    `test_first` needs to answer "did a failing run happen before the
+    implementation was captured", and an answer to that has to survive the
+    session that produced it — a run recorded only in a transcript is gone the
+    moment the transcript is.
+
+    Deliberately *not* stored inside `snapshot_dir(layout, key)`: `capture`
+    deletes that whole directory and rebuilds it on every call (`if
+    directory.exists(): shutil.rmtree(...)`), which would erase a failing run
+    recorded before a later capture — destroying the exact evidence
+    `test_first` exists to check. A history of runs has to outlive the
+    manifests it will be compared against, so it lives in its own directory
+    next to `snapshots/`, keyed the same way but on its own lifecycle.
+
+    Appended rather than overwritten, because the run that proves red-before-
+    green is very often not the most recent one — a unit usually keeps running
+    its tests after they start passing, and the last entry in that history is
+    always green. Losing the early failing run to a later success would make
+    a real test-first unit look like it skipped the test.
+    """
+    directory = test_runs_dir(layout)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = _test_runs_path(layout, key)
+    runs = test_runs(layout, key)
+    runs.append({
+        "paths": [str(p) for p in paths],
+        "exit_code": int(exit_code),
+        "at": float(when) if when is not None else time.time(),
+    })
+    path.write_text(json.dumps(runs, indent=2, sort_keys=True), encoding="utf-8")
+    return runs
+
+
+def test_runs(layout, key):
+    """Recorded test runs for a key, oldest first. `[]` when none were ever recorded.
+
+    Empty, not missing, is the honest answer for a unit nobody ever ran a test
+    for — `test_first` turns that into a fail rather than treating an absent
+    file as nothing to check.
+    """
+    path = _test_runs_path(layout, key)
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return []
+    return list(data) if isinstance(data, list) else []
+
+
 def stored_text(layout, key, relpath):
     """The captured text of one path, or None if it was never stored."""
     blob = snapshot_dir(layout, key) / "files" / _blob_name(relpath)

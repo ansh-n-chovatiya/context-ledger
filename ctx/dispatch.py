@@ -11,24 +11,106 @@ context flat across a twenty-unit plan, and it is only enforceable because the
 plan already declares who owns what.
 """
 
-from . import config as config_mod, plan as plan_mod, worktree as wt
+from . import complexity as complexity_mod, config as config_mod, plan as plan_mod, worktree as wt
 
 DISPATCHABLE = ("inline", "subagent")
 
+# Positional index into `models.tiers` for each complexity band, cheapest tier
+# first. `complexity.tier_for` only ever returns one of these three names, so
+# the mapping itself is total — but `models.tiers` is not guaranteed to have
+# three entries, which is why every lookup through this dict is clamped to
+# `len(tiers) - 1` rather than indexed directly. Per ADR 0002: a project
+# running a two-entry `models.tiers` must get `deep` clamped onto the dearer
+# of the two, not an `IndexError`.
+_BAND_INDEX = {"light": 0, "standard": 1, "deep": 2}
 
-def model_for(config, unit=None, role="runner"):
+def _small_package_bytes(config):
+    """`review.small_package_bytes`, config-first like every other threshold
+    this module leans on (`models.tiers`, `models.<role>`) — a project must
+    be able to retune this without editing code, same reasoning as keeping
+    model names out of this module entirely. Lives under `review` rather
+    than `complexity` in `config.DEFAULTS`: it is a byte count, not a
+    complexity-score point, and burying it in the points block is how a
+    later reader misreads both.
+    """
+    review = (config or {}).get("review") or {}
+    return int(
+        review.get("small_package_bytes")
+        or config_mod.DEFAULTS["review"]["small_package_bytes"]
+    )
+
+
+def model_for(config, unit=None, role="runner", *, stats=None, round=1):
     """The model a dispatched role should run on.
 
-    A unit's own `model:` wins, then `models.<role>` in ctx.yaml, then the
-    built-in default. This exists so the dispatch brief can name a model on every
-    line: an omitted model is not "the cheap one", it is whatever the
-    orchestrating session happens to be running, which is the expensive one.
+    Precedence, highest first:
+
+    1. The unit's own `model:` in its frontmatter. A unit that named its own
+       model is immune to everything below — the author knew something the
+       score does not, and a heuristic guessing louder than that is not a
+       feature. This is also immune to `round`/`escalate_on_failed_round`:
+       an intentional choice does not get escalated out from under the unit
+       that made it.
+    2. A score-derived tier, when `unit` is given — the runner's path. The
+       unit that is about to be dispatched is exactly the one whose own
+       stated scope `complexity.score` is built from, so `complexity.score`
+       turns that frontmatter into a number, `complexity.tier_for` turns the
+       number into a band (`light`/`standard`/`deep`), and `_BAND_INDEX` maps
+       the band positionally onto `models.tiers` — light to the cheapest
+       entry, deep to the dearest, clamped so a project running fewer than
+       three tiers still gets *a* model instead of an `IndexError`.
+    3. A package-driven tier, when `stats` is given instead — the reviewer's
+       path. A reviewer reads what actually changed, after the work is
+       already done, so there is no unit-scored "before" left to grade —
+       only `review.dispatch_stats`' `bytes` and `out_of_scope`. Under
+       `review.small_package_bytes` (`ctx.yaml`, defaulting to
+       `config.DEFAULTS["review"]`) with no violations, the tier one below
+       the floor is enough; otherwise the floor holds.
+    4. `models.<role>` in `ctx.yaml` — the floor every role falls back to
+       when neither of the above has anything to say (no `unit`, no `stats`,
+       or a `models.<role>` that is not even in `models.tiers`, which a
+       positional lookup has no way to place).
+    5. The built-in default in `config.DEFAULTS["models"]`, when `ctx.yaml`
+       does not set `models.<role>` at all.
+
+    Named on every dispatch line for the same reason as always: an omitted
+    model is not "the cheap one", it is whatever the orchestrating session
+    happens to be running, which is the expensive one.
+
+    `round` and `models.escalate_on_failed_round` apply last, on top of
+    whichever tier steps 2-5 picked. Off — the default — every round of a
+    unit dispatches at the same model: the working assumption when the flag
+    is off is that a retry is worth trying flat before it is worth trying
+    dearer. On, each round past the first walks `config.tier_up` once per
+    round past the first: round 2 is one tier up from round 1, round 3 one
+    more again, stopping at whatever tier `tier_up` can still reach rather
+    than raising past the dearest one.
     """
     declared = getattr(unit, "model", "") if unit is not None else ""
     if declared:
         return declared
+
     models = (config or {}).get("models") or {}
-    return str(models.get(role) or config_mod.DEFAULTS["models"][role])
+    tiers = models.get("tiers") or config_mod.DEFAULTS["models"]["tiers"]
+    floor = str(models.get(role) or config_mod.DEFAULTS["models"][role])
+
+    picked = floor
+    if unit is not None:
+        score, _breakdown = complexity_mod.score(config, unit)
+        band = complexity_mod.tier_for(config, score)
+        index = min(_BAND_INDEX[band], len(tiers) - 1)
+        picked = tiers[index]
+    elif stats is not None:
+        small = stats.get("bytes", 0) <= _small_package_bytes(config)
+        clean = not stats.get("out_of_scope", 0)
+        if small and clean and floor in tiers:
+            picked = tiers[max(0, tiers.index(floor) - 1)]
+
+    if round > 1 and models.get("escalate_on_failed_round", False):
+        for _ in range(round - 1):
+            picked = config_mod.tier_up(config, picked)
+
+    return picked
 
 
 def prepare(layout, config, slug, level=None):
@@ -113,8 +195,12 @@ def instructions(layout, config, slug, level, units, budget, worktrees=(),
             "",
         ]
         for unit in concurrent:
+            score, breakdown = complexity_mod.score(config, unit)
+            tier = complexity_mod.tier_for(config, score)
+            detail = ", ".join(f"{label}={points}" for label, points in breakdown)
             lines.append(
-                f"- `{unit.name}` → unit-runner on **{model_for(config, unit)}**: "
+                f"- `{unit.name}` → unit-runner on **{model_for(config, unit)}** "
+                f"(score {score} = {detail or 'no signals'} → {tier}): "
                 f"\"Execute the unit contract at {layout.rel(unit.path)}\""
             )
         lines += [

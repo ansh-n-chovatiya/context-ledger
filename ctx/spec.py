@@ -86,16 +86,72 @@ def questions(layout, slug):
 
 
 def _open_items(text):
-    return [m.group(1) for m in (_OPEN.match(l) for l in text.splitlines()) if m]
+    return [text for kind, text in _items(text) if kind == "open"]
 
 
 def _all_items(text):
+    return [text for _kind, text in _items(text)]
+
+
+_BULLET = re.compile(r"^[-*]\s*(?:\[([ xX])\]\s*)?(.*)$")
+
+
+def _items(text):
+    """Bullet lines from a questions section, wrapped continuations rejoined.
+
+    A question (or resolved answer) can wrap across physical lines just like
+    any other markdown list item, and `frontmatter.Document.list_items` fixed
+    the same defect for task/unit/spec criteria — this mirrors that fix for
+    the independent bullet parser here, since `spec.questions()` never goes
+    through `Document.list_items` (checkbox state has to survive, which that
+    method's plain marker-stripping does not preserve).
+
+    The continuation rule is identical: once a `-`/`*` bullet opens an item
+    (optionally carrying `[ ]`/`[x]`/`[X]`), any following line that is
+    non-blank, is not itself a bullet, and is indented further than that
+    bullet was, is folded onto the item with a single space; a blank line, a
+    new bullet, or the end of the section closes it. A line at or before the
+    bullet's own column that qualifies as neither a bullet nor a
+    continuation — e.g. the HTML-comment scaffolding `create()` seeds each
+    section with — is dropped, exactly as before. Whitespace in the result
+    is collapsed to single spaces. As in `list_items`, an indented nested
+    bullet still opens its own separate item rather than nesting; the flat
+    list this returns has never represented nesting, and `_open_items`/
+    `_all_items` only care about a single field — the checkbox state — of
+    each entry, not its position in a tree.
+
+    Returns `[(kind, text), ...]` where `kind` is `"open"` (`[ ]`), `"done"`
+    (`[x]`/`[X]`), or `"plain"` (no checkbox at all — e.g. a resolved item).
+    """
     out = []
+    buffer = None
+    kind = None
+    marker_indent = 0
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped.startswith(("-", "*")):
-            out.append(re.sub(r"^[-*]\s*(\[[ xX]\]\s*)?", "", stripped))
+        indent = len(line) - len(line.lstrip())
+        match = _BULLET.match(stripped) if stripped[:1] in ("-", "*") else None
+        if match:
+            if buffer is not None:
+                out.append((kind, _collapse(buffer)))
+            box = match.group(1)
+            kind = "open" if box == " " else "done" if box else "plain"
+            buffer = [match.group(2).strip()]
+            marker_indent = indent
+        elif not stripped:
+            if buffer is not None:
+                out.append((kind, _collapse(buffer)))
+            buffer = None
+        elif buffer is not None and indent > marker_indent:
+            buffer.append(stripped)
+    if buffer is not None:
+        out.append((kind, _collapse(buffer)))
     return out
+
+
+def _collapse(pieces):
+    """Join wrapped-line fragments into one string, whitespace normalised."""
+    return re.sub(r"\s+", " ", " ".join(pieces)).strip()
 
 
 def add_questions(layout, slug, items, blocking=True):

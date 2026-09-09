@@ -20,7 +20,7 @@ context, which is what keeps a twenty-unit plan affordable.
 
 import difflib
 
-from . import redact, snapshot
+from . import plan, redact, snapshot
 
 REVIEW_SUBDIR = "reviews"
 
@@ -57,6 +57,74 @@ def capture_before(layout, config, unit, slug, root):
     )
 
 
+def wave_scope(layout, slug, unit):
+    """(patterns, siblings) — the paths this unit's review may treat as declared.
+
+    `snapshot.capture` fingerprints the whole project, on purpose: that is what
+    makes a write to a path nobody declared visible at all. But `subagent`-tier
+    units of one wave run in *one working tree*, several Task calls deep, so a
+    sibling's write to its own declared path lands between this unit's before
+    and after captures. Checking the delta against this unit's `owns` alone
+    then reports that sibling's legitimate edit as a scope violation — and the
+    package calls a violation mechanical and "not open to argument", which
+    makes it Critical, which blocks the done-gate. Every wave of two or more
+    units deadlocked its own gate on N−1 false Criticals.
+
+    So the check is widened by exactly the amount concurrency costs it, and no
+    more: this unit's `owns`, plus the `owns` of the other units in the *same
+    wave* that are not `done`. Those are the units that may be writing to this
+    tree right now. A path no unit in the wave declared is still a violation,
+    which keeps the one mechanical protection this project has against a unit
+    writing wherever it likes.
+
+    Two exclusions are deliberate. A unit in a *different* wave is not running
+    now — its `owns` is not an excuse for a path changing, or the check would
+    degrade to "anything any unit in the plan ever claimed". A `done` unit has
+    already been reviewed and its writes already landed; a later change to its
+    paths is somebody else's, and belongs in a report.
+
+    When the wave cannot be determined — no plan on disk, no `wave` field and
+    no derivable one — this returns the unit's own `owns` unchanged. That is
+    the pre-fix behaviour: noisy, but it fails towards reporting too much
+    rather than towards silently excusing a stray write.
+    """
+    siblings = _concurrent_siblings(layout, slug, unit)
+    patterns = list(unit.owns)
+    for _name, owns in siblings:
+        patterns.extend(owns)
+    return patterns, siblings
+
+
+def _concurrent_siblings(layout, slug, unit):
+    """[(name, owns)] for the wave's other not-done units, sorted by name.
+
+    The wave is read from the unit's own `wave:` field where it has one, which
+    is what `ctx plan-check` writes back to disk and what the board and the
+    dispatcher schedule from. Where it has none, the wave is derived from the
+    dependency graph the same way `plan.waves` derives it for everything else —
+    *not* by matching one missing `wave` against another, which would put every
+    unscheduled unit in the plan into one enormous wave and hand the reviewed
+    unit a free pass over paths nothing is concurrently writing.
+    """
+    units = plan.load_units(layout, slug)
+    members = None
+    if unit.wave is not None:
+        members = [u for u in units if u.wave == unit.wave]
+    else:
+        grouped, _problems = plan.waves(units)
+        for _level, candidates in sorted(grouped.items()):
+            if any(u.name == unit.name for u in candidates):
+                members = candidates
+                break
+    if not members:
+        return []
+    return [
+        (u.name, list(u.owns))
+        for u in sorted(members, key=lambda u: u.name)
+        if u.name != unit.name and u.status != "done" and u.owns
+    ]
+
+
 def build(layout, config, unit, slug, root, round_number=1, previous=None):
     """Write the review package. Returns (path, stats, problem).
 
@@ -79,7 +147,11 @@ def build(layout, config, unit, slug, root, round_number=1, previous=None):
         content_paths=list(unit.owns) + list(unit.reads),
     )
     delta = snapshot.compare(base, head)
-    stray = snapshot.out_of_scope(delta, unit.owns)
+    # Not `unit.owns`: a wave shares one working tree, so a sibling's write to
+    # its own declared path is in this delta and is not this unit's violation.
+    # See `wave_scope` for why that widening is the smallest one that works.
+    scope, siblings = wave_scope(layout, slug, unit)
+    stray = snapshot.out_of_scope(delta, scope)
     # A path nobody declared has no captured "before", so its bytes were never
     # kept. Fill in the "after" side now that we know which paths those are —
     # otherwise the violation is named but never shown.
@@ -87,7 +159,7 @@ def build(layout, config, unit, slug, root, round_number=1, previous=None):
         head = snapshot.store_extra(layout, config, head_key, root, stray) or head
 
     text = _render(layout, config, unit, slug, delta, stray, base_key, head_key,
-                   round_number)
+                   round_number, siblings)
     path = package_path(layout, slug, unit.name, round_number)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -104,7 +176,60 @@ def build(layout, config, unit, slug, root, round_number=1, previous=None):
     return path, stats, ""
 
 
-def _render(layout, config, unit, slug, delta, stray, base_key, head_key, round_number):
+def dispatch_stats(layout, slug, unit, round_number=1):
+    """Package bytes and out-of-scope count for a package `build()` already
+    wrote — read back, not recomputed.
+
+    `build()` works out both of these numbers while it captures the head
+    snapshot and renders the package text, and hands them back in its `stats`
+    dict — but only to the caller that ran it. Sizing the *reviewer's* model
+    needs the same two numbers for a different reason: a package too large to
+    read comfortably, or a unit with a real scope violation, wants a stronger
+    reviewer than a two-line, in-scope fix does. Calling `build()` again to get
+    them would re-walk the whole tree, re-store every blob under
+    `content_paths`, and rewrite the package file a second time — all to
+    answer a question the first `build()` already answered and left on disk.
+
+    This reads that answer back instead: the package file's own size on disk
+    for `bytes`, and the base/head manifests `build()` already stored —
+    compared again, which is pure computation over data already captured, not
+    a second capture — for `out_of_scope`. Nothing here writes anything.
+
+    The scope those paths are judged against is `wave_scope`'s, exactly as in
+    `build` — otherwise the number that sizes the reviewer would count a wave
+    sibling's declared path as a violation the package itself does not report,
+    and a routine wave would be routed to a stronger model on a fiction. That
+    call re-reads the wave's unit files, which is a read of frontmatter already
+    on disk, not a capture.
+
+    Every key involved (`package_path`, `after_key`, `before_key`) is scoped to
+    this `slug`/`unit.name`/`round_number`, which is what keeps two units
+    reviewed in the same wave from ever reading each other's numbers — there is
+    no shared or last-writer state anywhere in this function to contaminate.
+
+    Returns `None` when no package has been built yet for this
+    `(slug, unit, round_number)` — there is nothing on disk to size against.
+    """
+    path = package_path(layout, slug, unit.name, round_number)
+    if not path.is_file():
+        return None
+    head = snapshot.load(layout, after_key(slug, unit.name, round_number))
+    if head is None:
+        return None
+    base_key = (after_key(slug, unit.name, round_number - 1) if round_number > 1
+                else before_key(slug, unit.name))
+    base = snapshot.load(layout, base_key)
+    delta = snapshot.compare(base, head)
+    scope, _siblings = wave_scope(layout, slug, unit)
+    stray = snapshot.out_of_scope(delta, scope)
+    return {
+        "bytes": path.stat().st_size,
+        "out_of_scope": len(stray),
+    }
+
+
+def _render(layout, config, unit, slug, delta, stray, base_key, head_key,
+            round_number, siblings=()):
     patterns = config.get("redact") or []
     out = [
         f"# Review package — unit `{unit.name}` of plan `{slug}`, round {round_number}",
@@ -134,6 +259,19 @@ def _render(layout, config, unit, slug, delta, stray, base_key, head_key, round_
         f"- **owns**: {', '.join(unit.owns) or '(nothing declared)'}",
         f"- **reads**: {', '.join(unit.reads) or '(nothing)'}",
         f"- **forbid**: {', '.join(unit.forbid) or '(nothing)'}",
+    ]
+    # Only when the wave actually has other units running. A solo unit's
+    # package must read exactly as it always did — there is no concurrency to
+    # explain, and a line explaining one would be noise at best and a false
+    # implication that something else touched this tree at worst.
+    if siblings:
+        out += [
+            "- **running alongside** (same wave, not yet done, sharing this "
+            "working tree): "
+            + "; ".join(f"`{name}` owns {', '.join(owns)}"
+                        for name, owns in siblings),
+        ]
+    out += [
         "",
         "## Files changed",
         "",
@@ -161,8 +299,24 @@ def _render(layout, config, unit, slug, delta, stray, base_key, head_key, round_
             "`review.max_files` or widen `review.ignore` before trusting this section.",
         ]
 
+    # The wording has to describe the check that actually ran. With siblings in
+    # the wave the rule is no longer "this unit's `owns`, absolutely" — it is
+    # "declared by *someone* running in this wave" — and a reviewer told the
+    # stricter rule would either raise a finding the code did not make, or
+    # learn that the section's prose is approximate. Both are worse than a
+    # sentence more of text.
     out += ["", "## Scope violations", ""]
-    if stray:
+    if stray and siblings:
+        out += [
+            "These paths changed and are **not** covered by this unit's `owns`, nor",
+            "by the `owns` of any other unit still running in this wave (listed under",
+            "Declared scope). Nobody in the wave declared them. This was decided",
+            "mechanically — no model judged it, and it is not open to argument.",
+            "Report it as Critical.",
+            "",
+        ]
+        out += [f"- {path}" for path in stray]
+    elif stray:
         out += [
             "These paths changed and are **not** covered by the unit's `owns`. This",
             "was decided mechanically — no model judged it, and it is not open to",
@@ -170,18 +324,36 @@ def _render(layout, config, unit, slug, delta, stray, base_key, head_key, round_
             "",
         ]
         out += [f"- {path}" for path in stray]
+    elif siblings:
+        out += [
+            "None — every changed path is within this unit's declared `owns`, or",
+            "within the declared `owns` of a unit running alongside it in this wave.",
+            "A wave shares one working tree, so a sibling's write to its own declared",
+            "path appears in this diff; it is that unit's to answer for, not this",
+            "one's. A path nobody in the wave declared would still be listed here.",
+        ]
     else:
         out.append("None — every changed path is within the declared `owns`.")
 
     out += ["", "## Diff", ""]
-    body = _diff_body(layout, delta, base_key, head_key)
+    body = _diff_body(layout, delta, base_key, head_key, siblings)
     out.append(body)
     return redact.scrub("\n".join(out) + "\n", patterns)
 
 
-def _diff_body(layout, delta, base_key, head_key):
-    """Unified diffs for every changed path, bounded in total size."""
-    chunks, used, omitted = [], 0, []
+def _diff_body(layout, delta, base_key, head_key, siblings=()):
+    """Unified diffs for every changed path, bounded in total size.
+
+    `siblings` is the wave's other running units as `[(name, owns)]`. A path one
+    of them declared has no bytes in either snapshot — this unit's captures only
+    store what it declared, and `build` no longer treats a sibling's path as a
+    violation worth filling in. Left to the generic "not shown" line it would be
+    blamed on a size cap, which is false and sends a reviewer looking for a
+    problem that is not there. It gets its own line, naming the unit whose work
+    it is, so the reviewer knows to leave it to that unit's own package.
+    """
+    sibling_owns = [pattern for _name, owns in siblings for pattern in owns]
+    chunks, used, omitted, elsewhere = [], 0, [], []
     for path in delta.changed:
         if snapshot.is_ledger(path):
             continue
@@ -191,7 +363,10 @@ def _diff_body(layout, delta, base_key, head_key):
             # Neither side was stored: binary, over the size cap, or outside the
             # declared content set on both snapshots. Say which paths those are
             # rather than silently omitting them.
-            omitted.append(path)
+            if snapshot.covers(path, sibling_owns):
+                elsewhere.append(path)
+            else:
+                omitted.append(path)
             continue
         chunk = "".join(difflib.unified_diff(
             (before or "").splitlines(True),
@@ -208,6 +383,13 @@ def _diff_body(layout, delta, base_key, head_key):
         used += len(chunk)
         chunks.append("```diff\n" + chunk.rstrip("\n") + "\n```")
 
+    if elsewhere:
+        chunks.append(
+            "**Another unit's work** (changed in this shared working tree by a unit "
+            "running alongside this one, which declared it): "
+            + ", ".join(sorted(elsewhere)) + ". Not shown and not yours to review — "
+            "it arrives in that unit's own package."
+        )
     if omitted:
         chunks.append(
             "**Not shown** (binary, over the size cap, or the package budget was "

@@ -7,13 +7,20 @@ block. A verify command that *cannot run* — missing binary, exit 127, timeout 
 is a configuration bug, and blocking on it would brick every session in the
 project. Infrastructure failures warn and pass.
 
-**Mechanical vs judged.** `diff`, `exists`, `symbol`, `review` and `cmd` are
-decidable by a script,
+**Mechanical vs judged.** `diff`, `exists`, `symbol`, `review`, `test_first` and
+`cmd` are decidable by a script,
 so the `Stop` hook runs them directly and they cost nothing. `rubric` and
 `human` need a model or a person, so they are evaluated by `/ctx:verify` and
 *recorded* in the work file; the hook only checks whether a recording exists.
 Any subsequent edit clears those recordings, so a sign-off cannot outlive the
 code it signed off on.
+
+`test_first` is mechanical for the same reason `review` is: the evidence is
+already on disk in `.ctx/runtime/snapshots/`, recorded by whatever ran the
+tests, and the check only has to read it. A unit with no recorded run at all
+fails rather than passing by default — the same call `config.PROFILES` makes
+by shipping no default `exists` check, because a default that always passes
+is worse than no default at all: it makes an unguarded unit look guarded.
 
 Checks run in cost order and stop at the first failure, which is why a scope
 violation never pays for a test run.
@@ -25,18 +32,21 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import redact, trust
+from . import redact, snapshot, trust
 
-MECHANICAL = ("diff", "exists", "symbol", "review", "cmd")
+MECHANICAL = ("diff", "exists", "symbol", "review", "test_first", "cmd")
 JUDGED = ("rubric", "human")
 KINDS = MECHANICAL + JUDGED
 
-# Cheapest first: `diff` is a git call, `exists` is a stat, `review` is one file
-# read, `cmd` is a whole subprocess, and the judged kinds cost a model call or a
-# human's attention. `review` sits above `symbol` and below `cmd` on purpose —
-# an open Critical finding should stop the gate before a test suite runs.
-COST = {"diff": 0, "exists": 1, "symbol": 2, "review": 3, "cmd": 4,
-        "rubric": 5, "human": 6}
+# Cheapest first: `diff` is a git call, `exists` is a stat, `review` and
+# `test_first` are each one snapshot read, `cmd` is a whole subprocess, and the
+# judged kinds cost a model call or a human's attention. `review` sits above
+# `symbol` and below `cmd` on purpose — an open Critical finding should stop
+# the gate before a test suite runs. `test_first` sits beside `review` for the
+# same reason: it is a snapshot read, not a process spawn, so it belongs
+# nowhere near `cmd`'s cost even though it is about tests.
+COST = {"diff": 0, "exists": 1, "symbol": 2, "review": 3, "test_first": 3,
+        "cmd": 4, "rubric": 5, "human": 6}
 
 PASS, FAIL, ERROR, PENDING = "pass", "fail", "error", "pending"
 
@@ -79,6 +89,9 @@ def label_of(check):
         return "changed files within owned scope"
     if kind == "review":
         return "no unaddressed critical or important review findings"
+    if kind == "test_first":
+        names = [str(n) for n in (check.get("tests") or []) if str(n).strip()]
+        return f"a failing run of {', '.join(names) or '<no tests>'} precedes the implementation"
     if kind == "rubric":
         return str(check.get("about") or "criteria judged against the diff")
     return str(check.get("about") or "explicit sign-off")
@@ -122,6 +135,8 @@ def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False)
             result = _check_exists(check, cwd)
         elif kind == "symbol":
             result = _check_symbol(check, cwd)
+        elif kind == "test_first":
+            result = _check_test_first(layout, check, key)
         elif kind == "cmd":
             remaining = deadline - time.monotonic()
             if not trust.is_accepted(check, accepted):
@@ -307,6 +322,64 @@ def _check_symbol(check, cwd):
               "decision. Report it instead of adjusting the check.",
         )
     return Result("symbol", raw, PASS)
+
+
+def _check_test_first(layout, check, key):
+    """Red before green, checked from the same snapshot the reviewer already reads.
+
+    "The implementation snapshot" is the manifest captured under this key — its
+    `taken_at` is the moment the code was fixed in place. A recorded test run is
+    evidence, not a claim: `ctx.snapshot.record_test_run` writes it next to that
+    manifest, so nothing here re-executes a test or trusts a caller's say-so.
+
+    Three ways to fail on purpose. No snapshot yet is a setup problem (ERROR):
+    nothing has been captured to compare against. No run recorded that touches
+    these test paths is a FAIL, not a pass — a unit nobody ever ran the tests
+    for must not look done. And a run recorded, but only after the
+    implementation snapshot, is also a FAIL: the failing test never came first,
+    so nothing proves the code was written to satisfy it rather than around it.
+    """
+    label = label_of(check)
+    tests = [str(p) for p in (check.get("tests") or []) if str(p).strip()]
+    if not tests:
+        return Result("test_first", label, ERROR, "needs `tests`: the paths whose failing run must precede the implementation")
+    snap_key = str(check.get("key") or key or "")
+    if not snap_key:
+        return Result("test_first", label, ERROR, "no unit to check — `test_first` needs a snapshot key")
+    manifest = snapshot.load(layout, snap_key)
+    if manifest is None:
+        return Result(
+            "test_first", label, ERROR,
+            f"no snapshot captured for {snap_key} — capture one before verifying test-first",
+        )
+    implemented_at = float(manifest.get("taken_at") or 0)
+    runs = [r for r in snapshot.test_runs(layout, snap_key)
+            if isinstance(r, dict) and _run_covers(r, tests)]
+    if not runs:
+        return Result(
+            "test_first", label, FAIL,
+            "no recorded test run touches " + ", ".join(tests)
+            + " — an unrun test is not evidence; record a run before this can pass",
+        )
+    failing_before = [
+        r for r in runs
+        if int(r.get("exit_code", 0) or 0) != 0
+        and float(r.get("at", 0) or 0) < implemented_at
+    ]
+    if not failing_before:
+        return Result(
+            "test_first", label, FAIL,
+            "the implementation snapshot precedes every recorded run of "
+            + ", ".join(tests)
+            + " — no failing run was captured before the code; write the test red first",
+        )
+    return Result("test_first", label, PASS)
+
+
+def _run_covers(run, tests):
+    """Whether a recorded run's paths overlap the paths this check cares about."""
+    paths = run.get("paths") if isinstance(run, dict) else None
+    return any(snapshot.covers(p, tests) for p in (paths or ()))
 
 
 def resolve_cwd(check, cwd):

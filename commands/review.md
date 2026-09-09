@@ -14,9 +14,19 @@ reading it here pulls the whole diff into the orchestrator's context, which is
 the cost this loop exists to avoid. You do not read source files and you do not
 read the diff.
 
-Dispatch the `reviewer` subagent with that path, on the model named in
-`models.reviewer` — a Task call with no model inherits this session's, which is
-not necessarily the one configured for review.
+Dispatch the `reviewer` subagent (or, from the second round on, `re-reviewer`)
+with that path, **on the model named on the "Dispatch the `reviewer` agent…"
+line above** — a Task call with no model inherits this session's, which is not
+necessarily the one that line named. That model is not a flat `models.reviewer`
+lookup: a small, clean package earns a cheaper tier than a large one or one
+with a scope violation, so read the model off the line rather than off
+`ctx.yaml` — the two agree most of the time and are not required to.
+
+If the round just closed a failed loop and `models.escalate_on_failed_round` is
+on, an `escalated:` line above named the tier the *next* round's fix moves to.
+That is a fact about the fix round, not the review — say it plainly and move
+on; `ctx findings «unit»` also carries it for anyone who was not in this
+session.
 
 Record every finding it returns, one call each:
 

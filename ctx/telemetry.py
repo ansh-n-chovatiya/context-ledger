@@ -34,7 +34,15 @@ def enabled(config):
 
 
 def record(layout, event, ms, **fields):
-    """Append one measurement. Silent on any failure — never break a hook."""
+    """Append one measurement. Silent on any failure — never break a hook.
+
+    `model` and `role` are ordinary entries in `**fields`, not dedicated
+    parameters — the signature was already open, so giving them a name here
+    would only pin a shape callers don't need pinned. Pass them like any
+    other field; omit either and it is simply absent from the record rather
+    than written as null. `summarise()` is what gives `role` in particular a
+    reason to exist: it is the key its `by_role` breakdown groups on.
+    """
     try:
         layout.runtime.mkdir(parents=True, exist_ok=True)
         target = path_for(layout)
@@ -88,26 +96,44 @@ def read(layout, limit=400):
 
 
 def summarise(layout, limit=400):
-    """Per-event count, median and max duration, plus median briefing chars."""
+    """Per-event count, median and max duration, a role breakdown, and median
+    briefing chars.
+
+    `by_role` exists because a hook's overall median hides the number that
+    actually matters for dispatch: model choice is made per role, not per
+    event, so "review took 400ms on average" says nothing about whether the
+    reviewer role in particular is slow. Recording `role` on `record()` was
+    free (it already accepted arbitrary fields); this is what makes that data
+    legible instead of just sitting in the jsonl unread.
+    """
     grouped = {}
     for entry in read(layout, limit):
         event = str(entry.get("event") or "?")
-        bucket = grouped.setdefault(event, {"ms": [], "chars": []})
-        if isinstance(entry.get("ms"), (int, float)):
+        bucket = grouped.setdefault(event, {"ms": [], "chars": [], "roles": {}})
+        has_ms = isinstance(entry.get("ms"), (int, float))
+        if has_ms:
             bucket["ms"].append(float(entry["ms"]))
         if isinstance(entry.get("chars"), int):
             bucket["chars"].append(entry["chars"])
+        role = entry.get("role")
+        if has_ms and isinstance(role, str) and role:
+            bucket["roles"].setdefault(role, []).append(float(entry["ms"]))
 
     rows = []
     for event in sorted(grouped):
         durations = sorted(grouped[event]["ms"])
         chars = sorted(grouped[event]["chars"])
+        by_role = {}
+        for role in sorted(grouped[event]["roles"]):
+            role_ms = sorted(grouped[event]["roles"][role])
+            by_role[role] = {"count": len(role_ms), "median_ms": _median(role_ms)}
         rows.append({
             "event": event,
             "count": len(durations),
             "median_ms": _median(durations),
             "max_ms": max(durations) if durations else 0.0,
             "median_chars": _median(chars) if chars else None,
+            "by_role": by_role,
         })
     return rows
 

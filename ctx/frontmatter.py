@@ -15,6 +15,16 @@ FENCE = "---"
 _HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*$")
 
 
+def _collapse(pieces):
+    """Join wrapped-line fragments into one string, whitespace normalised.
+
+    Each fragment is already stripped of its own leading/trailing whitespace;
+    this only needs to guard against a fragment carrying internal runs (a
+    tab, doubled spaces) so the result always reads as one clean sentence.
+    """
+    return re.sub(r"\s+", " ", " ".join(pieces)).strip()
+
+
 class Document:
     def __init__(self, meta, body, had_frontmatter=True):
         self.meta = meta or {}
@@ -44,13 +54,51 @@ class Document:
         return ""
 
     def list_items(self, *names):
-        """Bullet or numbered items from a section, markers stripped."""
+        """Bullet or numbered items from a section, markers stripped.
+
+        A markdown list item is not always one physical line: the source can
+        wrap it, and any following line that is indented past the marker is
+        part of the same item, not a new one. We honour that. A line closes
+        the item currently being built and (if the line is itself a marker)
+        opens the next one when it is blank, when it matches the marker
+        pattern, or when the section ends; every other non-blank line is
+        folded onto the open item *only if it is indented further than that
+        item's own marker was* — text at or before the marker's own column is
+        left alone, matching the pre-fix behaviour of simply dropping it,
+        since nothing here can tell a stray paragraph from a mistake.
+        Whitespace inside the joined result, including the run between
+        physical lines, collapses to a single space.
+
+        A nested sub-list is a real markdown construct, but this method
+        returns a flat list, and the marker regex below does not look at
+        indentation to decide whether something *is* a marker — only
+        whether a non-marker line continues one. So an indented `- ` or
+        `1.` line still opens its own item here rather than nesting into
+        its parent's text; that flattening is the pre-existing behaviour of
+        this method (every caller — review, briefing, work, cli —
+        already receives sub-list markers as their own entries) and this
+        fix deliberately leaves it alone.
+        """
         items = []
+        buffer = None
+        marker_indent = 0
         for line in self.section(*names).splitlines():
             stripped = line.strip()
+            indent = len(line) - len(line.lstrip())
             match = re.match(r"^(?:[-*+]|\d+[.)])\s+(.*)$", stripped)
             if match:
-                items.append(match.group(1).strip())
+                if buffer is not None:
+                    items.append(_collapse(buffer))
+                buffer = [match.group(1).strip()]
+                marker_indent = indent
+            elif not stripped:
+                if buffer is not None:
+                    items.append(_collapse(buffer))
+                buffer = None
+            elif buffer is not None and indent > marker_indent:
+                buffer.append(stripped)
+        if buffer is not None:
+            items.append(_collapse(buffer))
         return items
 
     def render(self):

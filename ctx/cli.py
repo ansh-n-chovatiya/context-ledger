@@ -6,6 +6,7 @@ measurement all cost zero tokens when they run as code.
 """
 
 import argparse
+import copy
 import datetime
 import os
 import re
@@ -14,8 +15,10 @@ import subprocess
 import sys
 
 from . import (
-    __version__, briefing, bundle, config as config_mod, dispatch, frontmatter,
-    journal, migrate as migrate_mod, paths, plan as plan_mod, spec as spec_mod,
+    __version__, briefing, bundle, complexity as complexity_mod,
+    config as config_mod, dispatch, frontmatter,
+    journal, migrate as migrate_mod, paths, phases as phases_mod,
+    plan as plan_mod, spec as spec_mod,
     findings as findings_mod, review as review_mod, snapshot as snapshot_mod,
     state, telemetry, trust as trust_mod, verify, work, worktree,
 )
@@ -360,21 +363,28 @@ def cmd_init(args):
         accepted.append({"kind": "cmd", "run": command})
 
     if not layout.config.exists() or args.force:
-        settings = {
-            "schema": config_mod.SCHEMA,
-            "profile": profile,
-            "level": "0",
-            "briefing_chars": dict(config_mod.DEFAULTS["briefing_chars"]),
-            "journal": dict(config_mod.DEFAULTS["journal"]),
-            "gate": dict(config_mod.DEFAULTS["gate"]),
-            "plan": dict(config_mod.DEFAULTS["plan"]),
-            "models": dict(config_mod.DEFAULTS["models"]),
-            "telemetry": dict(config_mod.DEFAULTS["telemetry"]),
-            "auto_load": [],
-            "redact": [],
-            "verify_candidates": list(existing.get("verify_candidates") or []),
-            "verify": accepted or config_mod.PROFILES.get(profile, []),
-        }
+        # Start from every key `config.DEFAULTS` knows about, not a hand-picked
+        # subset. The subset used to live here as a literal dict, which meant a
+        # new top-level default (like `complexity`) had to be remembered and
+        # re-typed at this exact call site or it silently never reached a
+        # generated ctx.yaml — a class of bug, not an instance, since nothing
+        # forced the two lists to stay in sync. `copy.deepcopy` rather than
+        # `dict(...)`: several of these defaults (`complexity`, `models`) nest
+        # a further dict, and a shallow copy would hand this project's
+        # ctx.yaml a live reference to that inner mapping — editing the copy
+        # in place would then mutate the process-wide `DEFAULTS` for every
+        # other project this process touches afterwards.
+        settings = copy.deepcopy(config_mod.DEFAULTS)
+        # Everything below is a genuine override, not a default: it is what
+        # *this run* detected or carried over, and it must win even though the
+        # line above already populated the same key from DEFAULTS.
+        settings["schema"] = config_mod.SCHEMA
+        settings["profile"] = profile
+        settings["level"] = "0"
+        settings["auto_load"] = []
+        settings["redact"] = []
+        settings["verify_candidates"] = list(existing.get("verify_candidates") or [])
+        settings["verify"] = accepted or config_mod.PROFILES.get(profile, [])
         layout.config.write_text(config_mod.render(settings), encoding="utf-8")
 
     (layout.root / ".gitignore").write_text(GITIGNORE, encoding="utf-8")
@@ -1220,6 +1230,16 @@ def cmd_start(args):
             captured += 1
         except OSError as exc:  # a snapshot must never block a dispatch
             _echo(f"  ! could not snapshot {unit.name} for review: {exc}")
+        # One record per dispatched unit, regardless of tier: `model` and
+        # `score` are exactly what the dispatch line above already prints for
+        # `subagent` units, recorded here too so `ctx telemetry`'s `by_role`
+        # breakdown has something to group spend on for every wave, not just
+        # the ones a human happened to be reading when it ran.
+        score, _breakdown = complexity_mod.score(config, unit)
+        telemetry.record(
+            layout, "dispatch", 0,
+            model=dispatch.model_for(config, unit), role="runner", score=score,
+        )
 
     journal.append(
         layout, config, "start", slug,
@@ -1299,7 +1319,24 @@ def cmd_review(args):
         # The round only advances when the previous one actually raised
         # something — re-running against a clean review should not burn a round.
         raised = [f for f in ledger.findings if f.round == ledger.round]
-        round_number = ledger.bump_round() if raised else ledger.round
+        if raised:
+            # `model` is what the round just ending actually ran on — the same
+            # value `ctx start` would have dispatched it at — so `bump_round`
+            # escalates from where the round genuinely was, not from a guess.
+            # It is a no-op unless `models.escalate_on_failed_round` is on, in
+            # which case a real escalation gets a line here and in the journal
+            # rather than only living inside the ledger file.
+            failed_round_model = dispatch.model_for(
+                config, unit, role="runner", round=ledger.round,
+            )
+            before = len(ledger.escalations)
+            round_number = ledger.bump_round(config, failed_round_model)
+            if len(ledger.escalations) > before:
+                escalation = ledger.escalations[-1]
+                _echo(f"  escalated: {escalation.line()}")
+                journal.append(layout, config, "escalate", unit.name, escalation.line())
+        else:
+            round_number = ledger.round
     if round_number > findings_mod.MAX_ROUNDS:
         # Past the cap the loop does not converge; the failure is structural and
         # more rounds only spend tokens on it. Every remaining finding becomes a
@@ -1332,13 +1369,26 @@ def cmd_review(args):
     if ledger.findings:
         _echo(f"  findings: {ledger.summary()}")
     _echo("")
-    _echo(f"Dispatch the `reviewer` agent against {layout.rel(path)}.")
+    # Sized off the package that was just built, not the flat `models.reviewer`
+    # floor: a small, in-scope package earns the cheaper tier one below it (see
+    # `dispatch.model_for`'s `stats` branch), so naming it here — the same way
+    # every dispatch line already names a model — is what keeps a Task call
+    # from defaulting to the orchestrator's own, pricier model out of habit.
+    reviewer_model = dispatch.model_for(
+        config, role="reviewer", stats=stats, round=round_number,
+    )
+    _echo(f"Dispatch the `reviewer` agent against {layout.rel(path)}, "
+          f"on **{reviewer_model}**.")
     _echo("Do not read the package yourself — that is the reviewer's context, not")
     _echo("yours, and reading it here defeats the point of the separate seat.")
     # The audit asked for this to be measurable rather than asserted: package
     # bytes are the context the orchestrator did *not* spend re-deriving a diff.
+    # `model`/`role` are ordinary fields (see `telemetry.record`'s docstring),
+    # not dedicated parameters — added here so `ctx telemetry`'s per-role
+    # breakdown has review spend to report, same as dispatch's runner spend.
     telemetry.record(layout, "review", 0, bytes=stats["bytes"],
-                     round=round_number, out_of_scope=stats["out_of_scope"])
+                     round=round_number, out_of_scope=stats["out_of_scope"],
+                     model=reviewer_model, role="reviewer")
     journal.append(layout, config, "review", unit.name,
                    f"round {round_number}, {stats['bytes']} bytes")
     return 0
@@ -1373,18 +1423,91 @@ def cmd_findings(args):
                        f"#{args.set} -> {args.status}")
         return 0
 
-    if not ledger.findings:
+    if not ledger.findings and not ledger.escalations:
         _echo(f"no findings recorded for {unit.name}")
         return 0
-    _echo(ledger.summary())
-    for finding in ledger.findings:
-        _echo("  " + finding.line())
+    if ledger.findings:
+        _echo(ledger.summary())
+        for finding in ledger.findings:
+            _echo("  " + finding.line())
+    if ledger.escalations:
+        # A fact about a round, never a finding's status (see `findings`'s
+        # module docstring) — shown separately so "what got escalated and
+        # why" stays visible even once every finding that caused it is closed.
+        _echo("")
+        _echo("escalations:")
+        for escalation in ledger.escalations:
+            _echo("  " + escalation.line())
     blocking = ledger.blocking()
     if blocking:
         _echo("")
         _echo(f"{len(blocking)} blocking finding(s) — the `review` gate refuses "
               "while any critical or important finding is open.")
         return 1
+    return 0
+
+
+def cmd_phase(args):
+    """Advance or inspect a unit's phase gate.
+
+    A `kind: bug` unit gates through `reproduce` → `locate` → `fix` → `guard`
+    in that order (`phases.BUG`); any other unit that declares its own
+    `phases: […]` gates through exactly that list, with no bug semantics
+    attached. Either way the door is `phases.can_enter`, and this command
+    never opens one it refuses: `phases.record` checks the gate itself before
+    it writes anything, so a caller here cannot skip the check by forgetting
+    to call it first.
+    """
+    layout, config = _loaded(args)
+    slug, unit = _unit_or_report(layout, args, "phase")
+    if unit is None:
+        return 0
+
+    declared = phases_mod.for_unit(unit)
+    if not declared:
+        _echo(f"{unit.name} declares no phases — nothing to gate. Set `kind: bug` "
+              "or add a `phases:` list to its frontmatter to turn this on.")
+        return 0
+
+    ledger = phases_mod.load(layout, slug, unit.name)
+
+    if not args.phase:
+        # Inspection only — nothing is written. This is what to run before
+        # recording anything: it names what is already there and whether the
+        # next phase is open, rather than the caller guessing from the unit
+        # file what the gate currently wants.
+        _echo(f"phases for {unit.name}: " + " -> ".join(p.name for p in declared))
+        for phase in declared:
+            entries = ledger.for_phase(phase.name)
+            ok, why = phases_mod.can_enter(unit, ledger, phase.name)
+            state_desc = "open" if ok else f"locked — {why}"
+            plural = "entry" if len(entries) == 1 else "entries"
+            _echo(f"  {phase.name}: {len(entries)} {plural} recorded — {state_desc}")
+            if phase.check:
+                # `guard`'s check, handed to `verify.label_of` exactly as
+                # `phases.for_unit` built it — unreworded, because this text is
+                # what a verifier is meant to judge, and a paraphrase here
+                # could quietly ask a different question than `verify.run`
+                # would when the same check is used elsewhere.
+                _echo(f"    judged on: {verify.label_of(phase.check)}")
+        return 0
+
+    ok, result = phases_mod.record(
+        layout, slug, unit, args.phase,
+        command=args.command or "", exit_code=args.exit_code,
+        evidence=args.evidence or "", note=args.note or "",
+    )
+    if not ok:
+        # `result` is `can_enter`'s `why`, unmodified — the refusal a `bug`
+        # unit gets when it reaches for `fix` with no failing reproduction
+        # recorded has to name that specific missing prerequisite. Rewording
+        # it into "not allowed" would throw away the only thing that tells
+        # the caller what to do next.
+        _echo(result)
+        return 1
+    journal.append(layout, config, "phase", unit.name, f"{args.phase} recorded")
+    _echo(f"recorded {args.phase} for {unit.name}"
+          + (f" (exit {args.exit_code})" if args.exit_code is not None else ""))
     return 0
 
 
@@ -1890,6 +2013,15 @@ def cmd_telemetry(args):
         chars = "" if row["median_chars"] is None else str(round(row["median_chars"]))
         _echo(f"{row['event']:<20}{row['count']:>5}{row['median_ms']:>11.1f}"
               f"{row['max_ms']:>9.1f}{chars:>14}")
+        # `by_role` exists because an event's overall median hides the number
+        # that actually drives model choice: "review took 400ms on average"
+        # says nothing about whether the `reviewer` role in particular is
+        # slow, or which role is actually spending the tokens. Indented under
+        # its event rather than a separate table, since a role's numbers are
+        # only meaningful next to the event they were spent on.
+        for role in sorted(row["by_role"]):
+            info = row["by_role"][role]
+            _echo(f"    {role:<16}{info['count']:>5}{info['median_ms']:>11.1f}")
     slow = [r for r in rows if r["max_ms"] > 1000]
     if slow:
         _echo("")
@@ -2140,6 +2272,20 @@ def build_parser():
     p.add_argument("--status", choices=list(findings_mod.STATUSES), default=None)
     p.add_argument("--ruling", default=None)
     p.set_defaults(func=cmd_findings)
+
+    p = sub.add_parser(
+        "phase",
+        help="advance or inspect a unit's phase gate (kind: bug, or a declared `phases:` list)",
+    )
+    p.add_argument("name", nargs="?", default=None, help="unit name")
+    p.add_argument("phase", nargs="?", default=None,
+                    help="phase to record; omit to list status instead")
+    p.add_argument("--plan", default=None)
+    p.add_argument("--command", default=None)
+    p.add_argument("--exit-code", type=int, default=None)
+    p.add_argument("--evidence", default=None)
+    p.add_argument("--note", default=None)
+    p.set_defaults(func=cmd_phase)
 
     p = sub.add_parser("merge", help="land a unit's worktree branch after its gate passes")
     p.add_argument("name", nargs="?", default=None)

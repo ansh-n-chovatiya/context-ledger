@@ -32,6 +32,10 @@ STATUSES = ("pending", "running", "blocked", "verify_failed", "done")
 
 REQUIRED = ("unit", "tier", "owns")
 _UNIT_NAME = re.compile(r"^[0-9]{2}-[a-z0-9][a-z0-9-]*$")
+# What `publishes_interface` strips before deciding a `## Interfaces` section is
+# empty — the scaffolded template is only an HTML comment, so a unit that never
+# touched the section must not read as having published anything.
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 
 UNIT_TEMPLATE = """## Objective
 {objective}
@@ -63,6 +67,8 @@ class Unit:
         value = self.doc.meta.get(key) or []
         if isinstance(value, str):
             value = [value]
+        elif not isinstance(value, (list, tuple)):
+            return []
         return [str(item) for item in value if str(item).strip()]
 
     depends_on = property(lambda self: self._list("depends_on"))
@@ -108,6 +114,40 @@ class Unit:
         """Judged kinds already signed off. Mirrors work.Work so the same gate
         code can run against a unit or a task."""
         return [str(k) for k in (self.doc.meta.get("verified") or [])]
+
+    @property
+    def kind(self):
+        """Free-form classification, e.g. "bug" or "feature". Empty means
+        unclassified — nothing downstream requires it."""
+        return self._text("kind")
+
+    @property
+    def reproduction(self):
+        """Repro steps for a `kind: bug` unit. `validate` flags a bug unit
+        that has none, because a bug fix nobody can reproduce is unreviewable."""
+        return self._text("reproduction")
+
+    def _text(self, key):
+        """A frontmatter value as text, or "" for anything that is not text —
+        a mapping or a list under a scalar key is malformed, not a string in
+        disguise."""
+        value = self.doc.meta.get(key)
+        if isinstance(value, (dict, list)):
+            return ""
+        return str(value or "").strip()
+
+    @property
+    def phases(self):
+        """Named phases the complexity score and the phase gate key off of."""
+        return self._list("phases")
+
+    @property
+    def publishes_interface(self):
+        """True once `## Interfaces` holds real content, not just the scaffolded
+        HTML-comment template `UNIT_TEMPLATE` writes. A sibling unit can only
+        code against a signature that is actually written down."""
+        text = _HTML_COMMENT.sub("", self.doc.section("interfaces")).strip()
+        return bool(text)
 
     def _read_paths(self):
         """`reads` may be bare paths or {path, symbols} mappings."""
@@ -235,6 +275,11 @@ def validate(units):
             problems.append(
                 f"{unit.name}: tier {unit.doc.meta.get('tier')!r} is not one of "
                 + "/".join(TIERS)
+            )
+        if unit.kind == "bug" and not unit.reproduction:
+            problems.append(
+                f"{unit.name}: kind is `bug` but `reproduction` is empty — add the "
+                "steps that reproduce it before this unit can be dispatched"
             )
         if not verify.ordered(unit.checks):
             problems.append(
