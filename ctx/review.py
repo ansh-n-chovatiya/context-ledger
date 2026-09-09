@@ -162,7 +162,15 @@ def build(layout, config, unit, slug, root, round_number=1, previous=None):
                    round_number, siblings)
     path = package_path(layout, slug, unit.name, round_number)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    # `newline=""` writes the string's own "\n" through untranslated. On
+    # Windows the default would rewrite every one to "\r\n", so the file on
+    # disk would be larger than the text that produced it — and `bytes` below
+    # counts the text while `dispatch_stats` stats the file. Those two numbers
+    # size the reviewer's model, so letting them disagree by one byte per line
+    # would draw a dearer seat on Windows than on Linux for the same package.
+    # `Path.write_text` only learned `newline` in 3.10 and this ships 3.8+.
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(text)
     stats = {
         "bytes": len(text.encode("utf-8")),
         "added": len(delta.added),

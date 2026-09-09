@@ -75,6 +75,19 @@ Claims the project had been making in its own rationale, now asserted in
 - An escalated dispatch cannot widen what `trust.py` has accepted: the entire
   global trust tree is byte-identical across a real escalation.
 
+### Fixed on Windows
+
+- **The review package measured itself two different ways.** `build` counted
+  the rendered text; `dispatch_stats` stat'd the file it was written to, and
+  `Path.write_text` rewrites `\n` to `\r\n` on Windows. Those two numbers size
+  the reviewer's model, so a package near `review.small_package_bytes` drew a
+  dearer seat on Windows than on Linux for the same diff. The package is now
+  written untranslated.
+- **`ctx status` exited 1 because of an arrow.** Windows resolves piped stdout
+  to cp1252, which cannot encode `→`, and `print` took the whole command down
+  with it. `_echo` now degrades an unencodable glyph instead — the CLI prints
+  `·`, `—` and `→` in 73 places, so this was a class rather than one character.
+
 ### Decisions
 
 - Harness portability declined (ADR 0001): eight variants multiply the

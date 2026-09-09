@@ -51,7 +51,22 @@ def _loaded(args=None):
 
 
 def _echo(*parts):
-    print(*parts)
+    """`print`, but a console that cannot spell a character loses the character
+    rather than the command.
+
+    Windows resolves piped stdout to the legacy code page — cp1252 on the CI
+    runners — and this CLI's output is full of `→`, `·` and `—`. Encoding one
+    of those raises `UnicodeEncodeError` from inside `print`, which aborts the
+    whole command: `ctx status` exited 1 on Windows for no reason worse than an
+    arrow marking the active unit. Degrading the glyph is the right trade; a
+    status board that cannot be read at all is not.
+    """
+    try:
+        print(*parts)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(*[str(part).encode(encoding, "replace").decode(encoding)
+                for part in parts])
 
 
 # Slash commands splice whatever the user typed into a shell command line, so an
