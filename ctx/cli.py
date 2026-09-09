@@ -16,6 +16,7 @@ import sys
 from . import (
     __version__, briefing, bundle, config as config_mod, dispatch, frontmatter,
     journal, migrate as migrate_mod, paths, plan as plan_mod, spec as spec_mod,
+    findings as findings_mod, review as review_mod, snapshot as snapshot_mod,
     state, telemetry, trust as trust_mod, verify, work, worktree,
 )
 
@@ -334,11 +335,22 @@ def cmd_init(args):
     candidates = _verify_candidates(
         root, profile, existing.get("verify_candidates") or []
     )
-    accepted, rejected = [], []
+    # Candidates the ecosystem table produced are ours; candidates the ledger's
+    # own `verify_candidates` supplied are the cloned file's. `--verify-now`
+    # *executes* a candidate to see whether it passes on a clean tree, so running
+    # the second kind hands an attacker-supplied string to the shell before it
+    # has even been printed. They are proposed, never probed, and never
+    # auto-accepted — `ctx trust` is the only way in.
+    from_ledger = {str(entry).strip() for entry in
+                   (existing.get("verify_candidates") or []) if str(entry).strip()}
+    accepted, rejected, needs_review = [], [], []
     for command in candidates:
         available, why = _availability(command)
         if not available:
             rejected.append((command, why))
+            continue
+        if command in from_ledger:
+            needs_review.append(command)
             continue
         if args.verify_now:
             code, output = _run(command, root, args.timeout)
@@ -356,6 +368,7 @@ def cmd_init(args):
             "journal": dict(config_mod.DEFAULTS["journal"]),
             "gate": dict(config_mod.DEFAULTS["gate"]),
             "plan": dict(config_mod.DEFAULTS["plan"]),
+            "models": dict(config_mod.DEFAULTS["models"]),
             "telemetry": dict(config_mod.DEFAULTS["telemetry"]),
             "auto_load": [],
             "redact": [],
@@ -366,10 +379,12 @@ def cmd_init(args):
 
     (layout.root / ".gitignore").write_text(GITIGNORE, encoding="utf-8")
     config = config_mod.load(layout)
-    # Accept what init configured. You watched these being proposed and printed,
-    # which is the review `ctx trust` exists to force on a ledger that arrived
-    # from somewhere else.
-    trust_mod.accept(layout, config.get("verify") or [])
+    # Accept only what *this run* detected and is about to print, never
+    # `config["verify"]`. On a pre-existing ledger those are different lists: the
+    # config's block came with the repository, and accepting it here silently
+    # granted a cloned file the shell access `ctx trust` exists to gate — while
+    # the report below listed something else entirely.
+    trust_mod.accept(layout, accepted)
     journal.write_digest(layout, config)
     bundle.reindex(layout)
     if not layout.state.exists():
@@ -380,6 +395,11 @@ def cmd_init(args):
         for entry in accepted:
             suffix = "" if args.verify_now else "  (available; not yet run)"
             _echo(f"  verify  {entry['run']}{suffix}")
+    if needs_review:
+        for command in needs_review:
+            _echo(f"  review  {command}")
+        _echo("  those came from `verify_candidates` in this ledger, not from your")
+        _echo("  toolchain — read them and run `ctx trust` to allow them")
     if rejected:
         for command, why in rejected:
             _echo(f"  skipped {command} — {why}")
@@ -776,6 +796,7 @@ def cmd_doctor(args):
         )
 
     _echo("## verify commands")
+    doctor_accepted = trust_mod.load(layout)
     entries = config.get("verify") or []
     if not entries:
         _echo("  none configured (fine at L0; required for L1/L2 gates)")
@@ -792,6 +813,13 @@ def cmd_doctor(args):
         available, why = _availability(command)
         if not available:
             _echo(f"  MISS {command} — {why}")
+            problems += 1
+        elif args.verify and not trust_mod.is_accepted(entry, doctor_accepted):
+            # `--verify` used to shell out here with no trust check, so `doctor`
+            # executed a command and then, four lines later, reported that the
+            # same command "will not run until you review it". Running is the
+            # thing trust gates; reporting is not a substitute for asking.
+            _echo(f"  SKIP {command} — not accepted on this machine; run `ctx trust`")
             problems += 1
         elif args.verify:
             code, output = _run(command, layout.root.parent, args.timeout)
@@ -816,6 +844,12 @@ def cmd_doctor(args):
         problems += 1
     else:
         _echo(f"  ok   {len(declared)} command(s) accepted on this machine")
+    legacy = trust_mod.legacy_path_for(layout)
+    if legacy.is_file():
+        # Explain the silence rather than leaving it mysterious: acceptances
+        # recorded before 0.7 lived in the repo and are deliberately ignored.
+        _echo(f"  note {layout.rel(legacy)} is a pre-0.7 in-repo trust store and is")
+        _echo("       ignored — acceptances now live outside the repository. Delete it.")
 
     drifted = _verify_drift(layout, config)
     if drifted:
@@ -1081,7 +1115,7 @@ def cmd_plan(args):
         _echo(f"  {'created' if fresh else 'exists '} {layout.rel(path)}")
     if not created:
         _echo("  no units yet — `ctx plan-unit` or write NN-name.md files directly")
-    _echo("then run /ctx:plan-check to compute waves and check for collisions")
+    _echo("then run `ctx plan-check` to compute waves and check for collisions")
     return 0
 
 
@@ -1135,7 +1169,12 @@ def cmd_plan_check(args):
         if problem:
             _echo(f"note: {', '.join(sessions)} use tier `session`, but {problem}")
         else:
-            _echo(f"note: {', '.join(sessions)} will each get a git worktree on dispatch")
+            _echo(
+                f"note: {', '.join(sessions)} "
+                + ("is tier `session` — it runs" if len(sessions) == 1
+                   else "are tier `session` — they run")
+                + " in the main tree unless you dispatch with `ctx start --worktree`"
+            )
     _echo(f"wrote {layout.rel(path)}")
     return 0
 
@@ -1160,25 +1199,194 @@ def cmd_start(args):
         _echo(f"wave {level}: nothing left to dispatch")
         return 0
 
+    # Opt-in, not opt-out. A worktree holds its branch exclusively: while one
+    # exists, `git checkout` of that branch in the main tree is refused, so
+    # creating them by default quietly took away the tree the user tests in.
     worktrees, wt_problems = ([], [])
-    if not args.no_worktree:
+    if args.worktree:
         worktrees, wt_problems = dispatch.prepare_worktrees(layout, slug, units)
     for problem in wt_problems:
         _echo(f"  ! {problem}")
     if wt_problems:
         _echo("")
 
+    # The snapshot has to exist before the work does, and dispatch is the only
+    # moment we know that is true. Taking it here is what lets `ctx review` need
+    # no commits and no ceremony from the user later.
+    captured = 0
+    for unit in units:
+        try:
+            review_mod.capture_before(layout, config, unit, slug, layout.root.parent)
+            captured += 1
+        except OSError as exc:  # a snapshot must never block a dispatch
+            _echo(f"  ! could not snapshot {unit.name} for review: {exc}")
+
     journal.append(
         layout, config, "start", slug,
-        f"wave {level}, {len(units)} unit(s), {len(worktrees)} worktree(s)",
+        f"wave {level}, {len(units)} unit(s), {len(worktrees)} worktree(s), "
+        f"{captured} snapshot(s)",
     )
-    _echo(dispatch.instructions(layout, slug, level, units, budget, worktrees))
+    _echo(dispatch.instructions(
+        layout, config, slug, level, units, budget, worktrees,
+        worktree_requested=bool(args.worktree),
+    ))
     return 0
 
 
 # --------------------------------------------------------------------------- #
 # phase 6 — the worktree tier
 # --------------------------------------------------------------------------- #
+
+def _unit_or_report(layout, args, verb):
+    """(slug, unit) for a unit-scoped command, or (None, None) having said why."""
+    slug = _active_slug(layout, getattr(args, "plan", None), "plan")
+    if not slug:
+        _echo("no active plan — /ctx:plan «slug» first")
+        return None, None
+    if not args.name:
+        _echo(f"no unit name given. Units in plan {slug}:")
+        _list_units(layout, slug)
+        _echo(f"Ask which unit to {verb}, then run: ctx {verb} «unit-name»")
+        return None, None
+    unit = plan_mod.find_unit(layout, slug, args.name)
+    if unit is None:
+        _echo(f"no unit {args.name!r} in plan {slug}")
+        return None, None
+    return slug, unit
+
+
+def cmd_snapshot(args):
+    """Capture a content snapshot of the tree for one unit.
+
+    `ctx start` does the `before` phase for every unit it dispatches, so this is
+    for work that reached a unit by some other route.
+    """
+    layout, config = _loaded(args)
+    slug, unit = _unit_or_report(layout, args, "snapshot")
+    if unit is None:
+        return 0
+    root = layout.root.parent
+    if args.phase == "before":
+        manifest = review_mod.capture_before(layout, config, unit, slug, root)
+        key = review_mod.before_key(slug, unit.name)
+    else:
+        key = review_mod.after_key(slug, unit.name, args.round)
+        manifest = snapshot_mod.capture(
+            layout, config, key, root,
+            content_paths=list(unit.owns) + list(unit.reads),
+        )
+    _echo(f"{args.phase} snapshot for {unit.name}: {len(manifest['files'])} file(s) "
+          f"fingerprinted, {len(manifest['stored'])} stored")
+    if manifest.get("truncated"):
+        _echo("  warning: the file cap was reached, so this snapshot is incomplete")
+        _echo("  — raise review.max_files or widen review.ignore in ctx.yaml")
+    journal.append(layout, config, "snapshot", unit.name, args.phase)
+    return 0
+
+
+def cmd_review(args):
+    """Build the review package for a unit. Spawns no reviewer itself."""
+    layout, config = _loaded(args)
+    slug, unit = _unit_or_report(layout, args, "review")
+    if unit is None:
+        return 0
+
+    ledger = findings_mod.load(layout, slug, unit.name)
+    if args.round:
+        round_number = args.round
+    else:
+        # A second `ctx review` means a fix round, not the same review again.
+        # The round only advances when the previous one actually raised
+        # something — re-running against a clean review should not burn a round.
+        raised = [f for f in ledger.findings if f.round == ledger.round]
+        round_number = ledger.bump_round() if raised else ledger.round
+    if round_number > findings_mod.MAX_ROUNDS:
+        # Past the cap the loop does not converge; the failure is structural and
+        # more rounds only spend tokens on it. Every remaining finding becomes a
+        # decision taken on the user's behalf, which is what a ruling is for.
+        _echo(f"round cap reached ({findings_mod.MAX_ROUNDS}) — stop dispatching fixes")
+        for finding in ledger.blocking():
+            _echo("  " + finding.line())
+        _echo("")
+        _echo("Rule on each one and park it:")
+        _echo(f"  ctx findings {unit.name} --set «id» --status parked --ruling «why»")
+        _echo("A parked finding is a decision made for the user, so record it with")
+        _echo("/ctx:decide as an ADR — that is what keeps it reviewable.")
+        journal.append(layout, config, "review", unit.name, "round cap reached")
+        return 1
+    previous = (review_mod.after_key(slug, unit.name, round_number - 1)
+                if round_number > 1 else None)
+    path, stats, problem = review_mod.build(
+        layout, config, unit, slug, layout.root.parent, round_number, previous
+    )
+    if problem:
+        _echo(problem)
+        return 1
+
+    _echo(f"review package  {layout.rel(path)}")
+    _echo(f"  round {round_number} · +{stats['added']} ~{stats['modified']} "
+          f"-{stats['deleted']} · {stats['bytes']:,} bytes")
+    if stats["out_of_scope"]:
+        _echo(f"  {stats['out_of_scope']} path(s) changed outside `owns` — that is a "
+              "Critical finding, already decided")
+    if ledger.findings:
+        _echo(f"  findings: {ledger.summary()}")
+    _echo("")
+    _echo(f"Dispatch the `reviewer` agent against {layout.rel(path)}.")
+    _echo("Do not read the package yourself — that is the reviewer's context, not")
+    _echo("yours, and reading it here defeats the point of the separate seat.")
+    # The audit asked for this to be measurable rather than asserted: package
+    # bytes are the context the orchestrator did *not* spend re-deriving a diff.
+    telemetry.record(layout, "review", 0, bytes=stats["bytes"],
+                     round=round_number, out_of_scope=stats["out_of_scope"])
+    journal.append(layout, config, "review", unit.name,
+                   f"round {round_number}, {stats['bytes']} bytes")
+    return 0
+
+
+def cmd_findings(args):
+    """List or update the findings recorded against a unit."""
+    layout, config = _loaded(args)
+    slug, unit = _unit_or_report(layout, args, "findings")
+    if unit is None:
+        return 0
+    ledger = findings_mod.load(layout, slug, unit.name)
+
+    if args.add:
+        finding = ledger.add(args.add, args.summary or "(no summary given)",
+                             where=args.where or "", evidence=args.evidence or "")
+        _echo(f"recorded [{finding.id}] {finding.severity}: {finding.summary}")
+        journal.append(layout, config, "finding", unit.name,
+                       f"{finding.severity} #{finding.id}")
+        return 0
+
+    if args.set is not None:
+        ok, problem = ledger.set_status(
+            args.set, args.status or "", ruling=args.ruling or "",
+            evidence=args.evidence or "",
+        )
+        if not ok:
+            _echo(problem)
+            return 1
+        _echo(f"[{args.set}] is now {args.status}")
+        journal.append(layout, config, "finding", unit.name,
+                       f"#{args.set} -> {args.status}")
+        return 0
+
+    if not ledger.findings:
+        _echo(f"no findings recorded for {unit.name}")
+        return 0
+    _echo(ledger.summary())
+    for finding in ledger.findings:
+        _echo("  " + finding.line())
+    blocking = ledger.blocking()
+    if blocking:
+        _echo("")
+        _echo(f"{len(blocking)} blocking finding(s) — the `review` gate refuses "
+              "while any critical or important finding is open.")
+        return 1
+    return 0
+
 
 def cmd_merge(args):
     """Land a unit's worktree branch. Refuses past a failed gate or stray writes."""
@@ -1228,7 +1436,7 @@ def _verify_plan(layout, config, slug):
             _echo(f"  - {problem}")
         return 1
 
-    failed, pending, passed = [], [], []
+    failed, pending, passed, warned = [], [], [], []
     for level in sorted(grouped):
         for unit in grouped[level]:
             # A unit with no usable checks never gets here: plan_mod.check()
@@ -1248,14 +1456,20 @@ def _verify_plan(layout, config, slug):
                 _echo("       " + verify.summarise(results).replace("\n", "\n       "))
             elif verdict == verify.PENDING:
                 pending.append(unit.name)
+            elif verdict == verify.ERROR:
+                # Not a pass: something in this unit's gate could not run at all.
+                warned.append(unit.name)
             else:
                 passed.append(unit.name)
 
     _echo("")
-    _echo(f"{len(passed)} passed · {len(pending)} awaiting sign-off · {len(failed)} failed")
+    _echo(
+        f"{len(passed)} passed · {len(pending)} awaiting sign-off · "
+        f"{len(warned)} could not run · {len(failed)} failed"
+    )
     journal.append(
         layout, config, "verify", slug,
-        f"plan run: {len(passed)}p/{len(pending)}w/{len(failed)}f",
+        f"plan run: {len(passed)}p/{len(pending)}w/{len(warned)}e/{len(failed)}f",
     )
     return 1 if failed else 0
 
@@ -1892,9 +2106,40 @@ def build_parser():
     p = sub.add_parser("start", help="dispatch brief for the next (or given) wave")
     p.add_argument("name", nargs="?", default=None)
     p.add_argument("--wave", type=int, default=None)
-    p.add_argument("--no-worktree", action="store_true",
-                   help="do not create worktrees for session-tier units")
+    p.add_argument("--worktree", action="store_true",
+                   help="isolate each session-tier unit in its own temporary "
+                        "worktree; off by default, because a worktree holds its "
+                        "branch exclusively and the main tree can no longer "
+                        "check it out")
+    # Accepted and ignored: this was the opt-out before worktrees became opt-in,
+    # and it still reads correctly in older docs and scripts.
+    p.add_argument("--no-worktree", action="store_true", help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_start)
+
+    p = sub.add_parser("snapshot", help="capture a content snapshot for a unit")
+    p.add_argument("name", nargs="?", default=None)
+    p.add_argument("--plan", default=None)
+    p.add_argument("--phase", choices=["before", "after"], default="before")
+    p.add_argument("--round", type=int, default=1)
+    p.set_defaults(func=cmd_snapshot)
+
+    p = sub.add_parser("review", help="build the review package for a unit")
+    p.add_argument("name", nargs="?", default=None)
+    p.add_argument("--plan", default=None)
+    p.add_argument("--round", type=int, default=None)
+    p.set_defaults(func=cmd_review)
+
+    p = sub.add_parser("findings", help="list or update a unit's review findings")
+    p.add_argument("name", nargs="?", default=None)
+    p.add_argument("--plan", default=None)
+    p.add_argument("--add", choices=list(findings_mod.SEVERITIES), default=None)
+    p.add_argument("--summary", default=None)
+    p.add_argument("--where", default=None)
+    p.add_argument("--evidence", default=None)
+    p.add_argument("--set", type=int, default=None, metavar="ID")
+    p.add_argument("--status", choices=list(findings_mod.STATUSES), default=None)
+    p.add_argument("--ruling", default=None)
+    p.set_defaults(func=cmd_findings)
 
     p = sub.add_parser("merge", help="land a unit's worktree branch after its gate passes")
     p.add_argument("name", nargs="?", default=None)

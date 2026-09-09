@@ -297,6 +297,63 @@ class TestVerifyKinds(Fixture):
 
 
 # --------------------------------------------------------------------------- #
+# an unrun check is not a satisfied one
+# --------------------------------------------------------------------------- #
+
+class TestUnrunChecksNeverBecomePasses(Fixture):
+    """The gate used to sign off on work it had never checked.
+
+    `verdict_of` returned ERROR only when *every* result errored, so one ERROR
+    beside one PASS collapsed to PASS. The live case: outside a git repository
+    the `diff` kind cannot run, and any passing `cmd` next to it was enough to
+    report the whole gate green — with the `owns` scope check, the one mechanical
+    guarantee the parallel tiers rest on, silently absent.
+    """
+
+    def run_checks(self, checks, **kwargs):
+        self.trust(checks)
+        return verify.run(
+            self.layout, self.config, checks, cwd=self.root, key="k", **kwargs
+        )
+
+    def test_an_erroring_check_beside_a_passing_one_is_not_a_pass(self):
+        results, verdict = self.run_checks([
+            {"kind": "cmd", "run": OK},
+            {"kind": "cmd", "run": "definitely-not-a-real-binary-xyz"},
+        ])
+        self.assertEqual([r.status for r in results], [verify.PASS, verify.ERROR])
+        self.assertEqual(verdict, verify.ERROR)
+
+    def test_the_scope_check_outside_git_cannot_be_signed_off(self):
+        """The fixture's `.git` is a plain directory, so `git status` fails —
+        which is exactly what a project with no VCS looks like to the gate."""
+        results, verdict = self.run_checks(
+            [{"kind": "diff"}, {"kind": "cmd", "run": OK}], owns=["src/only.py"],
+        )
+        by_kind = {r.kind: r for r in results}
+        self.assertEqual(by_kind["diff"].status, verify.ERROR)
+        self.assertEqual(by_kind["cmd"].status, verify.PASS)
+        self.assertEqual(
+            verdict, verify.ERROR,
+            "`owns` was never checked, so there is nothing to sign off on",
+        )
+
+    def test_a_real_failure_still_outranks_an_unrun_check(self):
+        _results, verdict = self.run_checks([
+            {"kind": "cmd", "run": "definitely-not-a-real-binary-xyz"},
+            {"kind": "cmd", "run": FAILS},
+        ])
+        self.assertEqual(verdict, verify.FAIL, "work failure beats infrastructure")
+
+    def test_a_pending_sign_off_still_outranks_an_unrun_check(self):
+        _results, verdict = self.run_checks([
+            {"kind": "cmd", "run": "definitely-not-a-real-binary-xyz"},
+            {"kind": "rubric", "about": "judged"},
+        ])
+        self.assertEqual(verdict, verify.PENDING)
+
+
+# --------------------------------------------------------------------------- #
 # phase 4 — the Stop hook
 # --------------------------------------------------------------------------- #
 
@@ -355,6 +412,63 @@ class TestDoneGate(Fixture):
         self.arm([{"kind": "cmd", "run": "definitely-not-a-real-binary-xyz"}])
         self.assertIsNone(self.stop(), "a broken check must not brick the project")
         self.assertEqual(state.attempts(self.layout, "gated"), 0)
+
+    def test_a_partly_unrun_gate_does_not_journal_a_pass(self):
+        """Infrastructure still never blocks — but the ledger says the gate
+        signed nothing, rather than recording a pass it did not earn."""
+        self.arm([
+            {"kind": "cmd", "run": OK},
+            {"kind": "cmd", "run": "definitely-not-a-real-binary-xyz"},
+        ])
+        self.assertIsNone(self.stop(), "a broken check must not brick the project")
+        entries, _earlier = journal.tail(self.layout, 20)
+        gate_lines = [e for e in entries if "gate" in e]
+        self.assertTrue(gate_lines, entries)
+        self.assertIn("incomplete", gate_lines[-1])
+        self.assertNotIn("pass", gate_lines[-1])
+
+    def test_the_bound_holds_across_sessions(self):
+        """`max_attempts` was a repeating cycle, not a bound.
+
+        The escalation cleared the attempt counter and set `verify_failed`, but
+        nothing ever read that status back — so the next session started at one
+        and blocked three more times, for ever. Eight consecutive stops used to
+        give block/block/block/free repeated twice.
+        """
+        self.arm([{"kind": "cmd", "run": "exit 1"}])
+        verdicts = []
+        for attempt in range(8):
+            verdicts.append(self.stop(stop_hook_active=attempt > 0) is not None)
+        self.assertEqual(
+            verdicts, [True, True, True, False, False, False, False, False],
+            "it must stand down and stay down, not start the cycle again",
+        )
+
+    def test_an_edit_re_arms_work_the_gate_gave_up_on(self):
+        """Standing down for ever would be its own bug: work the user then fixes
+        has to be gated again. The edit hook is the signal that they acted."""
+        self.arm([{"kind": "cmd", "run": "exit 1"}])
+        for attempt in range(4):
+            self.stop(stop_hook_active=attempt > 0)
+        self.assertIsNone(self.stop(stop_hook_active=True), "gave up")
+
+        self.run_hook("PostToolUse", tool_name="Edit",
+                      tool_input={"file_path": str(self.root / "src" / "a.py")})
+        self.assertIsNotNone(
+            self.stop(stop_hook_active=True), "an edit re-arms the gate"
+        )
+
+    def test_the_scope_check_ignores_the_ledgers_own_writes(self):
+        """Every ctx command appends to the journal and flips a `status:` field.
+        Counting those as scope violations failed work that was entirely in
+        scope — the merge preflight already knew this and the gate did not."""
+        self.assertTrue(verify.is_ledger(".ctx/journal/2026-09-09.md"))
+        self.assertFalse(verify.is_ledger("src/app.py"))
+        self.git_init()
+        (self.root / "src").mkdir(exist_ok=True)
+        (self.root / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+        result = verify._check_diff({"kind": "diff"}, self.root, ["src"])
+        self.assertEqual(result.status, verify.PASS, result.message)
 
     def test_env_override_disables_the_gate(self):
         self.arm([{"kind": "cmd", "run": "exit 1"}])

@@ -43,6 +43,33 @@ jobs:
       - name: Test
         run: python -m unittest discover -s tests
 
+  # The Windows wrapper carries logic the POSIX one does not, and nothing ran
+  # it: the entry-point check below is a ubuntu-only job, so `bin/ctx.cmd`
+  # shipped for six versions swallowing every non-zero exit with no coverage.
+  windows-wrapper:
+    name: windows wrapper propagates exit codes
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Version agrees with the python entry point
+        shell: cmd
+        run: |
+          for /f %%v in ('python bin\ctx.py --version') do set EXPECTED=%%v
+          for /f %%v in ('bin\ctx.cmd --version') do set ACTUAL=%%v
+          if not "%EXPECTED%"=="%ACTUAL%" exit /b 1
+      - name: A failing command exits non-zero
+        shell: cmd
+        run: |
+          bin\ctx.cmd --cwd . doctor --verify
+          if not errorlevel 1 (
+            echo expected a non-zero exit from a ledger-less doctor run
+            exit /b 1
+          )
+          exit /b 0
+
   ledger:
     name: ledger self-check
     runs-on: ubuntu-latest

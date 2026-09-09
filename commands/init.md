@@ -3,7 +3,7 @@ description: Scaffold the ledger and propose verify commands
 allowed-tools: Bash
 argument-hint: "[--profile code|docs|research|infra|data] [--verify-now]"
 ---
-!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" init $ARGUMENTS`
+!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" init $ARGUMENTS || true`
 
 Report what was created in one or two lines. If no verify commands were configured,
 say so plainly — the L1/L2 gates cannot work without them, and inventing commands

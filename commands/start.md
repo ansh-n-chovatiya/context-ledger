@@ -1,9 +1,9 @@
 ---
 description: Dispatch the next wave of a checked plan
 allowed-tools: Bash, Read, Task
-argument-hint: "[--wave N]"
+argument-hint: "[--wave N] [--worktree]"
 ---
-!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" start $ARGUMENTS`
+!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" start $ARGUMENTS || true`
 
 Follow the brief above exactly.
 
@@ -14,6 +14,15 @@ large plan, and it is safe precisely because each unit file is self-contained.
 Send all concurrent units in a **single message with multiple Task calls** so they
 actually run in parallel — one call per unit, each pointing the `unit-runner`
 agent at its unit file path.
+
+**Pass the model named on each line.** A Task call with no model inherits this
+session's, which is the most expensive one available — so a wave of small units
+silently books a wave of the priciest seats. The brief names one per unit; use it.
+
+`ctx start` touches nothing in git. `session`-tier units run in this tree unless
+you were given worktree instructions, which only happens when the user passed
+`--worktree`. Do not create worktrees, branches or commits on your own initiative:
+if isolation looks necessary, say so and let the user decide.
 
 As each reports back, check it against the unit's **Return contract** before
 accepting: files changed, criteria passed, verify output. A report missing any of

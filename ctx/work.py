@@ -34,6 +34,16 @@ class Work:
         return [str(k) for k in (self.doc.meta.get("verified") or [])]
 
     @property
+    def status(self):
+        """Mirrors `plan.Unit.status` so the gate can read either one.
+
+        The setter has always existed; without the getter the Stop hook could
+        write `verify_failed` and then had no way to see it again, which is why
+        the attempt bound reset itself every session instead of holding.
+        """
+        return str(self.doc.meta.get("status") or "pending").strip().lower()
+
+    @property
     def criteria(self):
         return self.doc.list_items("acceptance criteria", "criteria")
 

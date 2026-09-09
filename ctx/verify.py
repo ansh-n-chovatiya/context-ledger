@@ -1,4 +1,4 @@
-"""The done-gate: six verify kinds, cheapest first, short-circuiting.
+"""The done-gate: seven verify kinds, cheapest first, short-circuiting.
 
 Two distinctions carry the whole design.
 
@@ -7,8 +7,8 @@ block. A verify command that *cannot run* — missing binary, exit 127, timeout 
 is a configuration bug, and blocking on it would brick every session in the
 project. Infrastructure failures warn and pass.
 
-**Mechanical vs judged.** `diff`, `exists`, `symbol` and `cmd` are decidable by a
-script,
+**Mechanical vs judged.** `diff`, `exists`, `symbol`, `review` and `cmd` are
+decidable by a script,
 so the `Stop` hook runs them directly and they cost nothing. `rubric` and
 `human` need a model or a person, so they are evaluated by `/ctx:verify` and
 *recorded* in the work file; the hook only checks whether a recording exists.
@@ -27,13 +27,16 @@ from pathlib import Path
 
 from . import redact, trust
 
-MECHANICAL = ("diff", "exists", "symbol", "cmd")
+MECHANICAL = ("diff", "exists", "symbol", "review", "cmd")
 JUDGED = ("rubric", "human")
 KINDS = MECHANICAL + JUDGED
 
-# Cheapest first: `diff` is a git call, `exists` is a stat, `cmd` is a whole
-# subprocess, and the judged kinds cost a model call or a human's attention.
-COST = {"diff": 0, "exists": 1, "symbol": 2, "cmd": 3, "rubric": 4, "human": 5}
+# Cheapest first: `diff` is a git call, `exists` is a stat, `review` is one file
+# read, `cmd` is a whole subprocess, and the judged kinds cost a model call or a
+# human's attention. `review` sits above `symbol` and below `cmd` on purpose —
+# an open Critical finding should stop the gate before a test suite runs.
+COST = {"diff": 0, "exists": 1, "symbol": 2, "review": 3, "cmd": 4,
+        "rubric": 5, "human": 6}
 
 PASS, FAIL, ERROR, PENDING = "pass", "fail", "error", "pending"
 
@@ -74,6 +77,8 @@ def label_of(check):
         return f"{check.get('path') or '?'} still provides {', '.join(map(str, names))}"
     if kind == "diff":
         return "changed files within owned scope"
+    if kind == "review":
+        return "no unaddressed critical or important review findings"
     if kind == "rubric":
         return str(check.get("about") or "criteria judged against the diff")
     return str(check.get("about") or "explicit sign-off")
@@ -111,6 +116,8 @@ def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False)
         kind = check["kind"]
         if kind == "diff":
             result = _check_diff(check, cwd, owns)
+        elif kind == "review":
+            result = _check_review(layout, check, key)
         elif kind == "exists":
             result = _check_exists(check, cwd)
         elif kind == "symbol":
@@ -139,11 +146,21 @@ def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False)
 
 
 def verdict_of(results):
+    """FAIL beats PENDING beats ERROR beats PASS.
+
+    ERROR outranks PASS because an ERROR means *this check did not run*, not
+    *this check was satisfied*. Folding it into a PASS is how the gate came to
+    sign off on work it had never checked: outside a git repository the `diff`
+    kind errors, and a single passing `cmd` beside it was enough to report the
+    whole gate green — with the `owns` scope check silently absent. The Stop hook
+    still declines to block on ERROR, because infrastructure is not the work's
+    fault, but it no longer records it as a pass.
+    """
     if any(r.status == FAIL for r in results):
         return FAIL
     if any(r.status == PENDING for r in results):
         return PENDING
-    if results and all(r.status == ERROR for r in results):
+    if any(r.status == ERROR for r in results):
         return ERROR
     return PASS
 
@@ -152,6 +169,21 @@ def verdict_of(results):
 # individual kinds
 # --------------------------------------------------------------------------- #
 
+LEDGER_PREFIX = ".ctx/"
+
+
+def is_ledger(path):
+    """Ledger bookkeeping, which is never a scope violation.
+
+    Every `ctx` command appends to the journal and flips a `status:` field, so
+    the ledger's own files change constantly and are owned by no unit. Counting
+    them made the scope check fail on work that was entirely in scope — and the
+    merge preflight already knew this (`worktree._is_ledger`, found the hard way)
+    while the gate did not.
+    """
+    return str(path).replace("\\", "/").startswith(LEDGER_PREFIX)
+
+
 def _check_diff(check, cwd, owns):
     scope = [str(p) for p in (check.get("owns") or owns or [])]
     if not scope:
@@ -159,13 +191,66 @@ def _check_diff(check, cwd, owns):
     changed, error = changed_files(cwd)
     if error:
         return Result("diff", label_of(check), ERROR, error)
-    stray = [path for path in changed if not _within(path, scope)]
+    stray = [path for path in changed
+             if not is_ledger(path) and not _within(path, scope)]
     if stray:
         return Result(
             "diff", label_of(check), FAIL,
             "changed outside owned scope: " + ", ".join(sorted(stray)[:8]),
         )
     return Result("diff", label_of(check), PASS)
+
+
+def _check_review(layout, check, key):
+    """Blocking findings hold the gate shut.
+
+    The findings store is the durable half of the review loop: a reviewer's
+    verdict written to a file outlives the session that produced it, so a gate
+    running days later still knows the change was never signed off. `minor`
+    findings are recorded and deferred, never blocking — a loop that reruns for
+    "coverage could be broader" is a loop people learn to bypass.
+
+    `parked` and `disputed` do not block either, but neither is free: parking
+    demands a ruling and disputing demands evidence, both enforced by
+    `findings.set_status`. There is deliberately no "acknowledged" state.
+    """
+    from . import findings as findings_mod
+
+    slug = str(check.get("plan") or "")
+    unit = str(check.get("unit") or "")
+    if not slug or not unit:
+        # The gate resolves these from the active work; a check that names
+        # neither and is not running against a unit has nothing to judge.
+        slug, unit = _review_target(check, key, slug, unit)
+    if not slug or not unit:
+        return Result("review", label_of(check), ERROR,
+                      "no unit to review — `review` applies to a plan unit")
+    ledger = findings_mod.load(layout, slug, unit)
+    blocking = ledger.blocking()
+    if not blocking:
+        return Result("review", label_of(check), PASS, ledger.summary())
+    return Result(
+        "review", label_of(check), FAIL,
+        "%d finding(s) open: %s" % (
+            len(blocking),
+            "; ".join("[%s] %s — %s" % (f.id, f.severity, f.summary)
+                      for f in blocking[:4]),
+        ),
+    )
+
+
+def _review_target(check, key, slug, unit):
+    """`key` is `<plan>/<unit>` for a unit gate, or a bare name for a task."""
+    if slug and unit:
+        return slug, unit
+    text = str(key or "")
+    for prefix in ("ci-", "merge-"):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+    if "/" in text:
+        left, right = text.split("/", 1)
+        return slug or left, unit or right
+    return slug, unit or text
 
 
 def _check_exists(check, cwd):

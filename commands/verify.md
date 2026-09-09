@@ -3,7 +3,7 @@ description: Run the done-gate for the active work
 allowed-tools: Bash, Read, Grep, Glob, Task
 argument-hint: "[--sign-off rubric|human] [--note …]"
 ---
-!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" verify $ARGUMENTS`
+!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" verify $ARGUMENTS || true`
 
 Read the result above.
 

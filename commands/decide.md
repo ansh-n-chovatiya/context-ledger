@@ -3,7 +3,7 @@ description: Record an architectural decision as an ADR
 allowed-tools: Bash, Edit, Read
 argument-hint: «title of the decision»
 ---
-!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" decide "$ARGUMENTS"`
+!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" decide "$ARGUMENTS" || true`
 
 Fill in the ADR that was just created:
 

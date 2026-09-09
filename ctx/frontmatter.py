@@ -5,7 +5,9 @@ script can act on. Parsing is tolerant on read (a file with no frontmatter is
 still a valid document) and strict on write.
 """
 
+import os
 import re
+import tempfile
 
 from . import miniyaml
 
@@ -58,8 +60,50 @@ class Document:
         return f"{FENCE}\n{head}\n{FENCE}\n\n{self.body.strip()}\n"
 
     def write(self, path):
+        """Write the document atomically — a reader sees the old file or the new.
+
+        This is the write path for every committed artifact: tasks, units,
+        specs, ADRs, bundles, findings. A plain `write_text` truncates first, so
+        a session killed mid-write leaves a half-file whose frontmatter no
+        longer parses; the tolerant reader then supplies defaults, and a unit
+        that was `running` with owned paths and passing checks comes back
+        `pending` with nothing — which dispatches completed work a second time.
+        `state.save` already writes the *disposable*, gitignored pointer this
+        way. The durable, shared files deserve it at least as much.
+
+        No lock is taken, unlike `state.save`: callers render a whole document
+        and replace it, so there is no read-modify-write window to serialise.
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.render(), encoding="utf-8")
+        payload = self.render()
+        # The temp file must share the destination's directory: `os.replace` is
+        # only atomic within one filesystem, and a `.tmp` suffix keeps the
+        # transient file out of the `*.md` globs that scan the ledger.
+        handle = tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=str(path.parent),
+            prefix=".ctx-", suffix=".tmp", delete=False,
+        )
+        temp = handle.name
+        try:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+            handle.close()
+            os.replace(temp, str(path))
+        except BaseException:
+            # Anything that stops the replace leaves the original intact, but a
+            # stray temp file next to a committed document would be noise in a
+            # diff — and on Windows it would also keep the name locked.
+            try:
+                handle.close()
+            except OSError:
+                pass
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
+            raise
+        return path
 
 
 def parse(text):

@@ -3,7 +3,7 @@ description: Write a resume packet for another session, person or model
 allowed-tools: Bash, Read, Edit
 argument-hint: "[name]"
 ---
-!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" handoff $ARGUMENTS`
+!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" handoff $ARGUMENTS || true`
 
 That packet is mechanical: it records state, not meaning. Now open it and add
 what the state cannot show.

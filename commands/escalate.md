@@ -3,7 +3,7 @@ description: Promote the active task to a spec, carrying its criteria across
 allowed-tools: Bash, Read, Edit, AskUserQuestion
 argument-hint: "[task-name]"
 ---
-!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" escalate $ARGUMENTS`
+!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" escalate $ARGUMENTS || true`
 
 The objective and acceptance criteria came across from the task file, so start
 from what is already there rather than rewriting it.

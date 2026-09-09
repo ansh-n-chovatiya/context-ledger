@@ -38,7 +38,11 @@ class Fixture(unittest.TestCase):
         self.untracked = Path(self._outside.name)
         (self.root / ".git").mkdir()
         self._env = dict(os.environ)
-        os.environ["CTX_GLOBAL_ROOT"] = str(self.root / "global")
+        # Outside the project, as `~/.claude/ctx` is in real use. It used to
+        # sit inside `self.root`, which put machine-local state — the trust
+        # store among it — inside the repository under test, where it showed
+        # up in `git status` and could not be told apart from the user's work.
+        os.environ["CTX_GLOBAL_ROOT"] = str(self.untracked / "global")
         os.environ.pop("CLAUDE_PROJECT_DIR", None)
         self.assertEqual(self.cli("init")[0], 0)
         self.layout = paths.Layout(self.root / ".ctx")

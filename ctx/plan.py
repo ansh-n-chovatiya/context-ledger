@@ -18,6 +18,7 @@ Neither is auto-repaired. Both report the exact `depends_on` line that fixes
 them — rewriting someone's dependency graph silently is not a favour.
 """
 
+import bisect
 import datetime
 import fnmatch
 import json
@@ -96,6 +97,11 @@ class Unit:
     @property
     def checks(self):
         return self.doc.meta.get("verify") or []
+
+    @property
+    def model(self):
+        """Per-unit override for the dispatch model. Empty means the config default."""
+        return str(self.doc.meta.get("model") or "").strip()
 
     @property
     def recorded(self):
@@ -276,38 +282,222 @@ def waves(units):
     return grouped, problems
 
 
+MAX_REPORTED = 20
+
+
 def collisions(wave_units):
-    """Ownership overlaps and read/write races within a single wave."""
-    problems = []
-    for index, first in enumerate(wave_units):
-        for second in wave_units[index + 1:]:
-            shared = _overlap(first.owns, second.owns)
-            if shared:
-                problems.append(
-                    f"{first.name} and {second.name} both own {', '.join(sorted(shared))} "
-                    f"— add `depends_on: [{first.name}]` to {second.name} or split the paths"
-                )
-    for reader in wave_units:
-        for writer in wave_units:
-            if reader.name == writer.name:
-                continue
-            racing = _overlap(reader.reads, writer.owns)
-            if racing:
-                problems.append(
-                    f"{reader.name} reads {', '.join(sorted(racing))} while {writer.name} "
-                    f"rewrites it — add `depends_on: [{writer.name}]` to {reader.name}"
-                )
-    return problems
+    """Ownership overlaps and read/write races within a single wave.
+
+    Indexed, not pairwise. The pairwise version compared every pattern of every
+    unit against every pattern of every other one — n² pairs times m² patterns —
+    which measured 9.6 s for 200 units owning a dozen paths each, long enough
+    that `ctx start` reads as hung, and 4½ minutes at 1,000 units. `_OwnsIndex`
+    answers "which units own something touching this path?" in one lookup, but it
+    answers with *exactly* the rules `_covers`/`_overlap` define, in both
+    directions. That is deliberate: `owns` matching is the safety boundary that
+    makes parallel writes safe, so an index that quietly matched less than the
+    scan it replaced would be a worse bug than the slowness it fixes.
+    """
+    index = _OwnsIndex(wave_units)
+
+    # (i, j) -> the raw paths of unit i that collide, so each pair is reported
+    # once no matter how many of its paths overlap.
+    overlaps, races = {}, {}
+    for position, unit in enumerate(wave_units):
+        for path in unit.owns:
+            for other in index.owners_of(path):
+                if other > position:
+                    overlaps.setdefault((position, other), set()).add(path)
+    for position, reader in enumerate(wave_units):
+        for path in reader.reads:
+            for other in index.owners_of(path):
+                # The self-pair: a unit reading what it owns is the normal case,
+                # not a race. Skipping it here is what the old inner loop's
+                # name comparison did, minus the pass over every sibling.
+                if other != position:
+                    races.setdefault((position, other), set()).add(path)
+
+    overlapping, racing = [], []
+    for key in sorted(overlaps):
+        first, second = wave_units[key[0]], wave_units[key[1]]
+        overlapping.append(
+            f"{first.name} and {second.name} both own "
+            f"{', '.join(sorted(overlaps[key]))} "
+            f"— add `depends_on: [{first.name}]` to {second.name} or split the paths"
+        )
+    for key in sorted(races):
+        reader, writer = wave_units[key[0]], wave_units[key[1]]
+        racing.append(
+            f"{reader.name} reads {', '.join(sorted(races[key]))} while {writer.name} "
+            f"rewrites it — add `depends_on: [{writer.name}]` to {reader.name}"
+        )
+    # Capped per kind, not once over the total: a wall of ownership overlaps must
+    # not push the read/write races out of the report entirely.
+    return _capped(overlapping) + _capped(racing)
+
+
+def _capped(problems):
+    """Report the first few and count the rest.
+
+    A wave whose ownership is badly cut produces collisions quadratically — a
+    thousand units with realistic scopes produced 19,000 full sentences, all
+    printed. The refusal has to be readable to be acted on, and the fix for a
+    plan with hundreds of overlaps is to re-cut it, not to work down the list.
+    """
+    if len(problems) <= MAX_REPORTED:
+        return problems
+    return problems[:MAX_REPORTED] + [
+        f"... and {len(problems) - MAX_REPORTED} more of the same kind — the wave "
+        "needs re-cutting rather than a fix per line"
+    ]
 
 
 def _overlap(left, right):
-    """Paths in `left` covered by a pattern or prefix in `right`, and vice versa."""
+    """Paths in `left` covered by a pattern or prefix in `right`, and vice versa.
+
+    The reference definition of a collision. `collisions()` uses `_OwnsIndex`
+    instead, for speed; this stays as the plain statement of the rule the index
+    has to reproduce, and the index is tested against it.
+    """
     found = set()
     for a in left:
         for b in right:
             if _covers(a, b) or _covers(b, a):
                 found.add(a)
     return found
+
+
+# `*`, `?` and `[` are the only characters fnmatch treats as anything but text.
+# A pattern without one of them can only ever match itself.
+_MAGIC = re.compile(r"[*?\[]")
+
+
+def _normalise(pattern):
+    """The same shape `_covers` compares in: forward slashes, no trailing one."""
+    return str(pattern).replace(os.sep, "/").rstrip("/")
+
+
+def _ancestors(path):
+    """Every strict directory prefix: "src/a/b" -> ["src/a", "src"].
+
+    `_covers` asks whether `path` starts with `pattern + "/"`, which is true
+    exactly when one of these strings *is* the pattern — so a dict lookup per
+    ancestor decides the prefix rule without looking at any other pattern.
+    """
+    out = []
+    cut = path.rfind("/")
+    while cut > 0:
+        path = path[:cut]
+        out.append(path)
+        cut = path.rfind("/")
+    return out
+
+
+def _literal_head(pattern):
+    """The magic-free directory prefix of a glob, ending in "/" — or "".
+
+    fnmatch compiles to an anchored regex, so nothing matches a glob without
+    starting with the text before its first magic character. Bucketing globs by
+    that head is a filter and not a heuristic: it can only rule out candidates
+    that could not have matched anyway.
+    """
+    found = _MAGIC.search(pattern)
+    head = pattern[:found.start()] if found else pattern
+    cut = head.rfind("/")
+    return head[:cut + 1] if cut >= 0 else ""
+
+
+def _heads(path):
+    """Every directory prefix of `path` ending in "/", plus "" — the glob buckets
+    that could hold a pattern matching it."""
+    out = [""]
+    cut = path.find("/")
+    while cut >= 0:
+        out.append(path[:cut + 1])
+        cut = path.find("/", cut + 1)
+    return out
+
+
+class _OwnsIndex:
+    """A wave's `owns` patterns, keyed by every way `_covers` can match.
+
+    `_overlap` asks four questions of a pattern pair — equality, either side
+    living under the other as a directory, and fnmatch in either direction — so
+    the index keeps one structure per question. Case folding follows fnmatch,
+    which normcases both sides; the prefix rules are plain string comparisons and
+    are deliberately *not* folded, exactly as `_covers` has them.
+    """
+
+    def __init__(self, units):
+        self._exact = {}    # pattern -> {unit position}: equality
+        self._folded = {}   # normcase(pattern) -> {position}: fnmatch, magic-free
+        self._under = {}    # ancestor of a pattern -> {position}: pattern under path
+        self._globs = {}    # literal head -> [glob pattern]: path matched by pattern
+        seen = set()
+        for position, unit in enumerate(units):
+            for raw in unit.owns:
+                pattern = _normalise(raw)
+                if not pattern:
+                    continue
+                self._exact.setdefault(pattern, set()).add(position)
+                for ancestor in _ancestors(pattern):
+                    self._under.setdefault(ancestor, set()).add(position)
+                if _MAGIC.search(pattern):
+                    if pattern not in seen:
+                        seen.add(pattern)
+                        head = os.path.normcase(_literal_head(pattern))
+                        self._globs.setdefault(head, []).append(pattern)
+                else:
+                    self._folded.setdefault(
+                        os.path.normcase(pattern), set()
+                    ).add(position)
+        # The one question no key can answer in advance: a *query* that is itself
+        # a glob may match patterns spread anywhere under its literal head, so
+        # those are found by bisecting a sorted list instead.
+        self._sorted = sorted(
+            (os.path.normcase(pattern), pattern) for pattern in self._exact
+        )
+
+    def owners_of(self, raw):
+        """Positions of the units owning a pattern `_covers` relates to `raw`."""
+        path = _normalise(raw)
+        if not path:
+            return set()
+        found = set()
+        hit = self._exact.get(path)
+        if hit:
+            found |= hit                                    # path == pattern
+        hit = self._folded.get(os.path.normcase(path))
+        if hit:
+            found |= hit                                    # fnmatch, magic-free
+        for ancestor in _ancestors(path):
+            hit = self._exact.get(ancestor)
+            if hit:
+                found |= hit                                # path under pattern
+        hit = self._under.get(path)
+        if hit:
+            found |= hit                                    # pattern under path
+        if self._globs:
+            for head in _heads(os.path.normcase(path)):
+                for pattern in self._globs.get(head, ()):
+                    if fnmatch.fnmatch(path, pattern):
+                        found |= self._exact[pattern]       # path matched by glob
+        if _MAGIC.search(path):
+            head = os.path.normcase(_literal_head(path))
+            for pattern in self._candidates(head):
+                if fnmatch.fnmatch(pattern, path):
+                    found |= self._exact[pattern]           # pattern matched by glob
+        return found
+
+    def _candidates(self, head):
+        """Patterns whose folded text starts with `head`, found by bisection."""
+        out = []
+        start = bisect.bisect_left(self._sorted, (head, ""))
+        for folded, pattern in self._sorted[start:]:
+            if not folded.startswith(head):
+                break
+            out.append(pattern)
+        return out
 
 
 def covers_any(path, patterns):

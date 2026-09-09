@@ -11,7 +11,10 @@ deliberate, so you cannot grade your own reasoning.
 ## Method
 
 1. Read the work file you were given. Extract the acceptance criteria verbatim.
-2. Read the actual change: `git diff` for uncommitted work, or the paths named.
+2. Read the actual change. The work file's `owns` list is the authoritative
+   scope — read those paths. `git diff` is a shortcut where a repository
+   happens to exist; it is not a requirement, and a project with no VCS is a
+   project you still verify. Never run a git command that writes.
 3. For **each criterion separately**, decide `pass`, `fail`, or `unclear`, and
    name the specific evidence — a file and line, or the command output that shows
    it. A criterion with no evidence is `unclear`, never `pass`.

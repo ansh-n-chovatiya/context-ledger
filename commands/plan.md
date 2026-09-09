@@ -3,7 +3,7 @@ description: Decompose a ready spec into independently dispatchable units
 allowed-tools: Bash, Read, Grep, Glob, Edit, Write, Task
 argument-hint: «plan-name» [--spec «spec-name»]
 ---
-!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" plan $ARGUMENTS`
+!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" plan $ARGUMENTS || true`
 
 If that refused because the spec has unanswered blocking questions, stop and run
 `/ctx:ask`. Planning around an assumption is the failure this whole system exists

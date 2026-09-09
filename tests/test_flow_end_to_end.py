@@ -204,7 +204,7 @@ class TestFullFlow(Fixture):
         self.git("add", "-A")
         self.git("commit", "-qm", "plan")
 
-        code, out = self.cli("start")
+        code, out = self.cli("start", "--worktree")
         self.assertEqual(code, 0, out)
         self.assertIn("worktree", out.lower())
 

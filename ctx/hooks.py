@@ -182,6 +182,12 @@ def on_post_tool_use(layout, config, payload):
     item = work.active(layout, current)
     if item is not None and item.clear_recorded():
         journal.append(layout, config, "gate", item.key, "sign-off cleared by edit")
+    if item is not None and item.status == "verify_failed":
+        # Work that was escalated and has now been edited is being worked on
+        # again, so the gate re-arms. Without this the status would be terminal
+        # and the gate would never fire again for this item.
+        item.set_status("pending")
+        journal.append(layout, config, "gate", item.key, "re-armed by edit")
     return ""
 
 
@@ -220,6 +226,14 @@ def on_stop(layout, config, payload):
     item = work.active(layout, current)
     if item is None or not verify.ordered(item.checks):
         return ""
+    if item.status == "verify_failed":
+        # The gate already escalated this work to the user and stood down. It
+        # used to stand down only for one session: `attempts` was cleared on the
+        # way out and nothing consulted the status afterwards, so the next Stop
+        # started counting from one and blocked three more times, for ever. The
+        # status is the memory that makes `max_attempts` a bound rather than a
+        # cycle; an edit clears it again in `on_post_tool_use`.
+        return ""
 
     results, verdict = verify.run(
         layout, config, item.checks, cwd=layout.root.parent, key=item.key,
@@ -231,8 +245,14 @@ def on_stop(layout, config, payload):
         journal.append(layout, config, "gate", item.key, "pass")
         return ""
     if verdict == verify.ERROR:
-        # Nothing ran. Blocking here would brick every session in the project.
-        journal.append(layout, config, "gate", item.key, "not run (config); passing")
+        # A check could not run: a missing binary, an unaccepted command, no git
+        # repository. That is infrastructure, not the work, and blocking on it
+        # would brick every session in the project. It is journalled as
+        # incomplete rather than as a pass — the gate did not sign anything.
+        journal.append(
+            layout, config, "gate", item.key,
+            "incomplete (a check could not run); not blocking",
+        )
         return ""
 
     limit = max(1, int(gate.get("max_attempts", 3)))

@@ -19,6 +19,7 @@ tree, and the plugin is completely silent in any project that hasn't opted in.
 - [The three levels](#the-three-levels) — the one concept to understand
 - [Walkthrough: a small change](#walkthrough-a-small-change) (L1)
 - [Walkthrough: a large change](#walkthrough-a-large-change) (L2)
+- [Review without commits](#review-without-commits)
 - [Memory that survives sessions](#memory-that-survives-sessions)
 - [Command reference](#command-reference)
 - [Configuration reference](#configuration-reference)
@@ -97,7 +98,7 @@ claude plugin install ctx@context-ledger
 Verify it:
 
 ```bash
-claude plugin list                 # ctx@context-ledger  0.1.1  ✔ enabled
+claude plugin list                 # ctx@context-ledger  0.7.0  ✔ enabled
 claude plugin details ctx          # component inventory + token cost
 ```
 
@@ -445,29 +446,57 @@ Tiers:
 |---|---|---|
 | `inline` | this session | trivial work, or a result needed immediately |
 | `subagent` | own context window | analysis, review, research, most writing |
-| `session` | own git worktree + branch | writes you want physically isolated |
+| `session` | its own terminal | writes you want to drive yourself |
 
-For `session` units, `start` creates the worktree and prints the command to run:
+`session` units run **in this tree** by default. `ctx start` does not create a
+worktree, a branch, or anything else in git unless you ask:
+
+```
+export CTX_PLAN=auth-rotation CTX_UNIT=03-rotate
+ctx unit 03-rotate          # arms the done-gate for this unit
+```
+
+`ctx start --worktree` opts into physical isolation instead, giving each
+`session` unit a temporary checkout and branch under `.ctx/runtime/worktrees/`:
 
 ```
 cd .ctx/runtime/worktrees/03-rotate
-ctx unit 03-rotate          # arms the done-gate for this unit
+ctx unit 03-rotate
 claude
 ```
 
-A human stays in the loop on parallel writes by design. Use `--no-worktree` to
-skip preparation.
+That buys isolation and costs you this tree. A worktree holds its branch
+exclusively, so while it exists `git checkout ctx/auth-rotation/03-rotate` here
+is refused and you test inside the worktree instead. `ctx merge` gives the
+branch back. Isolation is worth asking for; it is not worth taking by default,
+which is why worktrees are opt-in.
 
-### Step 5 — Land the work
+### Step 5 — Record each outcome
+
+```
+ctx unit 03-rotate --status done
+```
+
+This is the step that closes a unit, and it applies however the unit ran. It
+re-runs the unit's own verify checks first and refuses if they do not pass — a
+report claiming success is not evidence of it.
+
+**Only if you dispatched with `--worktree`** is there a branch to land:
 
 ```
 /ctx:merge 03-rotate
 ```
 
-Runs the done-gate **inside the unit's own worktree**, refuses to merge anything
-that touched a path outside `owns`, merges on success, and removes the worktree.
-A conflict here means an ownership contract was violated, so it stops and reports
-rather than resolving.
+That runs the done-gate **inside the unit's own worktree**, refuses to merge
+anything that touched a path outside `owns`, refuses to merge into a branch the
+worktree did not fork from (and refuses outright on a detached HEAD, where the
+merge would be unreachable from any branch), names the branch it merged into, and
+removes the worktree and branch on success. A conflict means either the
+integration branch moved on or an ownership contract was violated; it stops and
+reports rather than resolving.
+
+Without `--worktree` there is no branch and no merge — the work is already in
+your tree, uncommitted, and committing it is yours to do when you choose.
 
 ```bash
 ctx worktree list            # what's outstanding
@@ -491,6 +520,164 @@ wave board — plan billing-migration:
      04-refresh               subagent  pending
    next: wave 2 — /ctx:start
 ```
+
+---
+
+## Review without commits
+
+A unit's own gate answers "do the checks pass". It does not answer "is this any
+good", and the session that wrote the code is the worst possible seat from which
+to ask. So a completed unit can be handed to a reviewer that never saw the
+implementer's transcript, is not the model that wrote the code, and has no Bash
+and no Edit — read-only by tool grant, not by instruction.
+
+Review sits between a unit reporting and `ctx unit «unit» --status done`.
+
+### Why a snapshot, not a commit range
+
+Every review protocol has to answer two questions: what changed, and did anything
+change that the unit never declared it owned. Both are normally answered with a
+commit range — and that answer costs a commit. The implementer has to commit
+before the work can be reviewed, so the review protocol ends up dictating the
+project's git history, and concurrent units interleave into one range nobody can
+read.
+
+`ctx` answers both from content. A snapshot fingerprints *every* file in the
+project — so a write to a path nobody declared is still visible — and stores the
+bytes of the declared scope, which is what a diff has to be reconstructed from.
+One is taken before a unit is dispatched and one after it reports; the difference
+is the change.
+
+Nothing is committed, nothing is branched, and **a project with no git repository
+at all reviews exactly the same way** as one with a hundred thousand commits.
+That also means review composes with the main-tree workflow: your uncommitted
+edits stay uncommitted, and committing remains yours to do when you choose.
+
+### The loop
+
+```
+/ctx:review 03-rotate
+```
+
+```bash
+ctx review «unit» [--plan SLUG] [--round N]      # diff, package, stat summary
+ctx snapshot «unit» [--plan SLUG] [--phase before|after]
+ctx findings «unit» [--plan SLUG]                # id, severity, status, round
+```
+
+`ctx review` captures the "after" snapshot, diffs it against the "before" one
+recorded at dispatch, writes a **review package** file and prints its path with a
+one-line stat summary. If no "before" snapshot exists it refuses and names the
+command that would have made one — reviewing against a snapshot taken after the
+fact yields an empty diff, which is not a clean review.
+
+`ctx start` takes the "before" phase automatically for every unit it dispatches,
+so `ctx snapshot` is for the case where you did not dispatch through `ctx start`.
+
+The package is one file the reviewer reads in a **single call**: the unit's
+objective and acceptance criteria quoted, its declared `owns`/`reads`/`forbid`, a
+stat summary, a machine-computed scope-violation section, and a unified diff at 10
+lines of context. Content is scrubbed through the redaction rules when the package
+is rendered rather than when the snapshot is captured — redacting on the way in
+would make every credential-shaped line read as a change on the way out, which is
+a diff that lies about what the unit did.
+
+The **scope-violation section is decided before any model sees it.** Changed paths
+are compared against the declared `owns` mechanically: either a path is covered or
+it is not. It is a Critical finding, and it is not the reviewer's to
+re-adjudicate. `.ctx/` is excluded, because every `ctx` command writes to the
+journal and would otherwise open every review with a violation against its own
+bookkeeping. If a snapshot hit its file cap, deletions are not reported and the
+package says so — a truncated listing shifts, and the file that falls off the end
+would otherwise read as a deletion the unit never made. An accusation the
+snapshot cannot support is not made.
+
+`/ctx:review` dispatches the `reviewer` subagent at the package path on the model
+in `models.reviewer`, records what comes back with `ctx findings --add`, and acts
+on the verdict. **The orchestrator reads the path, not the package** — pulling the
+diff into the orchestrating session is exactly the cost this arrangement avoids.
+Later rounds dispatch `re-reviewer` instead, which verdicts the open findings
+against a package covering only the fix, and looks for damage the fix itself
+caused. A re-review that wanders finds new work every round and the loop never
+terminates.
+
+### Findings are a file, not a conversation
+
+The reviewer and the implementer do not share a context, and neither survives
+compaction. A finding that lives only in a transcript is gone by the third round —
+the implementer is arguing with a summary of a summary, and the gate has nothing
+to refuse on. So findings live in a file, one per unit, and every state change is
+a write.
+
+```bash
+ctx findings «unit» --add important --summary "refresh swallows the 401" \
+    --where src/auth/refresh.ts:88 --evidence "except: pass, no re-raise"
+ctx findings «unit» --set 3 --status addressed
+ctx findings «unit» --set 4 --status disputed --evidence "tests/auth_test.py:41 covers it"
+ctx findings «unit» --set 5 --status parked --ruling "deferred to the rate-limit spec"
+```
+
+| Severity | Meaning |
+|---|---|
+| `critical` | broken behaviour, data loss, security |
+| `important` | the unit cannot be trusted until it is fixed — a missed criterion, fragile behaviour, a swallowed error, a test that asserts nothing |
+| `minor` | polish. Recorded, never entered into a fix loop |
+
+A finding is `open`, or it has left `open` by exactly one of three routes:
+`addressed` (fixed), `disputed` (refuted, **evidence required**), or `parked`
+(decided against, **ruling required**).
+
+**There is deliberately no `acknowledged` status.** The failure mode of a review
+loop is performative agreement — "good catch, noted" — which reads as progress,
+closes nothing, and leaves the defect in the tree. Agreement on its own is not a
+state this store can represent, and that unavailability is the mechanism. Ask for
+one and the command tells you so, by name, and lists the three routes that exist.
+
+A dispute is a technical claim, so it takes a `file:line` or command output, and
+the reviewer's original evidence is appended to rather than overwritten — a file
+arguing against a claim it no longer contains is worse than no file. Parking
+spends the user's judgement on their behalf, so it takes a ruling, and the ruling
+stays in the file for them to overturn.
+
+**Three rounds is the ceiling** — the same bound the done-gate uses for attempts.
+A fourth round of the same argument is a decision to escalate, not a retry. What
+is still open at the cap gets parked with a ruling, and because that is a decision
+made on the user's behalf, it belongs in an ADR via `/ctx:decide`, not only in a
+findings file.
+
+### The `review` verify kind
+
+```yaml
+verify:
+  - kind: review
+```
+
+It passes when no `critical` or `important` finding is open and fails while any
+is. `minor` never blocks — a review that can block on nits is a review the
+implementer learns to route around.
+
+Its cost sits between `symbol` and `cmd`, so an open blocking finding is caught
+by reading one file, before any test suite runs.
+
+### Where the artifacts live
+
+```
+.ctx/plans/<slug>/findings/<unit>.md        the findings ledger — committed
+.ctx/runtime/snapshots/<key>/               manifest + stored content — gitignored
+.ctx/runtime/reviews/<slug>-<unit>-rN.md    the rendered package — gitignored
+```
+
+Findings are authored state and belong in the pull request beside the plan.
+Snapshots and packages are scratch — reconstructible, sometimes large, and
+regenerated on the next round.
+
+### What this does not do yet
+
+There is **no final whole-plan review pass**: review is per unit, and nothing
+reviews the assembled result of a wave or of a finished plan. There is no TDD
+support and no debugging workflow — `ctx` has nothing to say about writing the
+test before the code, or about narrowing a failure to its cause. Those are gaps,
+named here rather than papered over.
 
 ---
 
@@ -593,7 +780,8 @@ the point.
 | `/ctx:spec «name» [— intent]` | Intent → checkable criteria → blocking questions |
 | `/ctx:ask [name]` | Show and ask what's still blocking a spec |
 | `/ctx:plan «name»` | Decompose a ready spec into dispatchable units |
-| `/ctx:start [--wave N]` | Dispatch brief for the next wave |
+| `/ctx:start [--wave N] [--worktree]` | Dispatch brief for the next wave |
+| `/ctx:review «unit» [--round N]` | Adversarial review of a completed unit, from a snapshot diff |
 | `/ctx:merge «unit»` | Land a unit's worktree branch after its gate passes |
 | `/ctx:decide «title»` | Record an ADR |
 | **Memory** | |
@@ -602,11 +790,14 @@ the point.
 | `/ctx:context` | Saved bundles: what exists, and how to load, save or promote one |
 | `/ctx:handoff [name]` | Resume packet for another session, person or model |
 
-Arguments are free text, not shell tokens. Claude Code splices what you typed
-into the command line unquoted, so `/ctx:task add-search let users search flows`
-and `/ctx:decide don't cache refresh tokens` both work without quoting. Every
-command run with no arguments reports what it needs instead of failing, because
-a non-zero exit aborts the slash command before its prompt can ask you.
+Arguments are free text, not shell tokens. The command files quote
+`$ARGUMENTS`, so `/ctx:task add-search let users search flows` and
+`/ctx:decide don't cache refresh tokens` both arrive as a single argument and
+work without quoting. Every command run with no arguments reports what it needs
+instead of failing, because a non-zero exit aborts the slash command before its
+prompt can ask you — which is also why each command file ends its `!` line with
+`|| true`. Without it, `/ctx:verify` on a failure exited 1 and the prompt telling
+you how to handle that failure was never read.
 
 **Exit codes.** A command exits non-zero only when a check *failed* or a refusal
 is deliberate — a failing gate, an unanswered blocking question, an ownership
@@ -642,6 +833,8 @@ slash command costs always-on context:
 | `ctx trust [--yes]` | Review and accept the shell commands the gate will run on this machine | 0 / 1 |
 | `ctx prune [--before D]` | Fold journal days older than `D` (or `journal.keep_days`) into monthly archives | 0 / 1 |
 | `ctx unit «name» [--status S]` | Focus a unit, or record its outcome. `--status done` runs the unit's gate first and refuses if it does not pass; `--force` overrides | 0 / 1 |
+| `ctx snapshot «unit» [--phase P]` | Capture a content snapshot by hand. `ctx start` takes the `before` phase itself | 0 / 1 |
+| `ctx findings «unit»` | List findings, or `--add`/`--set` one. See [Review without commits](#review-without-commits) | 0 / 1 |
 | `ctx worktree list\|remove` | Inspect or discard worktrees | 0 / 1 |
 | `ctx level «0\|1\|2»` | Set the level directly | 0 |
 | `ctx briefing` | Print exactly what SessionStart would inject | 0 |
@@ -698,6 +891,13 @@ gate:
 plan:
   wave_budget_tokens: 250000  # a wave over this refuses to dispatch
 
+review:                       # content snapshots — see Review without commits
+  ignore: []                  # replaces the default exclusions (.git,
+                              # node_modules, build output, .ctx/runtime …)
+  max_file_bytes: 2000000     # larger files are fingerprinted, never stored
+  max_files: 20000            # a bound so a snapshot can't become the slow
+                              # part of a dispatch; hitting it is reported
+
 auto_load: []                 # bundles injected into every session
 redact: []                    # extra regexes scrubbed before any write
 
@@ -719,7 +919,7 @@ cap recreates the problem the ledger exists to solve.
 
 ## Verification reference
 
-For "any type of task" to hold, verification can't assume code. Six kinds,
+For "any type of task" to hold, verification can't assume code. Seven kinds,
 ordered by how much they're trusted:
 
 | Kind | Passes when | Trust | Typical use |
@@ -728,6 +928,7 @@ ordered by how much they're trusted:
 | `exists` | Path exists, optionally matching `matches:` regex | objective | generated docs, migrations, exports |
 | `diff` | Changed files are a subset of `owns` | objective | scope enforcement on plan units |
 | `symbol` | Every name in `contains:` still appears in `path` | objective | **interface freeze** — see below |
+| `review` | No `critical` or `important` review finding is open | objective | adversarial review of a unit — see [Review without commits](#review-without-commits) |
 | `rubric` | The `verifier` subagent judges criteria against the diff | advisory | prose, research, design, API ergonomics |
 | `human` | You sign off explicitly | authoritative | irreversible or outward-facing steps |
 
@@ -741,6 +942,7 @@ verify:
   - kind: symbol
     path: src/auth/refresh.ts
     contains: ["export function refresh(", "AuthExpiredError"]
+  - kind: review
   - kind: rubric
     about: the migration guide covers every breaking change
 ```
@@ -783,14 +985,17 @@ It's a substring match, deliberately: crude enough to need no parser per
 language, precise enough to catch the two dangerous cases (renamed, deleted) for
 one file read.
 
-**Checks run cheapest-first** — `diff` → `exists` → `symbol` → `cmd` → `rubric` — and
-short-circuit on the first failure. A scope violation costs zero model tokens to
-catch, because the model-based check never runs.
+**Checks run cheapest-first** — `diff` → `exists` → `symbol` → `review` → `cmd` →
+`rubric` — and short-circuit on the first failure. A scope violation costs zero
+model tokens to catch, because the model-based check never runs, and an open
+blocking finding is caught by one file read rather than by a test suite.
 
 **Judged checks are recorded, not re-judged.** `rubric` and `human` need a model
-or a person, so `/ctx:verify` evaluates them and records the sign-off in the work
-file. **Any subsequent edit clears it** — a sign-off can't outlive the code it
-signed off on. So verify last.
+or a person, so `ctx verify` reports them as *pending* rather than deciding them
+itself. `/ctx:verify` reads that and delegates: a `rubric` goes to the `verifier`
+subagent, a `human` waits for you. The sign-off is then recorded with
+`ctx verify --sign-off rubric` (or `human`). **Any subsequent edit clears it** —
+a sign-off can't outlive the code it signed off on. So verify last.
 
 ### Profiles
 
@@ -886,6 +1091,7 @@ makes it a new command and revokes acceptance.
       README.md               human-facing plan, regenerated by plan-check
       plan.json               derived graph; prior revisions archived
       units/NN-name.md        one self-contained prompt file per unit
+      findings/<unit>.md      review findings; severity, status, evidence, ruling
   contexts/
       index.md                catalogue
       <name>.ctx.md           portable bundles
@@ -900,6 +1106,8 @@ makes it a new command and revokes acceptance.
       verify.trust            commands accepted on this machine
       telemetry.jsonl         hook durations, size-capped (switchable)
       verify/*.log            full verify output
+      snapshots/<key>/        before/after content snapshots for review
+      reviews/*.md            rendered review packages, one per round
       worktrees/              session-tier checkouts
 ```
 
@@ -1005,9 +1213,11 @@ Two separate costs, and they're often confused:
 | **Hooks themselves** | 0 | harness-side; no model context at all |
 | **Per turn** | 0 | `UserPromptSubmit` is silent unless drift is detected |
 
-Both halves are measurable, so this file does not hardcode either — a figure
-written down in two places is a figure that will eventually disagree with itself,
-which is a poor look for a tool whose pitch is honest context accounting:
+The briefing caps above are the configured `briefing_chars` at ~3.6 chars per
+token, so they move if you retune them. The plugin's own footprint this file does
+not quote at all — a figure written down in two places is a figure that will
+eventually disagree with itself, which is a poor look for a tool whose pitch is
+honest context accounting. Measure both:
 
 ```bash
 ctx budget                  # this project's briefing: predicted and measured
@@ -1156,7 +1366,7 @@ claude plugin validate . --strict
 ctx/            the package — every decision that doesn't need a model
 hooks/          three-line shims over ctx.hooks, so the contract has one seam
 commands/       slash commands: a few lines each, logic lives in Python
-agents/         unit-runner, verifier
+agents/         unit-runner, verifier, reviewer, re-reviewer
 skills/ledger/  when to escalate, and what belongs on disk
 tests/          stdlib unittest
 bin/ctx         launcher for CLI and CI use

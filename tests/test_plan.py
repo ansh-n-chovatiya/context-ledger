@@ -301,8 +301,13 @@ class TestDispatch(PlanFixture):
         _code, check_out = self.cli("plan-check", self.slug)
         self.assertIn("not a git repository", check_out, "plan-check warns up front")
         _code, out = self.cli("start")
+        self.assertIn("run them in this tree", out,
+                      "the default path never touches git, so it cannot fail on it")
+        _code, out = self.cli("start", "--worktree")
         self.assertIn("not a git repository", out)
-        self.assertIn("worktree not prepared", out)
+        self.assertIn("worktree not prepared", out.lower(),
+                      "asking for a worktree and not getting one is not the same "
+                      "as never having asked")
 
     def test_completing_a_wave_advances_to_the_next(self):
         self.setup_plan()

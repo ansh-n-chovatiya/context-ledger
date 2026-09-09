@@ -16,12 +16,24 @@ actually runs. A command that has not been accepted is reported as a
 configuration error rather than executed, and configuration errors warn and pass:
 an unaccepted ledger is *ungated*, never *broken*. Same failure policy as a
 missing binary.
+
+The store lives outside the repository, under the global root. The first version
+kept it at `.ctx/runtime/verify.trust` and relied on a `.gitignore` — which
+`git add -f` defeats, so a hostile ledger could ship its own acceptance and the
+review below would never be asked for. An in-repo record of what this machine
+trusts is not a boundary; it is a suggestion the attacker also gets to write.
+
+Upgrading therefore forgets existing acceptances by design. `ctx trust` shows
+them again in one pass, and `ctx doctor` names any leftover in-repo store so the
+silence is explained rather than mysterious.
 """
 
 import hashlib
 import json
 
-FILENAME = "verify.trust"
+from . import paths
+
+LEGACY_FILENAME = "verify.trust"
 
 REASON = (
     "this command has not been accepted on this machine — review it and run "
@@ -30,7 +42,28 @@ REASON = (
 
 
 def path_for(layout):
-    return layout.runtime / FILENAME
+    """Where this machine records what it agreed to run — outside the repository.
+
+    It used to live at `.ctx/runtime/verify.trust`, protected only by a one-line
+    `.gitignore`. `git add -f` defeats a gitignore, so an attacker could commit
+    the acceptance *alongside* the commands it accepted and the review this
+    module exists to force would never be asked for. A record of what this
+    machine trusts cannot travel with the thing that supplies the commands.
+
+    Keyed by the project's absolute path so two checkouts of the same repository
+    are trusted separately — which is the honest reading of "this machine agreed
+    to run this here".
+    """
+    key = hashlib.sha256(
+        str(layout.root.resolve().parent).encode("utf-8")
+    ).hexdigest()[:16]
+    return paths.global_root() / "trust" / (key + ".json")
+
+
+def legacy_path_for(layout):
+    """The pre-0.7 in-repo store. Never read — only reported, so a user who has
+    one is told why their acceptances appear to have been forgotten."""
+    return layout.runtime / LEGACY_FILENAME
 
 
 def command_id(check):
@@ -73,8 +106,9 @@ def accept(layout, checks):
         if key not in accepted:
             accepted[key] = str(check.get("run") or "")
             added.append(check)
-    layout.runtime.mkdir(parents=True, exist_ok=True)
-    path_for(layout).write_text(
+    target = path_for(layout)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
         json.dumps({"accepted": accepted}, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )

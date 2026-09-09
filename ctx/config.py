@@ -43,6 +43,13 @@ DEFAULTS = {
         "timeout_seconds": 240,
     },
     "plan": {"wave_budget_tokens": 250000},
+    # Which model each dispatched role runs on. Declared here rather than left to
+    # the dispatching session's judgement: a Task call with no model named
+    # inherits the caller's, which is the most capable and most expensive one
+    # available — so a wave of eight one-line units silently books eight of the
+    # priciest seats on the account. A unit whose work genuinely needs more can
+    # say so with `model:` in its own frontmatter.
+    "models": {"runner": "sonnet", "reviewer": "opus", "verifier": "opus"},
     "auto_load": [],
     "redact": [],
     # Extra commands `ctx init` should consider, for a toolchain no marker table

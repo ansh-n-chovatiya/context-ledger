@@ -10,7 +10,18 @@ import os
 from pathlib import Path
 
 CTX_DIRNAME = ".ctx"
-GLOBAL_ROOT = Path(os.environ.get("CTX_GLOBAL_ROOT", "~/.claude/ctx")).expanduser()
+GLOBAL_DEFAULT = "~/.claude/ctx"
+
+
+def global_root():
+    """The store shared across projects, resolved on every call.
+
+    It used to be a module-level constant, which meant `CTX_GLOBAL_ROOT` only
+    took effect if it was set before the first import — so the test suite, which
+    sets it in `setUp`, was silently writing into the developer's real
+    `~/.claude/ctx` and sharing one store across every test.
+    """
+    return Path(os.environ.get("CTX_GLOBAL_ROOT") or GLOBAL_DEFAULT).expanduser()
 
 
 def project_root(start=None):
@@ -97,4 +108,4 @@ class Layout:
 
 def global_layout():
     """Store for contexts promoted out of a single project."""
-    return Layout(GLOBAL_ROOT)
+    return Layout(global_root())

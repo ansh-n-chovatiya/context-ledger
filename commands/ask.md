@@ -3,7 +3,7 @@ description: Show and ask the questions still blocking a spec
 allowed-tools: Bash, AskUserQuestion
 argument-hint: "[spec-name]"
 ---
-!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" ask $ARGUMENTS`
+!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" ask $ARGUMENTS || true`
 
 If blocking questions are listed above, ask them now with AskUserQuestion —
 batched into one call, each with a recommendation where you have a view, phrased

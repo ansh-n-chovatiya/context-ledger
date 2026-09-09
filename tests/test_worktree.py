@@ -292,7 +292,7 @@ class TestDispatchWithWorktrees(WorktreeFixture):
         self.unit("02-b", owns=["src/b.py"])
         self.plan_ready()
 
-        code, out = self.cli("start")
+        code, out = self.cli("start", "--worktree")
         self.assertEqual(code, 0, out)
         self.assertIn("own worktree", out)
         self.assertIn("ctx/auth/01-a", out)
@@ -302,23 +302,42 @@ class TestDispatchWithWorktrees(WorktreeFixture):
         for name in ("01-a", "02-b"):
             self.assertTrue(wt.path_for(self.layout, name).is_dir(), name)
 
-    def test_no_worktree_flag_skips_preparation(self):
+    def test_start_creates_nothing_in_git_unless_asked(self):
+        """A worktree holds its branch exclusively, so creating one by default
+        took away the tree the user tests in. Opt-in, not opt-out."""
         self.unit("01-a", owns=["src/a.py"])
         self.plan_ready()
-        self.cli("start", "--no-worktree")
+        code, out = self.cli("start")
+        self.assertEqual(code, 0, out)
+        self.assertFalse(wt.path_for(self.layout, "01-a").exists())
+        self.assertIn("run them in this tree", out)
+        self.assertIn("--worktree", out, "and it says how to opt in")
+
+    def test_the_retired_opt_out_flag_is_still_accepted(self):
+        self.unit("01-a", owns=["src/a.py"])
+        self.plan_ready()
+        code, _out = self.cli("start", "--no-worktree")
+        self.assertEqual(code, 0)
         self.assertFalse(wt.path_for(self.layout, "01-a").exists())
 
-    def test_plan_check_says_worktrees_will_be_created(self):
+    def test_start_explains_that_a_worktree_takes_the_branch(self):
+        self.unit("01-a", owns=["src/a.py"])
+        self.plan_ready()
+        _code, out = self.cli("start", "--worktree")
+        self.assertIn("test inside the worktree", out)
+
+    def test_plan_check_says_session_units_run_in_the_main_tree(self):
         self.unit("01-a", owns=["src/a.py"])
         self.cli("plan", self.slug, "--no-spec")
         _code, out = self.cli("plan-check", self.slug)
-        self.assertIn("will each get a git worktree", out)
+        self.assertIn("main tree", out)
+        self.assertIn("--worktree", out)
 
     def test_merge_command_advances_the_plan(self):
         self.unit("01-a", owns=["src/a.py"])
         self.unit("02-b", owns=["src/b.py"], depends_on=["01-a"])
         self.plan_ready()
-        self.cli("start", "--wave", "1")
+        self.cli("start", "--wave", "1", "--worktree")
         self.work_in("01-a", "src/a.py", "a = 1\n")
 
         code, out = self.cli("merge", "01-a")
@@ -329,7 +348,7 @@ class TestDispatchWithWorktrees(WorktreeFixture):
     def test_merge_command_reports_refusal_without_merging(self):
         self.unit("01-a", owns=["src/a.py"], checks=[{"kind": "cmd", "run": "exit 1"}])
         self.plan_ready()
-        self.cli("start")
+        self.cli("start", "--worktree")
         self.work_in("01-a", "src/a.py", "x = 1\n")
 
         code, out = self.cli("merge", "01-a")
@@ -339,7 +358,7 @@ class TestDispatchWithWorktrees(WorktreeFixture):
     def test_worktree_subcommands(self):
         self.unit("01-a", owns=["src/a.py"])
         self.plan_ready()
-        self.cli("start")
+        self.cli("start", "--worktree")
 
         _code, out = self.cli("worktree", "list")
         self.assertIn("01-a", out)
