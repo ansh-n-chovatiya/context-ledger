@@ -1,0 +1,45 @@
+# Context Ledger configuration.
+#
+#   level 0  trace    always on, no gates, ~30-token briefing
+#   level 1  tracked  one task file, done-gate active
+#   level 2  planned  spec + plan + units, both gates active
+#
+# briefing_chars caps what SessionStart may inject per level, in
+# characters (~3.6 chars per token). Raising it is the fastest way to
+# recreate the context problem this tool solves; `ctx doctor` reports
+# when a briefing had to be truncated to fit.
+#
+# The plugin's own always-on cost is separate and larger than any
+# briefing: measure it with `claude plugin details ctx`.
+schema: 1
+profile: code
+level: "0"
+briefing_chars:
+  l0: 220
+  l1: 900
+  l2: 2600
+journal:
+  digest_lines: 12
+  max_line_chars: 200
+  enabled: true
+  keep_days: 0
+gate:
+  enabled: true
+  max_attempts: 3
+  output_head: 40
+  output_tail: 20
+  timeout_seconds: 240
+plan:
+  wave_budget_tokens: 250000
+models:
+  runner: sonnet
+  reviewer: opus
+  verifier: opus
+telemetry:
+  enabled: true
+auto_load: []
+redact: []
+verify_candidates: []
+verify:
+  - kind: cmd
+    run: "python3 -m unittest discover -s tests -q"

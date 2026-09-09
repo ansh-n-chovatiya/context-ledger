@@ -1,0 +1,251 @@
+{
+  "ctx_schema": 1,
+  "plan": "ctx-0-8",
+  "spec": "ctx-0-8",
+  "revision": 8,
+  "generated": "2026-09-09",
+  "waves": [
+    [
+      "01-telemetry-fields",
+      "02-config-tiers",
+      "03-plan-unit-fields",
+      "04-test-first-kind"
+    ],
+    [
+      "00-init-renders-defaults",
+      "05-complexity-score",
+      "06-phases-core",
+      "07-review-telemetry",
+      "09-findings-rounds",
+      "12-human-board"
+    ],
+    [
+      "08-dispatch-selection"
+    ],
+    [
+      "10-cli-wiring"
+    ],
+    [
+      "11-proofs"
+    ]
+  ],
+  "units": {
+    "01-telemetry-fields": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/telemetry.py",
+        "tests/test_telemetry.py"
+      ],
+      "reads": [],
+      "forbid": [],
+      "budget_tokens": 30000
+    },
+    "02-config-tiers": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/config.py",
+        "tests/test_config_tiers.py"
+      ],
+      "reads": [],
+      "forbid": [],
+      "budget_tokens": 30000
+    },
+    "03-plan-unit-fields": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/plan.py",
+        "tests/test_plan_fields.py"
+      ],
+      "reads": [],
+      "forbid": [],
+      "budget_tokens": 35000
+    },
+    "04-test-first-kind": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/verify.py",
+        "ctx/snapshot.py",
+        "tests/test_test_first.py"
+      ],
+      "reads": [],
+      "forbid": [],
+      "budget_tokens": 45000
+    },
+    "00-init-renders-defaults": {
+      "tier": "subagent",
+      "wave": 2,
+      "depends_on": [
+        "02-config-tiers"
+      ],
+      "owns": [
+        "ctx/cli.py",
+        "tests/test_init_renders_defaults.py"
+      ],
+      "reads": [
+        "ctx/config.py"
+      ],
+      "forbid": [],
+      "budget_tokens": 25000
+    },
+    "05-complexity-score": {
+      "tier": "subagent",
+      "wave": 2,
+      "depends_on": [
+        "02-config-tiers",
+        "03-plan-unit-fields"
+      ],
+      "owns": [
+        "ctx/complexity.py",
+        "tests/test_complexity.py"
+      ],
+      "reads": [
+        "ctx/config.py",
+        "ctx/plan.py"
+      ],
+      "forbid": [],
+      "budget_tokens": 40000
+    },
+    "06-phases-core": {
+      "tier": "subagent",
+      "wave": 2,
+      "depends_on": [
+        "03-plan-unit-fields"
+      ],
+      "owns": [
+        "ctx/phases.py",
+        "tests/test_phases.py"
+      ],
+      "reads": [
+        "ctx/plan.py"
+      ],
+      "forbid": [],
+      "budget_tokens": 45000
+    },
+    "07-review-telemetry": {
+      "tier": "subagent",
+      "wave": 2,
+      "depends_on": [
+        "01-telemetry-fields"
+      ],
+      "owns": [
+        "ctx/review.py",
+        "tests/test_review_telemetry.py"
+      ],
+      "reads": [
+        "ctx/telemetry.py"
+      ],
+      "forbid": [],
+      "budget_tokens": 30000
+    },
+    "09-findings-rounds": {
+      "tier": "subagent",
+      "wave": 2,
+      "depends_on": [
+        "02-config-tiers"
+      ],
+      "owns": [
+        "ctx/findings.py",
+        "tests/test_findings_rounds.py",
+        "tests/fixtures/"
+      ],
+      "reads": [
+        "ctx/config.py"
+      ],
+      "forbid": [],
+      "budget_tokens": 35000
+    },
+    "12-human-board": {
+      "tier": "subagent",
+      "wave": 2,
+      "depends_on": [
+        "03-plan-unit-fields"
+      ],
+      "owns": [
+        "ctx/board.py",
+        "tests/test_board.py"
+      ],
+      "reads": [
+        "ctx/plan.py",
+        "ctx/spec.py",
+        "ctx/state.py",
+        "ctx/journal.py",
+        "ctx/paths.py"
+      ],
+      "forbid": [],
+      "budget_tokens": 50000
+    },
+    "08-dispatch-selection": {
+      "tier": "subagent",
+      "wave": 3,
+      "depends_on": [
+        "05-complexity-score",
+        "07-review-telemetry"
+      ],
+      "owns": [
+        "ctx/dispatch.py",
+        "ctx/config.py",
+        "tests/test_dispatch_selection.py"
+      ],
+      "reads": [
+        "ctx/complexity.py",
+        "ctx/config.py",
+        "ctx/review.py"
+      ],
+      "forbid": [],
+      "budget_tokens": 55000
+    },
+    "10-cli-wiring": {
+      "tier": "session",
+      "wave": 4,
+      "depends_on": [
+        "00-init-renders-defaults",
+        "06-phases-core",
+        "08-dispatch-selection",
+        "09-findings-rounds",
+        "01-telemetry-fields",
+        "04-test-first-kind"
+      ],
+      "owns": [
+        "ctx/cli.py",
+        "commands/",
+        "agents/",
+        "tests/test_cli_wiring.py"
+      ],
+      "reads": [
+        "ctx/phases.py",
+        "ctx/dispatch.py",
+        "ctx/telemetry.py",
+        "ctx/complexity.py"
+      ],
+      "forbid": [],
+      "budget_tokens": 60000
+    },
+    "11-proofs": {
+      "tier": "subagent",
+      "wave": 5,
+      "depends_on": [
+        "10-cli-wiring"
+      ],
+      "owns": [
+        "tests/test_unproven_claims.py"
+      ],
+      "reads": [
+        "ctx/review.py",
+        "ctx/snapshot.py",
+        "ctx/findings.py",
+        "ctx/trust.py",
+        "ctx/dispatch.py"
+      ],
+      "forbid": [],
+      "budget_tokens": 45000
+    }
+  }
+}
