@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -23,6 +24,33 @@ from ctx.cli import main as cli_main  # noqa: E402
 # asserts nothing on a plain Windows box — it just happened to work on CI.
 OK = '"%s" -c pass' % sys.executable
 FAILS = '"%s" -c "import sys; sys.exit(1)"' % sys.executable
+
+
+def _cleanup(tmp, attempts=5):
+    """Remove a temp directory, tolerating a racing writer inside `.git`.
+
+    The worktree tests run real `git`, and git leaves work running after the
+    command returns — an auto-gc, an fsmonitor, an index rewrite. On macOS that
+    raced `rmtree`: the walk listed `.git`, git wrote into it, and `os.rmdir`
+    raised `ENOTEMPTY`. It surfaced as an ERROR in whichever test happened to
+    finish at the wrong moment, which made a green suite look broken and, worse,
+    made a real failure in that test indistinguishable from noise.
+
+    Retry, then give up quietly. The directory is a `TemporaryDirectory` under
+    the OS temp root either way, so the cost of losing the race for good is a
+    few kilobytes the OS reclaims — not a failed test run.
+
+    `TemporaryDirectory(ignore_cleanup_errors=True)` would say this in one
+    argument, but it arrived in 3.10 and this project supports 3.8.
+    """
+    for remaining in range(attempts - 1, -1, -1):
+        try:
+            tmp.cleanup()
+            return
+        except OSError:
+            if not remaining:
+                return
+            time.sleep(0.05)
 
 
 class Fixture(unittest.TestCase):
@@ -51,8 +79,8 @@ class Fixture(unittest.TestCase):
     def tearDown(self):
         os.environ.clear()
         os.environ.update(self._env)
-        self._tmp.cleanup()
-        self._outside.cleanup()
+        _cleanup(self._tmp)
+        _cleanup(self._outside)
 
     def cli(self, *args):
         """Run a subcommand against the fixture, capturing its output."""
