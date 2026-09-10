@@ -425,7 +425,20 @@ def merge(layout, config, plan_slug, unit_name, skip_gate=False):
         ]
 
     # 4. The done-gate, run inside the worktree so it judges the unit's own tree.
-    if not skip_gate:
+    if skip_gate:
+        # An override that records "skipped" and nothing else throws away the
+        # only fact anyone will want later: what was stepped over. Name the
+        # checks that did not run.
+        skipped = verify.ordered(unit.checks)
+        named = "; ".join(verify.label_of(check) for check in skipped[:3])
+        messages.append(
+            f"warning: --skip-gate overrode the done-gate for {unit_name} — "
+            f"{len(skipped)} verify check(s) were not run, so nothing about this "
+            "unit was verified before merging"
+            + (f": {named}" if named else "")
+            + (" (+%d more)" % (len(skipped) - 3) if len(skipped) > 3 else "")
+        )
+    else:
         checks = verify.ordered(unit.checks)
         if not checks:
             return False, [f"{unit_name} has no verify checks — refusing to merge blind"]
@@ -444,7 +457,32 @@ def merge(layout, config, plan_slug, unit_name, skip_gate=False):
                 f"{unit_name} has judged checks awaiting sign-off — not merging",
                 verify.summarise(results),
             ]
+        if verdict == verify.ERROR and not any(
+            r.status == verify.PASS for r in results
+        ):
+            # Nothing ran. `ctx unit --status done` refuses here for the same
+            # reason, and a merge that did not would be a complete route around
+            # that refusal — on the default configuration, no less: with
+            # `PROFILES["code"]` carrying only `cmd` checks, a machine that has
+            # never run `ctx trust` errors *every* check. This branch used to
+            # warn, merge, and then set `status="done"`, so the unit came out
+            # done with zero checks executed. Name the configuration problem and
+            # refuse anyway.
+            return False, [
+                f"not one check could run in {unit_name}'s worktree, so nothing "
+                "about this unit was verified — not merging",
+                *[result.line() for result in results],
+                "That is a configuration problem, not a work failure — often a "
+                "command this machine has never accepted (`ctx trust`), or a "
+                "missing tool. But an ungated unit is not a done unit: ungated "
+                "is not done.",
+                "Fix the configuration and re-run, or pass --skip-gate to "
+                "override.",
+            ]
         if verdict == verify.ERROR:
+            # Some check did reach PASS, so the gate is not blind — today's
+            # behaviour, kept deliberately. The refusal above is for *no check
+            # reached PASS*, never for *any check errored*.
             messages.append(
                 "warning: not every check could run in the worktree "
                 "(configuration, not work) — the gate signed nothing"
