@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 from . import (
     __version__, briefing, bundle, complexity as complexity_mod,
@@ -288,6 +289,34 @@ def _verify_candidates(root, profile, extra=()):
     return unique
 
 
+# A module name, not a path and not an expression. Anything else is refused
+# rather than resolved: the string reaches here from a committed ctx.yaml.
+_MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Asked as a question about the *machine*, which means it must read nothing
+# from the repository. The name under test arrives in a cloned ctx.yaml, and
+# this probe was once the shortest path to arbitrary code execution in the
+# whole tool, so the defences are layered rather than singular:
+#
+#   * the name is passed as `argv[1]`, never interpolated into source;
+#   * only its top-level component is resolved by the caller — `find_spec`
+#     on a dotted name *imports the parent package* to read its `__path__`,
+#     so `find_spec("evilpkg.sub")` executed `evilpkg/__init__.py`;
+#   * `sys.path[0]` is dropped, because `python -c` prepends the working
+#     directory there, and any other entry naming that directory goes too;
+#   * and the caller runs it in an empty scratch directory, so `sys.path[0]`
+#     was never the repository to begin with.
+#
+# `find_spec` locates a module without executing it, which is the entire point
+# of using it over an import — but only once the search path is trustworthy.
+_PROBE = (
+    "import importlib.util, os, sys; "
+    "here = os.getcwd(); "
+    "sys.path = [p for p in sys.path[1:] if p and os.path.abspath(p) != here]; "
+    "sys.exit(0 if importlib.util.find_spec(sys.argv[1]) else 1)"
+)
+
+
 def _availability(command):
     """(can_it_start, why_not). The reason is user-facing, so it must be true.
 
@@ -295,6 +324,17 @@ def _availability(command):
     pytest absent exits 1 from an interpreter that is very much present, so a
     PATH check accepts a command the gate can never actually run — and reports
     the wrong reason when it does reject one.
+
+    Availability is decided *before* the trust store is consulted — `ctx doctor`
+    prints MISS for a command it will never run — so everything this function
+    does happens to strings the user has not reviewed yet. It therefore reads
+    the module name and runs nothing that the repository supplied.
+
+    A dotted name is answered for its top-level package only. `python3 -m
+    json.tool` on a machine with `json` is reported available even though
+    nothing checked `tool`; the alternative is importing `json` to ask, and the
+    cost of that trade is a command that fails at the gate instead of at the
+    probe, one layer later and with the trust store already passed.
     """
     parts = command.split()
     if not parts:
@@ -304,14 +344,15 @@ def _availability(command):
     if os.path.basename(parts[0]).startswith("python") and "-m" in parts[:3]:
         module = parts[parts.index("-m") + 1:parts.index("-m") + 2]
         if module:
-            probe = (
-                "import importlib.util, sys; "
-                f"sys.exit(0 if importlib.util.find_spec({module[0]!r}) else 1)"
-            )
+            top = module[0].split(".", 1)[0]
+            if not _MODULE_NAME.match(top):
+                return False, f"{parts[0]} cannot import {module[0]}"
             try:
-                ok = subprocess.run(
-                    [parts[0], "-c", probe], capture_output=True, timeout=20
-                ).returncode == 0
+                with tempfile.TemporaryDirectory() as elsewhere:
+                    ok = subprocess.run(
+                        [parts[0], "-c", _PROBE, top], capture_output=True,
+                        timeout=20, cwd=elsewhere,
+                    ).returncode == 0
             except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
                 return False, f"could not probe {module[0]}: {exc}"
             if not ok:
