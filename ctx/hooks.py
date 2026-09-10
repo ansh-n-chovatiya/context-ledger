@@ -249,6 +249,14 @@ def on_stop(layout, config, payload):
         # repository. That is infrastructure, not the work, and blocking on it
         # would brick every session in the project. It is journalled as
         # incomplete rather than as a pass — the gate did not sign anything.
+        #
+        # Deliberately *not* the same answer as `cli._gate_check`, which refuses
+        # an all-ERROR `--status done`. The difference is what each one is
+        # deciding: ending a turn is not a claim that the work is finished, so
+        # unrunnable checks cost the session nothing; marking a unit `done` is
+        # exactly that claim, and an ungated claim is the thing the gate exists
+        # to refuse. Making this branch block too would brick every session in a
+        # project whose toolchain is not installed, which is not an improvement.
         journal.append(
             layout, config, "gate", item.key,
             "incomplete (a check could not run); not blocking",

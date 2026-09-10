@@ -17,7 +17,7 @@ import tempfile
 
 from . import (
     __version__, briefing, bundle, complexity as complexity_mod,
-    config as config_mod, dispatch, frontmatter,
+    config as config_mod, contract as contract_mod, dispatch, frontmatter,
     journal, migrate as migrate_mod, paths, phases as phases_mod,
     plan as plan_mod, spec as spec_mod,
     findings as findings_mod, review as review_mod, snapshot as snapshot_mod,
@@ -1286,6 +1286,11 @@ def cmd_start(args):
             captured += 1
         except OSError as exc:  # a snapshot must never block a dispatch
             _echo(f"  ! could not snapshot {unit.name} for review: {exc}")
+        # Dispatch is also the only moment at which the unit's contract is known
+        # to predate the work. Sealed here so the done-gate can tell a unit that
+        # met its promise from one that edited the promise — the runner holds
+        # `Write`, and its own unit file is inside the `.ctx/` scope exemption.
+        contract_mod.seal(layout, config, slug, unit, layout.root.parent)
         # One record per dispatched unit, regardless of tier: `model` and
         # `score` are exactly what the dispatch line above already prints for
         # `subagent` units, recorded here too so `ctx telemetry`'s `by_role`
@@ -1424,6 +1429,10 @@ def cmd_review(args):
               "Critical finding, already decided")
     if ledger.findings:
         _echo(f"  findings: {ledger.summary()}")
+        # Observed, not authoritative (see `contract.seal_findings`): building a
+        # package for round N+1 is also the moment ctx last saw round N's
+        # findings intact.
+        contract_mod.seal_findings(layout, slug, unit.name, ledger)
     _echo("")
     # Sized off the package that was just built, not the flat `models.reviewer`
     # floor: a small, in-scope package earns the cheaper tier one below it (see
@@ -1461,6 +1470,12 @@ def cmd_findings(args):
     if args.add:
         finding = ledger.add(args.add, args.summary or "(no summary given)",
                              where=args.where or "", evidence=args.evidence or "")
+        # Authoritative: this *is* the legitimate way to record a finding, so
+        # the seal takes it verbatim. Once sealed, deleting the finding from the
+        # file by hand is visible to the done-gate.
+        contract_mod.seal_findings(
+            layout, slug, unit.name, ledger, authoritative=True
+        )
         _echo(f"recorded [{finding.id}] {finding.severity}: {finding.summary}")
         journal.append(layout, config, "finding", unit.name,
                        f"{finding.severity} #{finding.id}")
@@ -1474,10 +1489,20 @@ def cmd_findings(args):
         if not ok:
             _echo(problem)
             return 1
+        # Also authoritative: `--set` is how a finding is *meant* to move, so a
+        # legitimate close re-seals rather than tripping the gate.
+        contract_mod.seal_findings(
+            layout, slug, unit.name, ledger, authoritative=True
+        )
         _echo(f"[{args.set}] is now {args.status}")
         journal.append(layout, config, "finding", unit.name,
                        f"#{args.set} -> {args.status}")
         return 0
+
+    # Listing only observes: it may add a finding to the seal or strengthen one,
+    # never drop or soften one. That is what stops a hand-edit of the findings
+    # file from laundering itself by running a read-only ctx command afterwards.
+    contract_mod.seal_findings(layout, slug, unit.name, ledger)
 
     if not ledger.findings and not ledger.escalations:
         _echo(f"no findings recorded for {unit.name}")
@@ -1674,6 +1699,93 @@ def cmd_worktree(args):
     return 0
 
 
+def _gate_check(layout, config, slug, unit):
+    """(ok, reason, lines) — may this unit be marked `done`, and if not, why.
+
+    Ordered by what invalidates what, and by cost. A forged contract makes every
+    result below it meaningless, so it is answered first; it and the empty-checks
+    case are both pure file reads, and neither spawns a process.
+
+    Split out of `_gate_before_done` so that `--force` can say *what* it is
+    overriding. An escape hatch that records "forced" and nothing else leaves no
+    trace of the thing it stepped over, which is exactly the trace that matters
+    later.
+    """
+    lines = []
+
+    # 1. Did the unit rewrite its own contract after it was dispatched?
+    if contract_mod.baseline(layout, slug, unit) is None:
+        # Not a violation. A plan dispatched by an older ctx, or one whose
+        # snapshot failed, has nothing to compare against; refusing there would
+        # brick every in-flight plan on upgrade.
+        lines.append(
+            f"note: no dispatch baseline for {unit.name}, so its contract was not "
+            "checked for edits — /ctx:start records one from now on"
+        )
+    else:
+        intact, changed = contract_mod.compare(layout, slug, unit)
+        if not intact:
+            return False, "contract edited after dispatch", lines + [
+                f"refusing to mark {unit.name} done — its contract changed after "
+                "it was dispatched:",
+                *[f"  changed: {item}" for item in changed],
+                "",
+                "A unit does not get to rewrite the promise it is judged against.",
+                "Restore what changed from the plan, or — if the change is a real",
+                "planning decision — say so out loud and pass --force.",
+            ]
+
+    # 2. A gate with nothing in it holds nothing.
+    if not verify.ordered(unit.checks):
+        return False, "no usable verify checks", lines + [
+            f"refusing to mark {unit.name} done — it has no usable verify checks",
+            "add a `verify` block to the unit file, or pass --force to override",
+        ]
+
+    # 3. The checks themselves.
+    results, verdict = verify.run(
+        layout, config, unit.checks, cwd=layout.root.parent,
+        key=f"{slug}/{unit.name}", owns=unit.owns, recorded=unit.recorded,
+        judged=False,
+    )
+    if verdict in (verify.FAIL, verify.PENDING):
+        return False, verdict, lines + [
+            f"refusing to mark {unit.name} done — the gate did not pass",
+            *[result.line() for result in results],
+            "",
+            "Fix the failing criterion, or pass --force if you are deliberately",
+            "overriding the gate — which is a decision worth saying out loud.",
+        ]
+    if verdict == verify.ERROR and not any(r.status == verify.PASS for r in results):
+        # Nothing ran. That is a configuration problem, not a work failure — and
+        # it is still not `done`: with `PROFILES["code"]` carrying only `cmd`
+        # checks, a freshly cloned repo that has never run `ctx trust` errors
+        # *every* check, and this branch used to print a warning and mark the
+        # unit done with zero checks executed. Name the configuration problem
+        # (the results below say `ctx trust`, or the missing binary, by name)
+        # and then refuse anyway.
+        return False, "no check could run", lines + [
+            f"refusing to mark {unit.name} done — not one check could run, so "
+            "nothing about this unit was verified:",
+            *[result.line() for result in results],
+            "",
+            "That is a configuration problem, not a work failure — often a "
+            "command this machine has never accepted (`ctx trust`), or a missing "
+            "tool. But an ungated unit is not a done unit: ungated is not done.",
+            "Fix the configuration and re-run, or pass --force to override.",
+        ]
+    if verdict == verify.ERROR:
+        # Some check did pass, so the gate is not blind — this is today's
+        # behaviour, kept deliberately. The refusal above is for *no check
+        # reached PASS*, never for *any check errored*.
+        lines += [
+            f"warning: not every check could run for {unit.name} — configuration, "
+            "not a work failure, so this is not blocking:",
+            *[result.line() for result in results],
+        ]
+    return True, "", lines
+
+
 def _gate_before_done(layout, config, slug, unit):
     """Non-zero exit code when this unit has not earned `done`, else None.
 
@@ -1683,33 +1795,19 @@ def _gate_before_done(layout, config, slug, unit):
     had written about itself. The strongest guarantee in the system did not cover
     its most common path.
     """
-    if not verify.ordered(unit.checks):
-        _echo(f"refusing to mark {unit.name} done — it has no usable verify checks")
-        _echo("add a `verify` block to the unit file, or pass --force to override")
-        return 1
-
-    results, verdict = verify.run(
-        layout, config, unit.checks, cwd=layout.root.parent,
-        key=f"{slug}/{unit.name}", owns=unit.owns, recorded=unit.recorded,
-        judged=False,
-    )
-    if verdict in (verify.FAIL, verify.PENDING):
-        _echo(f"refusing to mark {unit.name} done — the gate did not pass")
-        for result in results:
-            _echo(result.line())
-        _echo("")
-        _echo("Fix the failing criterion, or pass --force if you are deliberately")
-        _echo("overriding the gate — which is a decision worth saying out loud.")
-        journal.append(layout, config, "unit", unit.name, f"done refused ({verdict})")
-        return 1
-    if verdict == verify.ERROR:
-        # Say *which* configuration problem. "Check ctx.yaml" is useless advice
-        # when the real answer is `ctx trust`, or a `cwd` that does not exist.
-        _echo(f"warning: no check could run for {unit.name} — configuration, not "
-              "a work failure, so this is not blocking:")
-        for result in results:
-            _echo(result.line())
-    return None
+    ok, reason, lines = _gate_check(layout, config, slug, unit)
+    for line in lines:
+        _echo(line)
+    if ok:
+        # A gate that ran and passed re-seals what it saw, so a finding recorded
+        # by hand between dispatch and now cannot be deleted afterwards.
+        contract_mod.seal_findings(
+            layout, slug, unit.name,
+            findings_mod.load(layout, slug, unit.name),
+        )
+        return None
+    journal.append(layout, config, "unit", unit.name, f"done refused ({reason})")
+    return 1
 
 
 def cmd_unit(args):
@@ -1731,10 +1829,26 @@ def cmd_unit(args):
         _list_units(layout, slug)
         return 1
 
-    if args.status == "done" and not args.force:
-        refusal = _gate_before_done(layout, config, slug, unit)
-        if refusal:
-            return refusal
+    note = args.status
+    if args.status == "done":
+        if not args.force:
+            refusal = _gate_before_done(layout, config, slug, unit)
+            if refusal:
+                return refusal
+        else:
+            # `--force` still runs the gate — it just does not obey it. Recording
+            # "forced" without recording *what was overridden* throws away the
+            # only fact anyone will want later, and the reason is knowable only
+            # by asking. Loud, in the journal and on the terminal.
+            ok, reason, lines = _gate_check(layout, config, slug, unit)
+            if ok:
+                note = "done (--force; the gate passed anyway)"
+            else:
+                note = f"done (--force overrode the gate: {reason})"
+                _echo(f"warning: --force overrode the done-gate for {unit.name} "
+                      f"({reason}). What it refused:")
+                for line in lines:
+                    _echo(line)
 
     unit.set(status=args.status)
     if args.status == "done":
@@ -1742,7 +1856,7 @@ def cmd_unit(args):
         state.clear_attempts(layout, unit.name)
     else:
         state.update(layout, level="2", plan=slug, unit=unit.name)
-    journal.append(layout, config, "unit", unit.name, args.status)
+    journal.append(layout, config, "unit", unit.name, note)
 
     _echo(f"{unit.name}: {args.status}")
     if args.status == "running":
