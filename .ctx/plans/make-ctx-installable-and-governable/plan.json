@@ -1,0 +1,105 @@
+{
+  "ctx_schema": 1,
+  "plan": "make-ctx-installable-and-governable",
+  "spec": "make-ctx-installable-and-governable",
+  "revision": 1,
+  "generated": "2026-09-11",
+  "waves": [
+    [
+      "01-packaging",
+      "02-policy-and-trust-lock",
+      "03-supply-chain"
+    ],
+    [
+      "04-docs-currency"
+    ]
+  ],
+  "units": {
+    "01-packaging": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "pyproject.toml",
+        ".github/workflows/release.yml",
+        "tests/test_packaging.py"
+      ],
+      "reads": [
+        "ctx/__init__.py",
+        ".claude-plugin/plugin.json"
+      ],
+      "forbid": [
+        ".github/workflows/ci.yml",
+        "README.md",
+        "ctx/cli.py"
+      ],
+      "budget_tokens": 60000
+    },
+    "02-policy-and-trust-lock": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/config.py",
+        "ctx/cli.py",
+        "ctx/trust.py",
+        "tests/test_policy.py"
+      ],
+      "reads": [
+        "ctx/hooks.py",
+        "ctx/journal.py"
+      ],
+      "forbid": [
+        "README.md",
+        "pyproject.toml",
+        ".github/workflows/ci.yml"
+      ],
+      "budget_tokens": 110000
+    },
+    "03-supply-chain": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        ".github/workflows/ci.yml",
+        "SECURITY.md",
+        "CODEOWNERS",
+        ".github/dependabot.yml",
+        "tests/test_supply_chain.py"
+      ],
+      "reads": [
+        "tests/test_ci_floor.py"
+      ],
+      "forbid": [
+        ".github/workflows/release.yml",
+        "README.md",
+        "ctx/cli.py",
+        "pyproject.toml"
+      ],
+      "budget_tokens": 60000
+    },
+    "04-docs-currency": {
+      "tier": "subagent",
+      "wave": 2,
+      "depends_on": [
+        "01-packaging",
+        "02-policy-and-trust-lock",
+        "03-supply-chain"
+      ],
+      "owns": [
+        "README.md",
+        "CHANGELOG.md"
+      ],
+      "reads": [
+        "pyproject.toml",
+        ".github/workflows/release.yml",
+        "ctx/trust.py"
+      ],
+      "forbid": [
+        "ctx/cli.py",
+        ".github/workflows/ci.yml"
+      ],
+      "budget_tokens": 70000
+    }
+  }
+}
