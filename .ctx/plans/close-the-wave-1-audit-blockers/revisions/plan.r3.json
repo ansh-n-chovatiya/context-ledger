@@ -2,7 +2,7 @@
   "ctx_schema": 1,
   "plan": "close-the-wave-1-audit-blockers",
   "spec": "close-the-wave-1-audit-blockers",
-  "revision": 4,
+  "revision": 3,
   "generated": "2026-09-10",
   "waves": [
     [
@@ -15,9 +15,6 @@
     [
       "04-baseline-survives-restart",
       "06-merge-preflight"
-    ],
-    [
-      "07-overrides-are-journalled"
     ],
     [
       "05-document-wave-1"
@@ -110,9 +107,7 @@
         "ctx/review.py",
         "ctx/snapshot.py",
         "ctx/contract.py",
-        "tests/test_audit_review_baseline.py",
-        "tests/test_audit_ungated_gate.py",
-        "tests/test_flow_end_to_end.py"
+        "tests/test_audit_review_baseline.py"
       ],
       "reads": [
         "ctx/contract.py",
@@ -158,43 +153,13 @@
       ],
       "budget_tokens": 55000
     },
-    "07-overrides-are-journalled": {
+    "05-document-wave-1": {
       "tier": "subagent",
       "wave": 4,
       "depends_on": [
-        "04-baseline-survives-restart",
-        "06-merge-preflight"
-      ],
-      "owns": [
-        "ctx/cli.py",
-        "tests/test_audit_override_journal.py"
-      ],
-      "reads": [
-        "ctx/worktree.py",
-        "ctx/journal.py",
-        "ctx/verify.py",
-        "tests/support.py",
-        "tests/test_audit_merge_preflight.py",
-        "report.md"
-      ],
-      "forbid": [
-        "ctx/worktree.py",
-        "ctx/contract.py",
-        "ctx/review.py",
-        "ctx/snapshot.py",
-        "ctx/hooks.py"
-      ],
-      "budget_tokens": 35000
-    },
-    "05-document-wave-1": {
-      "tier": "subagent",
-      "wave": 5,
-      "depends_on": [
         "01-verify-kinds",
         "03-ungated-is-not-done",
-        "04-baseline-survives-restart",
-        "06-merge-preflight",
-        "07-overrides-are-journalled"
+        "04-baseline-survives-restart"
       ],
       "owns": [
         "README.md",

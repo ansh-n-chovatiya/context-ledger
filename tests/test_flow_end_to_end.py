@@ -158,7 +158,7 @@ class TestFullFlow(Fixture):
         self.assertEqual(code, 1, "a failing unit cannot be marked done")
         self.assertEqual(
             plan_mod.find_unit(self.layout, "auth-rollout", "01-keys").status,
-            "pending", "and nothing was written",
+            "running", "and nothing was written — still what dispatch left it",
         )
 
         keys = plan_mod.find_unit(self.layout, "auth-rollout", "01-keys")
@@ -225,7 +225,8 @@ class TestFullFlow(Fixture):
         self.assertEqual(code, 1)
         self.assertIn("outside its `owns` scope", out)
         self.assertEqual(
-            plan_mod.find_unit(self.layout, "auth", "01-keys").status, "pending"
+            plan_mod.find_unit(self.layout, "auth", "01-keys").status, "running",
+            "the merge was refused, so it is still what `ctx start` left it",
         )
 
         # Within scope, it lands and the worktree is cleaned up.

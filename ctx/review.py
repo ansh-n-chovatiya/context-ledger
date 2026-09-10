@@ -49,11 +49,19 @@ def after_key(slug, unit_name, round_number=1):
     return f"{slug}@{unit_name}@r{round_number}"
 
 
-def capture_before(layout, config, unit, slug, root):
-    """Snapshot the tree before a unit is dispatched."""
+def capture_before(layout, config, unit, slug, root, force=False):
+    """Snapshot the tree before a unit is dispatched.
+
+    `force=False` keeps a baseline that already exists. The pre-work capture is
+    the only snapshot that cannot be retaken later — by the time anyone notices
+    it was overwritten, the work it was supposed to predate has already landed.
+    So a second dispatch of the same unit leaves it alone and the existing
+    manifest comes back unchanged; `ctx start --rebaseline` is the one caller
+    that asks for it to be replaced, out loud.
+    """
     return snapshot.capture(
         layout, config, before_key(slug, unit.name), root,
-        content_paths=list(unit.owns) + list(unit.reads),
+        content_paths=list(unit.owns) + list(unit.reads), force=force,
     )
 
 
@@ -142,9 +150,14 @@ def build(layout, config, unit, slug, root, round_number=1, previous=None):
         )
 
     head_key = after_key(slug, unit.name, round_number)
+    # `force=True`: the *after* side is meant to be whatever the tree says now.
+    # Re-running `ctx review` for the same round — which is what happens when a
+    # round raised nothing and so did not advance — must see the current work,
+    # not the tree as it stood the first time. Only the `before` key is evidence
+    # that cannot be retaken.
     head = snapshot.capture(
         layout, config, head_key, root,
-        content_paths=list(unit.owns) + list(unit.reads),
+        content_paths=list(unit.owns) + list(unit.reads), force=True,
     )
     delta = snapshot.compare(base, head)
     # Not `unit.owns`: a wave shares one working tree, so a sibling's write to

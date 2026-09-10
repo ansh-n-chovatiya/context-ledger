@@ -157,18 +157,37 @@ def is_binary(data):
     return b"\x00" in data[:8192]
 
 
-def capture(layout, config, key, root, content_paths=()):
+def capture(layout, config, key, root, content_paths=(), force=False):
     """Fingerprint the tree, storing bytes for the declared scope. Returns the
-    manifest it wrote.
+    manifest it wrote — or the one that was already there.
 
     `content_paths` is normally the unit's `owns` plus its `reads`: those are the
     paths a diff may need to be reconstructed from. Everything else is recorded
     by hash alone, which is enough to prove that it changed and cheap enough to
     do on every dispatch.
+
+    **A capture under a key that already holds one is refused unless `force`.**
+    This used to begin with an unconditional `rmtree`, which made a snapshot a
+    thing any later call could quietly replace. The `before` key is the evidence
+    `ctx review` diffs against, and the documented crash-recovery step is to run
+    `/ctx:start` again — so a second dispatch re-snapshotted units that were
+    mid-flight or already finished, over their completed state. The review then
+    diffed post-work against post-work, handed the reviewer an empty package,
+    and got `verdict: approved` for work nobody looked at.
+
+    Refusing by default puts the decision where it belongs: a caller that
+    genuinely wants the baseline retaken — `ctx start --rebaseline`, `ctx
+    snapshot --phase before`, or the `after` capture a review takes fresh every
+    time — says so, in one word, at the call site. Everything else keeps what
+    was there. The existing manifest is returned rather than `None` so a refusal
+    reads the same as a capture to a caller that only wants the numbers.
     """
     options = settings(config)
     root = Path(root)
     directory = snapshot_dir(layout, key)
+    existing = load(layout, key)
+    if existing is not None and not force:
+        return existing
     if directory.exists():
         shutil.rmtree(directory, ignore_errors=True)
     blobs = directory / "files"

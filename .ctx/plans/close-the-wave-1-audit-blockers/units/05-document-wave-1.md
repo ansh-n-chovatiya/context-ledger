@@ -7,6 +7,8 @@ depends_on:
   - 01-verify-kinds
   - 03-ungated-is-not-done
   - 04-baseline-survives-restart
+  - 06-merge-preflight
+  - 07-overrides-are-journalled
 owns:
   - README.md
   - CHANGELOG.md
@@ -27,7 +29,7 @@ verify:
   - kind: cmd
     run: python3 -m unittest discover -s tests -q
   - kind: diff
-wave: 4
+wave: 5
 ---
 
 ## Objective

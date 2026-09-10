@@ -11,6 +11,8 @@ owns:
   - ctx/snapshot.py
   - ctx/contract.py
   - tests/test_audit_review_baseline.py
+  - tests/test_audit_ungated_gate.py
+  - tests/test_flow_end_to_end.py
 reads:
   - path: ctx/contract.py
     symbols:
@@ -38,7 +40,7 @@ forbid:
   - ctx/hooks.py
   - ctx/worktree.py
 budget_tokens: 70000
-status: pending
+status: done
 verify:
   - kind: cmd
     run: python3 -m unittest discover -s tests -q
@@ -150,9 +152,20 @@ Produces:
     controls: notably, a test proving `--rebaseline` *does* replace the manifest,
     so criterion 1's refusal is shown to be a real guard rather than a capture
     that silently stopped happening.
-12. `python3 -m unittest discover -s tests` is green, including every existing
-    test in `tests/test_review.py`, `tests/test_dispatch.py`,
-    `tests/test_dispatch_selection.py` and `tests/test_flow_end_to_end.py`.
+12. `python3 -m unittest discover -s tests` is green. Criterion 3 makes `running`
+    a value that did not exist when the suite was written, and eight assertions
+    use `pending` as a synonym for "the transition was refused". Amending exactly
+    those eight is authorised, and nothing else:
+    - `tests/test_audit_ungated_gate.py:169` — assert `status: done` is absent
+      rather than asserting `status: pending` is present.
+    - `tests/test_audit_ungated_gate.py` lines 340, 352, 364, 489, 503 — assert
+      the status is not `done` rather than that it equals `pending`.
+    - `tests/test_flow_end_to_end.py:161` and `:228` — expect `running`.
+    Prefer "is not done" over "is running" wherever the assertion's intent is
+    that the transition was refused: that intent is what the test is for, and it
+    survives the next status this product grows. Every other test in
+    `tests/test_review.py`, `tests/test_dispatch.py` and
+    `tests/test_dispatch_selection.py` must pass untouched.
 13. No file outside `owns` is modified.
 
 ## Return contract

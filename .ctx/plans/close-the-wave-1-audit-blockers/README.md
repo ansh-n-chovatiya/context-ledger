@@ -9,6 +9,7 @@ Spec: `.ctx/specs/close-the-wave-1-audit-blockers/spec.md`
 
 
 
+
 **Wave 1** — these may run concurrently
 
 - `01-verify-kinds` (subagent, done) — Close two audit findings that both live in `ctx/verify.py`: **(a) Real regressions are laundered as infrastruc
@@ -24,11 +25,16 @@ Spec: `.ctx/specs/close-the-wave-1-audit-blockers/spec.md`
 **Wave 3** — these may run concurrently
 
 - `04-baseline-survives-restart` (subagent, pending) — Stop a re-run of `ctx start` from destroying the evidence `ctx review` judges against. `cmd_start` calls `revi
-  - owns: ctx/cli.py, ctx/review.py, ctx/snapshot.py, ctx/contract.py, tests/test_audit_review_baseline.py
+  - owns: ctx/cli.py, ctx/review.py, ctx/snapshot.py, ctx/contract.py, tests/test_audit_review_baseline.py, tests/test_audit_ungated_gate.py, tests/test_flow_end_to_end.py
 - `06-merge-preflight` (subagent, pending) — Two findings in one function, `worktree.merge`'s preflight. **(a) The all-ERROR bypass survives here.** `03-un
   - owns: ctx/worktree.py, tests/test_audit_merge_preflight.py
 
 **Wave 4** — these may run concurrently
+
+- `07-overrides-are-journalled` (subagent, pending) — Close an audit-trail asymmetry between the two ways to override the done-gate. `03-ungated-is-not-done` made `
+  - owns: ctx/cli.py, tests/test_audit_override_journal.py
+
+**Wave 5** — these may run concurrently
 
 - `05-document-wave-1` (subagent, pending) — Wave 1 adds user-visible surface: a per-check `optional: true` key, a `ctx start --rebaseline` flag, a `status
   - owns: README.md, CHANGELOG.md

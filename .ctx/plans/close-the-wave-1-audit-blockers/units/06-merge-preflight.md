@@ -37,7 +37,7 @@ forbid:
   - tests/test_merge_safety.py
   - tests/test_worktree.py
 budget_tokens: 55000
-status: pending
+status: done
 verify:
   - kind: cmd
     run: python3 -m unittest discover -s tests -q

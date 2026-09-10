@@ -512,14 +512,19 @@ def cmd_status(args):
                 wave, marker = level, ""
                 _echo(f"  wave {level}")
             flag = "→" if name == current.get("unit") else " "
-            _echo(f"   {flag} {name:<24} {tier:<9} {status}")
+            _echo(f"   {flag} {name:<24} {tier:<9} {_status_cell(status)}")
         if not rows:
             _echo("   (no units yet)")
         for problem in problems:
             _echo(f"   ! {problem}")
         if not problems:
             nxt = plan_mod.next_wave(layout, current["plan"])
-            _echo(f"   next: {'wave %d — /ctx:start' % nxt if nxt else 'plan complete'}")
+            dispatched, waiting = _wave_in_flight(layout, current["plan"], nxt)
+            if nxt and dispatched and not waiting:
+                _echo(f"   next: wave {nxt} is in flight — {len(dispatched)} unit(s) "
+                      "dispatched, none left to start; review what comes back")
+            else:
+                _echo(f"   next: {'wave %d — /ctx:start' % nxt if nxt else 'plan complete'}")
 
     if current.get("plan") and not (work.claim()[0] or current.get("unit")):
         stray = _orchestrator_edits(layout, current["plan"])
@@ -712,13 +717,43 @@ def cmd_promote(args):
     return 0
 
 
+def _wave_in_flight(layout, slug, wave):
+    """(dispatched, waiting) — names of a wave's `running` and `pending` units.
+
+    Both lists are needed to tell "this wave has not been started" from "this
+    wave is out and nobody has reported back yet". Advising `/ctx:start` for
+    the second is a loop: the wave is dispatched, nothing about running it
+    again changes anything, and the answer never stops being the same command.
+    """
+    if not wave:
+        return [], []
+    grouped, problems = plan_mod.check(layout, slug)
+    if problems or wave not in grouped:
+        return [], []
+    members = [unit for unit in grouped[wave] if unit.status != "done"]
+    return ([unit.name for unit in members if unit.status == "running"],
+            [unit.name for unit in members if unit.status == "pending"])
+
+
+def _status_cell(status):
+    """How a unit's status reads on a board.
+
+    `running` is the one status a reader has never seen before and the one that
+    changes what they should do next — it means dispatched and not yet back, so
+    the useful thing is a review, not another `ctx start`. Spelled out rather
+    than marked with a glyph: `ctx status` already lost a run to a `\\u2192` that
+    cp1252 could not encode.
+    """
+    return "running (in flight)" if status == "running" else status
+
+
 def _list_units(layout, slug):
     units = plan_mod.load_units(layout, slug)
     if not units:
         _echo("  none yet — ctx plan-unit «NN-name»")
         return units
     for unit in units:
-        _echo(f"  {unit.name:<24}{unit.status}")
+        _echo(f"  {unit.name:<24}{_status_cell(unit.status)}")
     return units
 
 
@@ -1245,6 +1280,24 @@ def cmd_plan_check(args):
     return 0
 
 
+def _already_dispatched(layout, slug, unit):
+    """Whether this unit has already been sent out once.
+
+    Three signals, any of which is enough. A sealed contract or a stored
+    `before` snapshot *is* the evidence a later `ctx start` would destroy, so
+    their existence is the guard — not the unit's `status`, which the runner
+    holds `Write` over and could set back to `pending` to launder a forged
+    contract through a re-seal. `status: running` is checked last, for the unit
+    whose snapshot failed at dispatch: capturing one now would fingerprint the
+    work instead of what preceded it, which is exactly the lie this prevents.
+    """
+    if contract_mod.load_seal(layout, slug, unit.name) is not None:
+        return True
+    if snapshot_mod.load(layout, review_mod.before_key(slug, unit.name)) is not None:
+        return True
+    return unit.status == "running"
+
+
 def cmd_start(args):
     """Print the dispatch brief for a wave. Spawns nothing itself."""
     layout, config = _loaded(args)
@@ -1276,13 +1329,42 @@ def cmd_start(args):
     if wt_problems:
         _echo("")
 
+    # `--rebaseline` is the deliberate escape hatch, so a name that matches
+    # nothing is said out loud rather than silently doing nothing: the whole
+    # point of typing it is that the baseline gets retaken.
+    asked = list(dict.fromkeys(getattr(args, "rebaseline", None) or []))
+    known = {unit.name for unit in units}
+    for name in asked:
+        if name not in known:
+            _echo(f"  ! --rebaseline {name}: not a unit of wave {level} — ignored")
+    rebaseline = {name for name in asked if name in known}
+
+    # Which of these have been out once already. Computed before anything is
+    # written, because flipping `status` below is itself one of the signals.
+    in_flight = [unit for unit in units
+                 if unit.name not in rebaseline
+                 and _already_dispatched(layout, slug, unit)]
+    flying = {unit.name for unit in in_flight}
+
+    # A dispatched unit is `running`. Nothing used to set it — a unit stayed
+    # `pending` until an explicit `--status done` — so a re-run of `ctx start`
+    # could not tell work that had never been sent out from work that was
+    # halfway through, and treated both as fresh.
+    for unit in units:
+        if unit.status != "running":
+            unit.set(status="running")
+
     # The snapshot has to exist before the work does, and dispatch is the only
     # moment we know that is true. Taking it here is what lets `ctx review` need
     # no commits and no ceremony from the user later.
-    captured = 0
+    captured, rebaselined = 0, []
     for unit in units:
+        if unit.name in flying:
+            continue  # its baseline is the evidence; leave it exactly alone
+        force = unit.name in rebaseline
         try:
-            review_mod.capture_before(layout, config, unit, slug, layout.root.parent)
+            review_mod.capture_before(layout, config, unit, slug,
+                                      layout.root.parent, force=force)
             captured += 1
         except OSError as exc:  # a snapshot must never block a dispatch
             _echo(f"  ! could not snapshot {unit.name} for review: {exc}")
@@ -1290,7 +1372,21 @@ def cmd_start(args):
         # to predate the work. Sealed here so the done-gate can tell a unit that
         # met its promise from one that edited the promise — the runner holds
         # `Write`, and its own unit file is inside the `.ctx/` scope exemption.
+        # Skipped for an in-flight unit above for the same reason the snapshot
+        # is: re-sealing would re-record a contract edited *after* dispatch as
+        # the legitimate one, which is the forgery the seal exists to catch.
         contract_mod.seal(layout, config, slug, unit, layout.root.parent)
+        if force:
+            rebaselined.append(unit.name)
+            journal.append(
+                layout, config, "start", unit.name,
+                "re-baselined deliberately (--rebaseline): the review baseline "
+                "was re-captured over the current tree and the contract "
+                "re-sealed, so this unit's contract as it now stands is the "
+                "promise it will be judged against (recorded findings kept)",
+            )
+
+    for unit in units:
         # One record per dispatched unit, regardless of tier: `model` and
         # `score` are exactly what the dispatch line above already prints for
         # `subagent` units, recorded here too so `ctx telemetry`'s `by_role`
@@ -1302,10 +1398,27 @@ def cmd_start(args):
             model=dispatch.model_for(config, unit), role="runner", score=score,
         )
 
+    if rebaselined:
+        for name in rebaselined:
+            _echo(f"  re-baselined {name}: its `before` snapshot was retaken and "
+                  "its contract re-sealed — the unit file as it stands now is "
+                  "the promise the done-gate will hold it to")
+        _echo("")
+    if in_flight:
+        _echo(f"{len(in_flight)} unit(s) already in flight — dispatched earlier "
+              "and not yet done:")
+        for unit in in_flight:
+            _echo(f"  - {unit.name}")
+        _echo("Their review baseline and sealed contract were left untouched: "
+              "re-capturing now would diff the finished work against itself and "
+              "review as approved. Re-dispatch them from the brief below.")
+        _echo(f"To retake one on purpose: ctx start --rebaseline {in_flight[0].name}")
+        _echo("")
+
     journal.append(
         layout, config, "start", slug,
         f"wave {level}, {len(units)} unit(s), {len(worktrees)} worktree(s), "
-        f"{captured} snapshot(s)",
+        f"{captured} snapshot(s), {len(in_flight)} already in flight",
     )
     _echo(dispatch.instructions(
         layout, config, slug, level, units, budget, worktrees,
@@ -1347,14 +1460,23 @@ def cmd_snapshot(args):
     if unit is None:
         return 0
     root = layout.root.parent
+    # `force=True` on both phases: naming a unit on the command line *is* the
+    # deliberate act `snapshot.capture` refuses without. What it guards against
+    # is `ctx start` silently retaking a baseline as a side effect of being run
+    # twice, not a person asking for one by name.
     if args.phase == "before":
-        manifest = review_mod.capture_before(layout, config, unit, slug, root)
+        replaced = snapshot_mod.load(layout, review_mod.before_key(slug, unit.name))
+        manifest = review_mod.capture_before(layout, config, unit, slug, root,
+                                             force=True)
         key = review_mod.before_key(slug, unit.name)
+        if replaced is not None:
+            _echo(f"  ! replaced the existing before snapshot for {unit.name} — "
+                  "`ctx review` now diffs against the tree as it is now")
     else:
         key = review_mod.after_key(slug, unit.name, args.round)
         manifest = snapshot_mod.capture(
             layout, config, key, root,
-            content_paths=list(unit.owns) + list(unit.reads),
+            content_paths=list(unit.owns) + list(unit.reads), force=True,
         )
     _echo(f"{args.phase} snapshot for {unit.name}: {len(manifest['files'])} file(s) "
           f"fingerprinted, {len(manifest['stored'])} stored")
@@ -1978,6 +2100,18 @@ def _next_action(layout, config):
                 return "/ctx:verify", f"unit {unit} is in progress — run its gate"
             wave = plan_mod.next_wave(layout, plan)
             if wave:
+                # A wave whose units are all `running` has been dispatched
+                # already. Saying `/ctx:start` again would be advice that never
+                # changes anything and never stops being given — and it used to
+                # cost more than a wasted command, because a second `ctx start`
+                # overwrote the very baselines the review needed.
+                dispatched, waiting = _wave_in_flight(layout, plan, wave)
+                if dispatched and not waiting:
+                    return f"/ctx:review {dispatched[0]}", (
+                        f"wave {wave} is in flight — {len(dispatched)} unit(s) "
+                        f"dispatched and not yet done ({', '.join(dispatched)}); "
+                        "review what came back instead of dispatching again"
+                    )
                 return "/ctx:start", f"plan {plan} has wave {wave} ready to dispatch"
             return "/ctx:handoff", f"plan {plan} is complete — write the resume packet"
         return "/ctx:spec", "at L2 with nothing active"
@@ -2413,6 +2547,11 @@ def build_parser():
                         "worktree; off by default, because a worktree holds its "
                         "branch exclusively and the main tree can no longer "
                         "check it out")
+    p.add_argument("--rebaseline", action="append", default=[], metavar="UNIT",
+                   help="re-capture this unit's review baseline and re-seal its "
+                        "contract, replacing what dispatch recorded. Repeatable. "
+                        "For the real crash case; everything else keeps the "
+                        "baseline it was dispatched with")
     # Accepted and ignored: this was the opt-out before worktrees became opt-in,
     # and it still reads correctly in older docs and scripts.
     p.add_argument("--no-worktree", action="store_true", help=argparse.SUPPRESS)

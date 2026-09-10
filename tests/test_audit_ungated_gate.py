@@ -166,8 +166,8 @@ class TestUngatedIsNotDone(GateFixture):
         for name in ("01-api", "02-store"):
             code, out = self.mark_done(name)
             self.assertEqual(code, 1, out)
-            self.assertIn("status: pending", self.raw_of(name),
-                          "the unit file still says pending on disk")
+            self.assertNotIn("status: done", self.raw_of(name),
+                             "the unit file does not say done on disk")
         self.assertEqual(plan_mod.next_wave(self.layout, self.slug), 1,
                          "and the plan did not advance")
 
@@ -337,7 +337,7 @@ class TestContractCannotBeForged(GateFixture):
         self.assertEqual(code, 1, out)
         self.assertIn("contract changed after", out)
         self.assertIn("changed: verify", out)
-        self.assertEqual(self.status_of(), "pending")
+        self.assertNotEqual(self.status_of(), "done")
 
     def test_widening_owns_after_dispatch_is_refused(self):
         """Criterion 7, `owns:`. `owns` is what every sibling unit's isolation
@@ -349,7 +349,7 @@ class TestContractCannotBeForged(GateFixture):
         code, out = self.mark_done()
         self.assertEqual(code, 1, out)
         self.assertIn("changed: owns", out)
-        self.assertEqual(self.status_of(), "pending")
+        self.assertNotEqual(self.status_of(), "done")
 
     def test_trimming_an_acceptance_criterion_is_refused(self):
         """Criterion 7, the criteria body."""
@@ -361,7 +361,7 @@ class TestContractCannotBeForged(GateFixture):
         code, out = self.mark_done()
         self.assertEqual(code, 1, out)
         self.assertIn("changed: acceptance criteria", out)
-        self.assertEqual(self.status_of(), "pending")
+        self.assertNotEqual(self.status_of(), "done")
 
     def test_appending_a_sign_off_to_verified_is_refused(self):
         """`verified: [rubric, human]` was the other named forgery: judged
@@ -486,7 +486,7 @@ class TestFindingsCannotBeErased(GateFixture):
         self.assertEqual(code, 1, out)
         self.assertIn("finding [1]", out)
         self.assertIn("deleted", out)
-        self.assertEqual(self.status_of(), "pending")
+        self.assertNotEqual(self.status_of(), "done")
 
     def test_downgrading_a_critical_finding_in_place_is_refused(self):
         self.unit()
@@ -500,7 +500,7 @@ class TestFindingsCannotBeErased(GateFixture):
         code, out = self.mark_done()
         self.assertEqual(code, 1, out)
         self.assertIn("downgraded", out)
-        self.assertEqual(self.status_of(), "pending")
+        self.assertNotEqual(self.status_of(), "done")
 
     def test_closing_a_finding_by_hand_is_refused(self):
         self.unit()
