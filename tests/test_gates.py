@@ -204,17 +204,31 @@ class TestVerifyKinds(Fixture):
         Found by a smoke run: the interpreter ran fine, so the exit code says
         nothing about the tool being missing. Classifying that as a work failure
         would block every session in a project whose toolchain isn't installed.
+
+        The module named here is genuinely absent, because the answer now comes
+        from asking this machine before the command runs. This used to be
+        reached by *printing* `No module named …` from a command that was
+        working perfectly — but that is also what a unit which deletes a module
+        prints, so the gate filed the regression it exists to catch as a broken
+        toolchain. A faked log line no longer proves a tool is absent; the two
+        routes that do are this one and `optional: true`, both exercised below.
         """
-        cases = [
-            "python3 -c \"import sys; sys.stderr.write('No module named pytest\\n'); sys.exit(1)\"",
-            "python3 -c \"import sys; sys.stderr.write('npm error Missing script: \\\\\"test\\\\\"\\n'); sys.exit(1)\"",
-            "python3 -c \"import sys; sys.stderr.write('sh: mycli: command not found\\n'); sys.exit(2)\"",
-        ]
-        for command in cases:
-            results, verdict = self.run_checks([{"kind": "cmd", "run": command}])
-            self.assertEqual(results[0].status, verify.ERROR, command)
-            self.assertIn("tool not available", results[0].message)
-            self.assertEqual(verdict, verify.ERROR)
+        command = '"%s" -m ctx_absent_module_xyz' % sys.executable
+        results, verdict = self.run_checks([{"kind": "cmd", "run": command}])
+        self.assertEqual(results[0].status, verify.ERROR, command)
+        self.assertIn("tool not available", results[0].message)
+        self.assertEqual(verdict, verify.ERROR)
+
+        # The second route, for a tool the pre-flight cannot ask about: the
+        # project says on the check itself that it may not be installed.
+        printed = ('"%s" -c "import sys; sys.stderr.write(%s); sys.exit(2)"'
+                   % (sys.executable, "'sh: mycli: command not found'"))
+        results, verdict = self.run_checks(
+            [{"kind": "cmd", "run": printed, "optional": True}]
+        )
+        self.assertEqual(results[0].status, verify.ERROR, printed)
+        self.assertIn("tool not available", results[0].message)
+        self.assertEqual(verdict, verify.ERROR)
 
     def test_a_real_test_failure_is_still_a_work_failure(self):
         """The missing-tool heuristic must not swallow genuine failures."""

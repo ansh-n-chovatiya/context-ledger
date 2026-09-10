@@ -2,7 +2,7 @@
   "ctx_schema": 1,
   "plan": "close-the-wave-1-audit-blockers",
   "spec": "close-the-wave-1-audit-blockers",
-  "revision": 2,
+  "revision": 1,
   "generated": "2026-09-10",
   "waves": [
     [
@@ -26,8 +26,7 @@
       "depends_on": [],
       "owns": [
         "ctx/verify.py",
-        "tests/test_audit_verify_kinds.py",
-        "tests/test_gates.py"
+        "tests/test_audit_verify_kinds.py"
       ],
       "reads": [
         "ctx/config.py",

@@ -7,6 +7,7 @@ depends_on: []
 owns:
   - ctx/verify.py
   - tests/test_audit_verify_kinds.py
+  - tests/test_gates.py
 reads:
   - path: ctx/config.py
     symbols:
@@ -24,7 +25,7 @@ forbid:
   - ctx/snapshot.py
   - ctx/contract.py
 budget_tokens: 60000
-status: pending
+status: done
 verify:
   - kind: cmd
     run: python3 -m unittest discover -s tests -q
@@ -71,7 +72,7 @@ against — keep these signatures stable:
 
 - `verify.run(layout, config, checks, cwd, key, owns, recorded, judged)` →
   `(results, verdict)` — unchanged.
-- `verify.Result(kind, label, status, detail="", log=None)` — unchanged.
+- `verify.Result(kind, label, status, message="", log_path=None)` — unchanged.
 - `verify.PASS / FAIL / ERROR / PENDING` and `verify.verdict_of(results)` —
   unchanged.
 - `verify.is_ledger(path)` — unchanged, and deliberately keeps its current
@@ -104,8 +105,15 @@ against — keep these signatures stable:
    catastrophic-backtracking pattern against a large file returns ERROR at the
    deadline instead of running unbounded. Assert this with a wall-clock bound in
    the test, not by eye.
-8. Every existing test in `tests/` still passes, unchanged. In particular the
-   `exists`/`symbol` tests that use ordinary relative paths must be untouched.
+8. Every existing test in `tests/` still passes. One amendment is authorised and
+   only one: `tests/test_gates.py::test_absent_tool_that_exits_1_is_still_a_config_error`
+   asserts the laundering this unit removes, and reaches it by *faking* a log
+   line. Rewrite its body so it reaches the same case through a genuinely absent
+   module — the pre-flight — and keep its intent, its name and its docstring.
+   `test_missing_tool_detection_is_targeted` and
+   `test_a_real_test_failure_is_still_a_work_failure` stay untouched and must
+   still pass. No other existing test may be edited; in particular the
+   `exists`/`symbol` tests using ordinary relative paths must be untouched.
 9. `tests/test_audit_verify_kinds.py` covers criteria 1-7, each with a positive
    control: for every "this is refused" assertion, a sibling assertion proves the
    same mechanism produces a real verdict when it should. A negative assertion

@@ -7,10 +7,11 @@ Spec: `.ctx/specs/close-the-wave-1-audit-blockers/spec.md`
 
 ## Units
 
+
 **Wave 1** — these may run concurrently
 
 - `01-verify-kinds` (subagent, pending) — Close two audit findings that both live in `ctx/verify.py`: **(a) Real regressions are laundered as infrastruc
-  - owns: ctx/verify.py, tests/test_audit_verify_kinds.py
+  - owns: ctx/verify.py, tests/test_audit_verify_kinds.py, tests/test_gates.py
 - `02-probe-isolation` (subagent, pending) — Close the audit's only remote-code-execution finding. `_availability(command)` in `ctx/cli.py` decides whether
   - owns: ctx/cli.py, tests/test_audit_probe_isolation.py
 

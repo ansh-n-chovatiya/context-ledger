@@ -7,6 +7,16 @@ block. A verify command that *cannot run* — missing binary, exit 127, timeout 
 is a configuration bug, and blocking on it would brick every session in the
 project. Infrastructure failures warn and pass.
 
+Which of the two a check is gets decided by *how the launcher failed*, never by
+reading the child's output. Sniffing the output was a laundering machine: a unit
+that deleted a module produced `No module named 'ctx.foo'` inside pytest's own
+report, the gate read that as "the toolchain is missing", and the precise
+regression the gate exists to catch became a non-blocking warning. Whether a
+tool exists is a question about this machine, so it is answered by asking this
+machine — before the command runs (`_launchable`) — and the exit code says the
+rest. A project that genuinely wants the old leniency for one check asks for it
+by name with `optional: true`.
+
 **Mechanical vs judged.** `diff`, `exists`, `symbol`, `review`, `test_first` and
 `cmd` are decidable by a script,
 so the `Stop` hook runs them directly and they cost nothing. `rubric` and
@@ -28,7 +38,9 @@ violation never pays for a test run.
 
 import os
 import re
+import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -132,7 +144,9 @@ def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False)
         elif kind == "review":
             result = _check_review(layout, check, key)
         elif kind == "exists":
-            result = _check_exists(check, cwd)
+            # The deadline, not just the `cmd` branch's: `matches` is a regex
+            # from a committed file and can backtrack for ever.
+            result = _check_exists(check, cwd, deadline)
         elif kind == "symbol":
             result = _check_symbol(check, cwd)
         elif kind == "test_first":
@@ -268,14 +282,15 @@ def _review_target(check, key, slug, unit):
     return slug, unit or text
 
 
-def _check_exists(check, cwd):
+def _check_exists(check, cwd, deadline=None):
     raw = str(check.get("path") or "")
     if not raw:
         return Result("exists", label_of(check), ERROR, "no path configured")
-    base, problem = resolve_cwd(check, cwd)
-    if problem:
-        return Result("exists", raw, ERROR, problem)
-    target = os.path.join(base, raw) if not os.path.isabs(raw) else raw
+    target, refusal = _confined(raw, check, cwd)
+    if refusal:
+        # Before the stat, so the verdict cannot describe a file we refused to
+        # look at. ERROR, not FAIL: a refused path is a configuration bug.
+        return Result("exists", raw, ERROR, refusal)
     if not os.path.exists(target):
         return Result("exists", raw, FAIL, "path does not exist")
     pattern = check.get("matches")
@@ -284,11 +299,11 @@ def _check_exists(check, cwd):
             body = Path(target).read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             return Result("exists", raw, ERROR, str(exc))
-        try:
-            if not re.search(str(pattern), body):
-                return Result("exists", raw, FAIL, f"does not match /{pattern}/")
-        except re.error as exc:
-            return Result("exists", raw, ERROR, f"bad pattern: {exc}")
+        found, problem = _match_within(str(pattern), body, _remaining(deadline))
+        if problem:
+            return Result("exists", raw, ERROR, problem)
+        if not found:
+            return Result("exists", raw, FAIL, f"does not match /{pattern}/")
     return Result("exists", raw, PASS)
 
 
@@ -303,10 +318,11 @@ def _check_symbol(check, cwd):
     names = [str(n) for n in (check.get("contains") or []) if str(n).strip()]
     if not raw or not names:
         return Result("symbol", label_of(check), ERROR, "needs `path` and `contains`")
-    base, problem = resolve_cwd(check, cwd)
-    if problem:
-        return Result("symbol", raw, ERROR, problem)
-    target = os.path.join(base, raw) if not os.path.isabs(raw) else raw
+    target, refusal = _confined(raw, check, cwd)
+    if refusal:
+        # `contains` is echoed back in this kind's failure message, so an
+        # unconfined path turns the gate into a grep over the whole disk.
+        return Result("symbol", raw, ERROR, refusal)
     if not os.path.exists(target):
         return Result("symbol", raw, FAIL, "file does not exist")
     try:
@@ -398,6 +414,109 @@ def resolve_cwd(check, cwd):
     return target, ""
 
 
+def _confined(raw, check, cwd):
+    """A checked path resolved inside the project. `(target, refusal)`.
+
+    `exists` and `symbol` execute nothing, so trust never enters this — what
+    made them dangerous was reach, not execution. Both report a verdict about a
+    file's *contents*, and both honoured absolute paths, so a committed
+    `ctx.yaml` could say `{kind: exists, path: /home/victim/.ssh/id_rsa,
+    matches: "BEGIN OPENSSH"}` and read PASS/FAIL as a one-bit oracle over any
+    file the developer can read — one bit per gate run, with `symbol`'s message
+    echoing the probe string back into the transcript. Confining the path is
+    what removes the oracle, so it is done before the file is touched at all.
+
+    `realpath` on both sides, not string surgery: `..` after `cwd:` is applied,
+    and a symlink whose target leaves the project, both have to be caught, and
+    only the resolved pair can catch them.
+    """
+    if raw.startswith("~") or os.path.isabs(raw) or (os.name == "nt" and ":" in raw):
+        return "", ("path must be relative to the project — "
+                    "the gate refuses to read outside it")
+    base, problem = resolve_cwd(check, cwd)
+    if problem:
+        return "", problem
+    root = os.path.realpath(str(cwd))
+    target = os.path.realpath(os.path.join(base, raw))
+    if not _inside(target, root):
+        return "", "path must be inside the project — the gate refuses to read outside it"
+    return target, ""
+
+
+def _inside(target, root):
+    try:
+        return os.path.commonpath([target, root]) == root
+    except ValueError:  # different drives on Windows, or a mix of abs and rel
+        return False
+
+
+def _remaining(deadline):
+    """Seconds left of the gate's shared budget. `None` means no budget given."""
+    if deadline is None:
+        return None
+    return deadline - time.monotonic()
+
+
+# 0 matched, 3 did not; anything else is the child failing to answer.
+_SEARCH_PROBE = (
+    "import re, sys\n"
+    "raw = sys.stdin.buffer.read().decode('utf-8', 'replace')\n"
+    "pattern, _, body = raw.partition('\\0')\n"
+    "sys.exit(0 if re.search(pattern, body) else 3)\n"
+)
+
+
+def _match_within(pattern, body, budget):
+    """`matches`, bounded by the gate's clock. `(matched, problem)`.
+
+    A pattern from a committed `ctx.yaml` is attacker-controlled input to a
+    backtracking engine, and `re` has no timeout: `(a+)+$` against a few hundred
+    characters ran for minutes *inside the Stop hook*, which is the one place in
+    the product where hanging is worse than failing — a killed hook returns no
+    decision at all. Python cannot interrupt a running `re.search` (it holds the
+    GIL, so a worker thread cannot be timed out either), so the search runs in a
+    child process that can actually be killed, and it gets whatever is left of
+    the same budget the `cmd` kind spends.
+    """
+    try:
+        re.compile(pattern)
+    except re.error as exc:
+        return False, f"bad pattern: {exc}"
+    if "\0" in pattern:
+        return False, "pattern may not contain a NUL byte"
+    if budget is None:
+        budget = 30.0
+    if budget <= 0:
+        return False, ("the gate's budget was spent before this check ran "
+                       "— split the suite or raise gate.timeout_seconds")
+    if not sys.executable:
+        # No interpreter to fork: an unbounded search is still better than
+        # silently skipping the check, and this path is not reachable from a
+        # normal install.
+        return bool(re.search(pattern, body)), ""
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", _SEARCH_PROBE],
+            input=(pattern + "\0" + body).encode("utf-8", "replace"),
+            capture_output=True, timeout=budget,
+        )
+    except subprocess.TimeoutExpired:
+        return False, (
+            f"pattern /{pattern}/ did not finish within the gate's remaining "
+            f"{round(budget)}s — it backtracks; rewrite it or raise "
+            "gate.timeout_seconds"
+        )
+    except OSError as exc:
+        return False, f"could not evaluate pattern: {exc}"
+    if completed.returncode == 0:
+        return True, ""
+    if completed.returncode == 3:
+        return False, ""
+    detail = (completed.stderr or b"").decode("utf-8", "replace").strip()
+    last = detail.splitlines()[-1] if detail else f"exit {completed.returncode}"
+    return False, f"could not evaluate pattern: {last}"
+
+
 def _check_env(check):
     """Extra environment for a check, layered over the session's own."""
     extra = check.get("env")
@@ -415,6 +534,14 @@ def _check_cmd(layout, check, cwd, key, timeout, head, tail, patterns=()):
     where, problem = resolve_cwd(check, cwd)
     if problem:
         return Result("cmd", command, ERROR, problem)
+    # Asked of the machine, before anything runs. `python3 -m pytest` with
+    # pytest absent exits 1 from an interpreter that is very much present, so
+    # the exit code alone cannot answer it — but the question ("can this
+    # start?") is about the environment, and the environment can be asked
+    # directly instead of guessed at from the child's output afterwards.
+    launchable, why = _launchable(command, timeout, where, _check_env(check))
+    if not launchable:
+        return Result("cmd", command, ERROR, f"tool not available: {why}")
     try:
         completed = subprocess.run(
             command, shell=True, cwd=where, capture_output=True,
@@ -424,19 +551,28 @@ def _check_cmd(layout, check, cwd, key, timeout, head, tail, patterns=()):
         # Infrastructure, not work: a hung command must not block forever.
         return Result("cmd", command, ERROR, f"timed out after {round(timeout)}s")
     except OSError as exc:
-        return Result("cmd", command, ERROR, f"could not run: {exc}")
+        # The launcher never started: no shell, no such directory, fork failed.
+        return Result("cmd", command, ERROR,
+                      f"could not run: {exc} ({_program(command)})")
 
     output = (completed.stdout or "") + (completed.stderr or "")
     if completed.returncode == 0:
         return Result("cmd", command, PASS)
-    if completed.returncode == 127:
-        return Result("cmd", command, ERROR, "command not found (exit 127)")
-    missing = _missing_tool(output)
-    if missing:
-        # `python3 -m pytest` with pytest absent exits 1, not 127 — the
-        # interpreter ran fine. Treating that as a work failure would block every
-        # session in a project whose toolchain simply is not installed.
-        return Result("cmd", command, ERROR, f"tool not available: {missing}")
+    if completed.returncode in _NOT_FOUND_EXITS:
+        # The shell's own verdict, not the child's: 127 from a POSIX shell and
+        # 9009 from cmd.exe both mean nothing was ever launched.
+        return Result("cmd", command, ERROR,
+                      f"command not found (exit {completed.returncode}): "
+                      f"{_program(command)}")
+    if check.get("optional") is True:
+        # The one place the old output-sniffing survives, and only because a
+        # project asked for it by name on this check. Everywhere else it turned
+        # a deleted module — `No module named 'ctx.foo'` in pytest's own output —
+        # into a warning about the toolchain.
+        missing = _missing_tool(output)
+        if missing:
+            return Result("cmd", command, ERROR,
+                          f"tool not available: {missing} (optional check)")
 
     # The log stays raw: it is gitignored, machine-local, and redacting it would
     # hide the very line someone is debugging. The excerpt does not — it is
@@ -450,9 +586,99 @@ def _check_cmd(layout, check, cwd, key, timeout, head, tail, patterns=()):
     return Result("cmd", command, FAIL, message, log_path)
 
 
+# A POSIX shell reports "not found" as 127; cmd.exe reports it as 9009. Both are
+# the launcher speaking, before any child of ours existed.
+_NOT_FOUND_EXITS = (127, 9009)
+
+# Shell syntax we cannot reason about statically. A command containing any of it
+# is left alone: the pre-flight declines to answer rather than answering wrongly,
+# and the exit code decides.
+_SHELL_META = "|&;<>()$`\n"
+
+
+def _argv(command):
+    """The command's leading tokens, or `()` when the shell is doing more than
+    running one program."""
+    if any(ch in command for ch in _SHELL_META):
+        return ()
+    try:
+        parts = shlex.split(command, posix=(os.name != "nt"))
+    except ValueError:  # an unbalanced quote; let the shell have its opinion
+        return ()
+    return tuple(part.strip('"') for part in parts if part)
+
+
+def _program(command):
+    """The name a user would recognise as "the tool", for a message."""
+    parts = _argv(command)
+    if parts:
+        return parts[0]
+    return str(command).strip().split(" ")[0].strip('"') or "<empty>"
+
+
+def _launchable(command, budget, where=None, env=None):
+    """Can this command start at all? `(launchable, why_not)`.
+
+    Deliberately one-sided. It answers "no" only about the environment — an
+    interpreter that cannot import the module it was asked to run — and says
+    nothing about whether the command will pass. Every ambiguous case answers
+    "yes", because a wrong "no" is the failure this replaced: it downgrades a
+    real regression to a warning.
+
+    It does not second-guess PATH. `shutil.which` returns nothing for `exit`,
+    `cd` or `[`, which are shell builtins and run perfectly well; the shell
+    already reports a name it cannot find as exit 127, and that verdict comes
+    from the launcher rather than from a guess about it.
+    """
+    parts = _argv(command)
+    if not parts:
+        return True, ""
+    program = parts[0]
+    # `python -m module`: the interpreter exists, the module may not.
+    if os.path.basename(program).lower().startswith("python") and "-m" in parts[1:3]:
+        index = parts.index("-m")
+        module = parts[index + 1] if len(parts) > index + 1 else ""
+        if module and not module.startswith("-"):
+            return _can_import(program, module, budget, where, env)
+    return True, ""
+
+
+_IMPORT_PROBE = (
+    "import importlib.util, sys\n"
+    "try:\n"
+    "    found = importlib.util.find_spec(sys.argv[1]) is not None\n"
+    "except Exception:\n"
+    "    found = False\n"
+    "sys.exit(0 if found else 3)\n"
+)
+
+
+def _can_import(interpreter, module, budget, where=None, env=None):
+    """Whether `interpreter -m module` has a module to run.
+
+    The module name goes in `argv`, never into the probe's source: this string
+    comes from a committed `ctx.yaml`, and interpolating it would hand a pull
+    request the ability to run code on the reviewer's machine merely by *not*
+    running the check.
+    """
+    try:
+        completed = subprocess.run(
+            [interpreter, "-c", _IMPORT_PROBE, module],
+            capture_output=True, timeout=max(1.0, min(20.0, float(budget or 20))),
+            cwd=where, env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return True, ""  # could not ask; let the command answer for itself
+    if completed.returncode == 3:
+        return False, f"{interpreter} cannot import {module}"
+    return True, ""
+
+
 # Signatures of "the tool isn't installed", which exit non-zero without the work
-# being wrong. Anchored to line starts where possible to avoid matching a test
-# that legitimately asserts on one of these strings.
+# being wrong. Consulted only for a check that declares `optional: true`: read
+# against an arbitrary test run they match the work's own failures — a deleted
+# module, a log line quoting a shell error — which is how a regression came to
+# be reported as a missing toolchain.
 _MISSING_TOOL = (
     re.compile(r"No module named (\S+)"),
     re.compile(r"(?m)^.*?([\w.-]+): (?:command )?not found"),
