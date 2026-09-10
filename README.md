@@ -829,10 +829,26 @@ prompt can ask you — which is also why each command file ends its `!` line wit
 `|| true`. Without it, `/ctx:verify` on a failure exited 1 and the prompt telling
 you how to handle that failure was never read.
 
-**Exit codes.** A command exits non-zero only when a check *failed* or a refusal
-is deliberate — a failing gate, an unanswered blocking question, an ownership
-collision, a merge that did not land. Having nothing to do yet (no ledger, no
-active task, no plan, no name given) exits 0 and says so.
+**Exit codes.** `0` is success or an advisory notice, `1` is a check that
+failed — a gate, or an advisory condition escalated by `--strict` — and `2` is
+a refusal or an unexpected error. A refusal is deliberate — an unanswered
+blocking question, an ownership collision, a merge that did not land, or no
+`.ctx/` in this directory at all — and its reason goes to **stderr**, so stdout
+stays clean for whatever is reading it. An unexpected
+error prints one line, `ctx «command» failed: «message»`; set `CTX_DEBUG=1` for
+the traceback.
+
+Having nothing to do *yet* is different, and still exits 0 and says so: no
+active task or plan, no name given, and a snapshot truncated by
+`review.max_files`. Those three are the whole advisory set — the notice each
+prints *is* the answer. A script that would rather hear about them runs with
+`--strict`, or sets `CTX_STRICT=1`, which turns exactly those three into exit 1
+and nothing else. Note that having no ledger at all is *not* advisory: `ctx
+status` in a directory with no `.ctx/` exits 2 and points you at `/ctx:init`.
+
+Do not export `CTX_STRICT=1` in your shell profile. Under it a bare `/ctx:task`
+exits 1, and — for the same reason as `|| true` above — Claude Code abandons the
+slash command before the prompt that would have asked you for the name.
 
 ### CLI
 

@@ -3,7 +3,7 @@ description: Saved context bundles — list them, load one, or promote one globa
 allowed-tools: Bash, Read
 argument-hint: "[name]"
 ---
-!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" list`
+!`"${CLAUDE_PLUGIN_ROOT}/bin/ctx" list || true`
 
 Those are the portable bundles this project has saved. Each is plain markdown
 with a fixed section schema, so a person or a different model can read one

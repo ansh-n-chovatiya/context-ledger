@@ -6,7 +6,41 @@ Wave 1 of the enterprise-readiness audit remediation. The audit found five
 independent ways to reach `status: done` with nothing verified — one of them the
 *default* configuration on a freshly cloned repo — and one path that executed
 code from a cloned repository before the trust gate could refuse it. Six
-findings, closed here.
+findings, closed here. It also carries the change that makes the CLI safe to
+drive from a script: errors and refusals stop exiting 0.
+
+### Breaking
+
+- **A refusal now exits 2, on stderr, for every command.** Previously only
+  `verify`, `ci`, `spec-ready`, `plan-check`, `doctor`, `migrate` and `trust`
+  failed loudly; the other 34 commands printed the reason to stdout and exited
+  0, so `ctx status` in a directory with no `.ctx/` succeeded and a pipeline
+  could not tell "it worked" from "there was nothing to work on". Refusals now
+  go to stderr with exit 2, which leaves stdout clean for whatever reads it.
+  The slash commands are unaffected: every `commands/*.md` file ends its `!`
+  line with `|| true`, so a refusal still reaches the prompt body that explains
+  what to do about it.
+- **An unexpected exception is one line instead of a traceback.** `main` catches
+  what it did not anticipate and prints `ctx «command» failed: «message»` on
+  stderr with exit 2. Set `CTX_DEBUG=1` to get the traceback back when you are
+  the one debugging it.
+- **`--strict` / `CTX_STRICT=1` escalates the advisory conditions to exit 1.**
+  Exactly three conditions are advisory — a missing argument, nothing active for
+  the command to act on, and a snapshot truncated by `review.max_files` — and
+  all three still exit 0 by default, because each one's notice *is* the answer.
+  A script that would rather hear about them asks with `--strict`, or sets
+  `CTX_STRICT=1` for a single run. The flag can only turn strictness on:
+  `CTX_STRICT=0` disables the environment variable, not an explicit `--strict`.
+
+  Do not export `CTX_STRICT=1` in a shell profile. Under it a bare `/ctx:task`
+  exits 1, and a non-zero `!` line makes Claude Code abandon the slash command
+  before the prompt that would have asked you for the name is read.
+
+  *Migration.* A script that treated exit 0 as "the command had something to
+  say" now needs to treat 2 as a refusal and 1, under `--strict` only, as an
+  advisory condition. A script that used to grep stdout for `no .ctx/ found`
+  should read stderr or check the exit code. Nothing needs to change for anyone
+  driving `ctx` from the slash commands.
 
 ### Security
 

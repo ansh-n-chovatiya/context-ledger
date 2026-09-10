@@ -63,6 +63,41 @@ class TestCommandFiles(unittest.TestCase):
             self.assertGreaterEqual(len(tokens), 2, f"{path.name}: {line}")
             self.assertIn(tokens[1], known, f"{path.name} calls unknown `ctx {tokens[1]}`")
 
+    def test_every_bang_line_ends_with_the_or_true_guard(self):
+        """A non-zero `!` line kills the slash command before its prompt runs.
+
+        Every `ctx` subcommand now exits 2 when it refuses — in a project with
+        no `.ctx/`, that is every one of them. Without `|| true` the user never
+        reaches the body of the command file that would explain what to do, so
+        the guard is not optional and this asserts it for files added later.
+
+        This parses the `!` line rather than searching the file for the text
+        `|| true`: prose below the line, or a fenced example, cannot satisfy it.
+        """
+        guarded = 0
+        for path in command_files():
+            body = path.read_text(encoding="utf-8")
+            lines = [ln for ln in body.splitlines() if ln.startswith("!")]
+            for line in lines:
+                match = BANG.fullmatch(line)
+                self.assertIsNotNone(
+                    match,
+                    f"{path.name}: `!` line is not a !`command` line: {line}",
+                )
+                tokens = shlex.split(match.group(1).replace("$ARGUMENTS", ""))
+                self.assertEqual(
+                    tokens[-2:], ["||", "true"],
+                    f"{path.name} runs `{match.group(1)}` without a trailing "
+                    "`|| true`; a refusal exits 2 and Claude Code would abort "
+                    "the whole slash command before its prompt body is read",
+                )
+                guarded += 1
+        self.assertGreaterEqual(
+            guarded, 21,
+            f"only found {guarded} `!` lines; the parse is not seeing the "
+            "command files it is supposed to be checking",
+        )
+
     def test_argument_hint_matches_what_the_cli_accepts(self):
         """A hint promising free prose must not hit a single-token positional."""
         for path in command_files():
