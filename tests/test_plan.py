@@ -269,9 +269,13 @@ class TestDispatch(PlanFixture):
         self.unit("02-b", owns=["src/x.py"])
         self.cli("plan", self.slug, "--no-spec")
         code, out = self.cli("start")
-        # The refusal is that no brief is emitted and the reason is printed.
-        # Exiting non-zero would abort `/ctx:start` and discard that reason.
-        self.assertEqual(code, 0)
+        # No brief is emitted and the reason is printed — and, since nothing was
+        # dispatched, it exits like the refusal it is. It used to exit 0 here,
+        # on the reasoning that a non-zero exit would abort `/ctx:start` and
+        # discard the reason. It does not: `commands/start.md` runs `ctx` with
+        # `|| true`, so the prompt renders either way, while exit 0 left a
+        # refusal indistinguishable from a wave going out.
+        self.assertEqual(code, 2)
         self.assertIn("both own", out)
         self.assertIn("nothing was started", out)
         self.assertNotIn("Dispatch these", out)
@@ -289,7 +293,7 @@ class TestDispatch(PlanFixture):
         self.layout.config.write_text(miniyaml.dumps(data) + "\n", encoding="utf-8")
 
         code, out = self.cli("start")
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2, "nothing was dispatched, so this is a refusal")
         self.assertIn("budget", out)
         self.assertIn("nothing was started", out)
         self.assertNotIn("Dispatch these", out)

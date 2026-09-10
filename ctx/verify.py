@@ -34,6 +34,15 @@ is worse than no default at all: it makes an unguarded unit look guarded.
 
 Checks run in cost order and stop at the first failure, which is why a scope
 violation never pays for a test run.
+
+**The `diff` kind reads history, not just the working tree.** `git status` sees
+uncommitted work only, so a runner that committed an edit outside its `owns`
+walked straight past the check meant to police it. The caller passes `since=` —
+the commit recorded in the unit's dispatch seal — and the check diffs that
+commit against HEAD as well. It also takes `wave=`: the paths a *concurrent
+sibling* declared, which are that sibling's business and not this unit's scope
+violation. Both are passed in rather than looked up here, because `plan` imports
+this module and the reverse import would close the loop.
 """
 
 import os
@@ -109,11 +118,17 @@ def label_of(check):
     return str(check.get("about") or "explicit sign-off")
 
 
-def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False):
+def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False,
+        since=None, wave=()):
     """Run checks in cost order, stopping at the first blocking failure.
 
     `judged=False` (the hook's mode) does not evaluate `rubric`/`human`; it only
     reports them PENDING unless their kind appears in `recorded`.
+
+    `since` is the commit the unit was dispatched at and `wave` the paths its
+    concurrent siblings own; both belong to the `diff` kind and are documented
+    on `_check_diff`. Defaulted, so a caller that has neither (the Stop hook,
+    which gates a turn rather than a unit) gets exactly today's behaviour.
 
     `gate.timeout_seconds` is the budget for the **whole run**, not for each
     command. Per-command it was unenforceable: three commands at 240s each can
@@ -140,7 +155,7 @@ def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False)
     for check in ordered(checks):
         kind = check["kind"]
         if kind == "diff":
-            result = _check_diff(check, cwd, owns)
+            result = _check_diff(check, cwd, owns, since=since, wave=wave)
         elif kind == "review":
             result = _check_review(layout, check, key)
         elif kind == "exists":
@@ -200,6 +215,13 @@ def verdict_of(results):
 
 LEDGER_PREFIX = ".ctx/"
 
+# How a `diff` failure says "the dispatch point is gone", in a form a caller can
+# recognise without re-deriving it. `Result.line` shows the first 120 characters
+# of a message, which is a terminal width rather than an accident, so the whole
+# diagnosis does not fit in one: the SHA and the way out go in the message, and
+# the caller that wants to explain *why* keys off this prefix.
+MISSING_COMMIT = "dispatch commit"
+
 
 def is_ledger(path):
     """Ledger bookkeeping, which is never a scope violation.
@@ -213,15 +235,57 @@ def is_ledger(path):
     return str(path).replace("\\", "/").startswith(LEDGER_PREFIX)
 
 
-def _check_diff(check, cwd, owns):
+def _check_diff(check, cwd, owns, since=None, wave=()):
+    """Every path this unit changed, against everything it was allowed to change.
+
+    Two inputs widen what "changed" and "allowed" mean, and they pull in
+    opposite directions on purpose.
+
+    `since` — the commit recorded in the dispatch seal — is what stops a commit
+    hiding an edit. `git status` sees the working tree and nothing else, so
+    `git commit` used to erase an out-of-scope change from this check entirely;
+    everything between that commit and HEAD now counts too. A `since` that is no
+    longer reachable is a **failure**, never a pass: history moved under the
+    running unit (an amend, a rebase, a reset), so what it changed can no longer
+    be established, and a check that cannot establish that must not sign it off.
+
+    `wave` — the `owns` of the siblings running alongside it — is what stops a
+    wave deadlocking on itself. Concurrent `subagent` units share one working
+    tree, so a sibling's write to its own declared path is sitting in `git
+    status` while this unit's gate runs. Failing on it made the gate unusable
+    for any wave of two: the standing workaround was to `git stash` the sibling's
+    work, gate, and unstash. Note what is *not* widened: a path no unit in the
+    wave declared is still a violation, a sibling that is already `done` excuses
+    nothing, and a unit in another wave is not running now, so its `owns` is not
+    an excuse either. `review.wave_scope` decides all three and hands the answer
+    down; this function only applies it.
+    """
     scope = [str(p) for p in (check.get("owns") or owns or [])]
     if not scope:
         return Result("diff", label_of(check), PASS, "no owned scope declared")
     changed, error = changed_files(cwd)
     if error:
         return Result("diff", label_of(check), ERROR, error)
-    stray = [path for path in changed
-             if not is_ledger(path) and not _within(path, scope)]
+    committed, error, missing = committed_since(cwd, since)
+    if missing:
+        return Result(
+            "diff", label_of(check), FAIL,
+            f"{MISSING_COMMIT} {since} is gone from this history — re-record "
+            "it: ctx start --reseal",
+        )
+    if error:
+        return Result("diff", label_of(check), ERROR, error)
+
+    seen, everything = set(), []
+    for path in list(changed) + list(committed):
+        if path not in seen:
+            seen.add(path)
+            everything.append(path)
+    excused = [str(p) for p in (wave or [])]
+    stray = [path for path in everything
+             if not is_ledger(path)
+             and not _within(path, scope)
+             and not (excused and _within(path, excused))]
     if stray:
         return Result(
             "diff", label_of(check), FAIL,
@@ -718,19 +782,69 @@ def _check_judged(check, kind, recorded, judged):
 # helpers
 # --------------------------------------------------------------------------- #
 
-def changed_files(cwd):
-    """Repo-relative paths with uncommitted changes. (paths, error_message)."""
+def _git(args, cwd):
+    """(returncode, stdout, error_message) for one git invocation."""
     try:
         completed = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=all"],
-            cwd=str(cwd), capture_output=True, text=True, timeout=30,
+            ["git", *args], cwd=str(cwd),
+            capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return [], f"git unavailable: {exc}"
-    if completed.returncode != 0:
+        return 1, "", f"git unavailable: {exc}"
+    return completed.returncode, completed.stdout or "", ""
+
+
+def committed_since(cwd, commit):
+    """Repo-relative paths changed by commits since `commit`.
+
+    `(paths, error_message, missing)`. `missing` is the case worth naming: the
+    commit was recorded at dispatch and is no longer part of this history, so it
+    was amended, rebased or reset away while the unit ran. There is no honest
+    diff to compute from there — the caller fails rather than treating "cannot
+    tell" as "nothing changed".
+
+    `missing` is *not* asked as "does this object exist". An amended commit
+    still exists in the object database, reachable from the reflog for weeks,
+    and `git diff` against it happily returns a tree diff that means nothing:
+    after an amend that only reworded the message it is empty, so the check
+    would have passed by default in exactly the case it was added for. The
+    question that matters is whether the dispatch point is an ancestor of HEAD
+    — whether the work still sits on top of what was recorded.
+
+    `commit=None` means no dispatch commit was recorded (an older seal, or a
+    dispatch outside git). That is not `missing`: there is nothing to look for.
+    """
+    if not commit:
+        return [], "", False
+    code, _out, error = _git(["merge-base", "--is-ancestor", commit, "HEAD"], cwd)
+    if error:
+        return [], error, False
+    if code != 0:
+        return [], "", True
+    code, out, error = _git(["diff", "--name-only", commit, "HEAD"], cwd)
+    if error:
+        return [], error, False
+    if code != 0:
+        return [], f"could not diff against {commit}", False
+    return [line.strip() for line in out.splitlines() if line.strip()], "", False
+
+
+def changed_files(cwd):
+    """Repo-relative paths with uncommitted changes. (paths, error_message).
+
+    The working tree only — `committed_since` is the other half, and the `diff`
+    check reads both. Kept as it was because `worktree.dirty_paths` wants
+    exactly this question answered.
+    """
+    code, stdout, error = _git(
+        ["status", "--porcelain", "--untracked-files=all"], cwd
+    )
+    if error:
+        return [], error
+    if code != 0:
         return [], "not a git repository"
     paths = []
-    for line in (completed.stdout or "").splitlines():
+    for line in stdout.splitlines():
         entry = line[3:].strip() if len(line) > 3 else ""
         if " -> " in entry:  # renames report "old -> new"
             entry = entry.split(" -> ", 1)[1]

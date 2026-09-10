@@ -573,14 +573,24 @@ def cmd_status(args):
         _echo("")
         _echo(f"wave board — plan {current['plan']}:")
         wave = None
+        unsealed = _unsealed_units(
+            layout, current["plan"], plan_mod.load_units(layout, current["plan"])
+        )
         for level, name, tier, status, owns in rows:
             if level != wave:
                 wave, marker = level, ""
                 _echo(f"  wave {level}")
             flag = "→" if name == current.get("unit") else " "
-            _echo(f"   {flag} {name:<24} {tier:<9} {_status_cell(status)}")
+            _echo(f"   {flag} {name:<24} {tier:<9} "
+                  f"{_status_cell(status, name in unsealed)}")
         if not rows:
             _echo("   (no units yet)")
+        if unsealed:
+            _echo(f"   ! unsealed: {', '.join(sorted(unsealed))} — dispatched "
+                  "around `ctx start`, so nothing recorded the contract, the "
+                  "review baseline or")
+            _echo("     the commit they started from. `ctx start` seals; the "
+                  "done-gate refuses a unit it cannot check.")
         for problem in problems:
             _echo(f"   ! {problem}")
         if not problems:
@@ -759,9 +769,14 @@ def cmd_load(args):
         return 0
     path = bundle.resolve(layout, name)
     if path is None:
-        _echo(f"no context named {name!r}. Saved contexts:")
-        _list_bundles(layout)
-        return 0
+        # A name that resolves to nothing is a refusal, not an answer: the
+        # caller asked for a context and did not get one. It used to exit 0
+        # with the list of what does exist on *stdout*, which is what a caller
+        # redirecting `ctx load x > brief.md` reads as the context itself.
+        raise SystemExit("\n".join(
+            [f"no context named {name!r}. Saved contexts:"]
+            + _bundle_lines(layout)
+        ))
     sys.stdout.write(path.read_text(encoding="utf-8"))
     return 0
 
@@ -803,7 +818,7 @@ def _wave_in_flight(layout, slug, wave):
             [unit.name for unit in members if unit.status == "pending"])
 
 
-def _status_cell(status):
+def _status_cell(status, unsealed=False):
     """How a unit's status reads on a board.
 
     `running` is the one status a reader has never seen before and the one that
@@ -811,8 +826,40 @@ def _status_cell(status):
     the useful thing is a review, not another `ctx start`. Spelled out rather
     than marked with a glyph: `ctx status` already lost a run to a `\\u2192` that
     cp1252 could not encode.
+
+    `unsealed` replaces the status outright rather than annotating it. A unit
+    whose wave went out without it has no dispatch seal, and its `status:` is
+    then whatever it happens to say — usually `pending`, which reads as "not
+    started yet" for a unit somebody may well be running right now. What the
+    reader needs to know is not the status, it is that nothing was recorded to
+    hold this unit to, and they need it here rather than at the gate.
     """
+    if unsealed:
+        return f"unsealed ({status} — no ctx start, nothing recorded to judge it)"
     return "running (in flight)" if status == "running" else status
+
+
+def _unsealed_units(layout, slug, units):
+    """Names of units whose wave was dispatched without them.
+
+    A seal is written by `ctx start` and by nothing else, so no seal means no
+    dispatch through ctx. On its own that is unremarkable — every unit is
+    unsealed before its wave goes out. What is remarkable is a unit with no seal
+    whose *wave* has them: that wave was dispatched, and this unit was sent out
+    around the ledger, or not at all.
+    """
+    sealed = {unit.name: contract_mod.load_seal(layout, slug, unit.name) is not None
+              for unit in units}
+    waves = {}
+    for unit in units:
+        waves.setdefault(unit.wave, []).append(unit)
+    flagged = set()
+    for members in waves.values():
+        if not any(sealed[unit.name] for unit in members):
+            continue  # this wave has not been dispatched at all
+        flagged |= {unit.name for unit in members
+                    if not sealed[unit.name] and unit.status != "done"}
+    return flagged
 
 
 def _list_units(layout, slug):
@@ -820,20 +867,27 @@ def _list_units(layout, slug):
     if not units:
         _echo("  none yet — ctx plan-unit «NN-name»")
         return units
+    unsealed = _unsealed_units(layout, slug, units)
     for unit in units:
-        _echo(f"  {unit.name:<24}{_status_cell(unit.status)}")
+        _echo(f"  {unit.name:<24}{_status_cell(unit.status, unit.name in unsealed)}")
     return units
 
 
-def _list_bundles(layout):
+def _bundle_lines(layout):
+    """The saved-context listing as lines, for a caller that has to put it
+    somewhere other than stdout — a refusal carries it on stderr."""
     rows = bundle.listing(layout)
     if not rows:
-        _echo("  none saved yet — /ctx:save «name»")
-        return rows
+        return ["  none saved yet — /ctx:save «name»"]
     width = max(len(name) for _s, name, _p, _sum in rows)
-    for scope, name, _path, summary in rows:
-        _echo(f"  {scope:<8} {name:<{width}}  {summary}")
-    return rows
+    return [f"  {scope:<8} {name:<{width}}  {summary}"
+            for scope, name, _path, summary in rows]
+
+
+def _list_bundles(layout):
+    for line in _bundle_lines(layout):
+        _echo(line)
+    return bundle.listing(layout)
 
 
 def cmd_list(args):
@@ -1073,7 +1127,11 @@ def cmd_spec(args):
             "Ask what to call this piece of work, then run:",
             "ctx spec «short-name» «what you want»",
         )
-    slug = bundle.slugify(args.name)
+    # Capped here as well as inside `spec_dir`, so the slug written to
+    # `state.json` and echoed below is the one the directory is actually named.
+    # Every lookup re-caps, so an uncapped slug resolved correctly — it just
+    # printed a name no `ls` would ever show.
+    slug = spec_mod.normalise_slug(bundle.slugify(args.name))
     intent = args.intent or _free_text(args.rest)
     path, qpath = spec_mod.create(layout, slug, intent, config.get("verify"))
     state.update(layout, level="2", spec=slug)
@@ -1180,6 +1238,23 @@ def cmd_decide(args):
 # phase 4 — the done-gate
 # --------------------------------------------------------------------------- #
 
+def _unit_diff_scope(layout, item):
+    """`(since, wave)` for active work — what the `diff` kind needs to be fair.
+
+    `(None, ())` for anything that is not a unit inside a plan: an L1 task has
+    no wave to be concurrent with and no dispatch seal to have recorded a
+    commit, and the check then behaves exactly as it always did.
+    """
+    slug = str((item.doc.meta or {}).get("plan") or "").strip()
+    if item.level != "2" or not slug:
+        return None, ()
+    unit = plan_mod.find_unit(layout, slug, item.key)
+    if unit is None:
+        return None, ()
+    wave, _siblings = review_mod.wave_scope(layout, slug, unit)
+    return contract_mod.sealed_commit(layout, slug, unit.name), wave
+
+
 def cmd_verify(args):
     """Run the gate by hand. Same code path the Stop hook uses."""
     layout, config = _loaded(args)
@@ -1204,9 +1279,14 @@ def cmd_verify(args):
         _echo(f"{item.key}: no verify checks configured — the gate cannot hold")
         return 1
 
+    # The same two inputs the done-gate gives the `diff` kind, so running the
+    # gate by hand answers the same question `ctx unit --status done` will.
+    # Empty for L1 task work, which has no plan, no wave and no seal.
+    since, wave = _unit_diff_scope(layout, item)
     results, verdict = verify.run(
         layout, config, item.checks, cwd=layout.root.parent, key=item.key,
         owns=item.owns, recorded=item.recorded, judged=True,
+        since=since, wave=wave,
     )
     _echo(f"{item.key} — {verdict.upper()}")
     for result in results:
@@ -1366,6 +1446,16 @@ def _already_dispatched(layout, slug, unit):
     return unit.status == "running"
 
 
+def _asked_for(args, flag, known, level):
+    """The units named by `--rebaseline` / `--reseal`, minus the ones that are
+    not in this wave — which are reported rather than ignored in silence."""
+    asked = list(dict.fromkeys(getattr(args, flag, None) or []))
+    for name in asked:
+        if name not in known:
+            _echo(f"  ! --{flag} {name}: not a unit of wave {level} — ignored")
+    return {name for name in asked if name in known}
+
+
 def cmd_start(args):
     """Print the dispatch brief for a wave. Spawns nothing itself."""
     layout, config = _loaded(args)
@@ -1376,15 +1466,62 @@ def cmd_start(args):
 
     level, units, problems, budget = dispatch.prepare(layout, config, slug, args.wave)
     if problems:
-        # Nothing is dispatched, and the reason is the output. Exiting non-zero
-        # would abort `/ctx:start` and throw that reason away.
-        _echo(f"plan {slug}: not ready to dispatch — nothing was started")
-        for problem in problems:
-            _echo(f"  - {problem}")
-        return 0
+        # Nothing was dispatched, so this is a refusal and it exits like one.
+        # It used to print the reason and return 0 — a refusal reported as
+        # success, which no script and no hook could tell from a wave going
+        # out. The reason is not thrown away by the non-zero exit: it travels
+        # in the message, which `main` puts on stderr, and every `/ctx:` command
+        # file already runs `ctx` with `|| true` so the prompt still renders.
+        raise SystemExit("\n".join(
+            [f"plan {slug}: not ready to dispatch — nothing was started"]
+            + [f"  - {problem}" for problem in problems]
+        ))
     if not units:
         _echo(f"wave {level}: nothing left to dispatch")
         return 0
+
+    # `--rebaseline` and `--reseal` are deliberate escape hatches, so a name
+    # that matches nothing is said out loud rather than silently doing nothing:
+    # the whole point of typing one is that something gets retaken.
+    known = {unit.name: unit for unit in units}
+    rebaseline = _asked_for(args, "rebaseline", known, level)
+    reseal = _asked_for(args, "reseal", known, level)
+    # A unit named to both gets the stronger one. `--reseal` retakes the
+    # baseline as well: accepting a new contract and then judging the work
+    # against a snapshot of the old one is not a coherent state to leave behind.
+    rebaseline -= reseal
+
+    # What each named unit's contract has done since it was sealed. Read before
+    # anything is written, because the re-seal below is what erases the answer.
+    moved = {name: contract_mod.changed_fields(layout, slug, known[name])
+             for name in sorted(rebaseline | reseal)}
+
+    # A baseline retake is not a re-seal, and a runner holding `Write` over its
+    # own unit file is exactly who would like it to be. `--rebaseline` re-records
+    # the *review* baseline over the current tree; if the promise itself moved
+    # since dispatch, retaking it would quietly bless the new promise, which is
+    # the forgery the seal exists to catch. So it refuses and names the door.
+    refused = [(name, fields) for name, fields in moved.items()
+               if name in rebaseline and fields]
+    if refused:
+        for name, fields in refused:
+            journal.append(
+                layout, config, "start", name,
+                f"--rebaseline refused: contract changed ({', '.join(fields)})",
+            )
+        raise SystemExit("\n".join(
+            [f"ctx start --rebaseline {name}\n"
+             f"  contract changed: {', '.join(fields)}\n"
+             "  REFUSED - baseline retake will not re-seal a changed contract\n"
+             f"  to accept the new contract: ctx start --reseal {name}"
+             for name, fields in refused]
+            + ["",
+               "A retake re-captures the tree the work is judged against. It does "
+               "not, and will",
+               "not, re-record the promise: that is a planning decision, it is "
+               "journalled as one,",
+               "and `--reseal` is where it is made. Nothing was dispatched."]
+        ))
 
     # Opt-in, not opt-out. A worktree holds its branch exclusively: while one
     # exists, `git checkout` of that branch in the main tree is refused, so
@@ -1397,20 +1534,11 @@ def cmd_start(args):
     if wt_problems:
         _echo("")
 
-    # `--rebaseline` is the deliberate escape hatch, so a name that matches
-    # nothing is said out loud rather than silently doing nothing: the whole
-    # point of typing it is that the baseline gets retaken.
-    asked = list(dict.fromkeys(getattr(args, "rebaseline", None) or []))
-    known = {unit.name for unit in units}
-    for name in asked:
-        if name not in known:
-            _echo(f"  ! --rebaseline {name}: not a unit of wave {level} — ignored")
-    rebaseline = {name for name in asked if name in known}
-
     # Which of these have been out once already. Computed before anything is
     # written, because flipping `status` below is itself one of the signals.
     in_flight = [unit for unit in units
                  if unit.name not in rebaseline
+                 and unit.name not in reseal
                  and _already_dispatched(layout, slug, unit)]
     flying = {unit.name for unit in in_flight}
 
@@ -1425,11 +1553,11 @@ def cmd_start(args):
     # The snapshot has to exist before the work does, and dispatch is the only
     # moment we know that is true. Taking it here is what lets `ctx review` need
     # no commits and no ceremony from the user later.
-    captured, rebaselined = 0, []
+    captured, rebaselined, resealed = 0, [], []
     for unit in units:
         if unit.name in flying:
             continue  # its baseline is the evidence; leave it exactly alone
-        force = unit.name in rebaseline
+        force = unit.name in rebaseline or unit.name in reseal
         try:
             review_mod.capture_before(layout, config, unit, slug,
                                       layout.root.parent, force=force)
@@ -1444,7 +1572,25 @@ def cmd_start(args):
         # is: re-sealing would re-record a contract edited *after* dispatch as
         # the legitimate one, which is the forgery the seal exists to catch.
         contract_mod.seal(layout, config, slug, unit, layout.root.parent)
-        if force:
+        if unit.name in reseal:
+            # The loud half of the pair. A re-seal accepts a contract that
+            # *moved* — the fields it moved are the whole reason anyone would
+            # want this entry later, so they are in it by name, and the entry is
+            # written whether or not anything moved, because "nothing had
+            # changed" is also worth being able to prove.
+            resealed.append(unit.name)
+            fields = moved.get(unit.name) or []
+            journal.append(
+                layout, config, "start", unit.name,
+                "re-sealed deliberately (--reseal): "
+                + (f"contract changed ({', '.join(fields)}) and the new contract "
+                   "is now the promise the done-gate holds it to"
+                   if fields else
+                   "the contract had not changed; the seal and review baseline "
+                   "were retaken over the current tree")
+                + " (recorded findings kept)",
+            )
+        elif force:
             rebaselined.append(unit.name)
             journal.append(
                 layout, config, "start", unit.name,
@@ -1466,6 +1612,15 @@ def cmd_start(args):
             model=dispatch.model_for(config, unit), role="runner", score=score,
         )
 
+    if resealed:
+        for name in resealed:
+            fields = moved.get(name) or []
+            _echo(f"  re-sealed {name}: "
+                  + (f"its contract changed ({', '.join(fields)}) and that change "
+                     "is now the promise" if fields else
+                     "its contract had not changed; the seal was retaken")
+                  + " — recorded in the journal")
+        _echo("")
     if rebaselined:
         for name in rebaselined:
             _echo(f"  re-baselined {name}: its `before` snapshot was retaken and "
@@ -1862,10 +2017,17 @@ def _verify_plan(layout, config, slug):
         for unit in grouped[level]:
             # A unit with no usable checks never gets here: plan_mod.check()
             # rejects it as a validation problem above.
+            # Same scope the done-gate would give this unit: from where it was
+            # dispatched, and forgiving of the siblings running beside it. A CI
+            # run that judged a wave in flight by each unit's `owns` alone would
+            # report N−1 scope violations for work that is entirely in scope.
+            wave, _siblings = review_mod.wave_scope(layout, slug, unit)
             results, verdict = verify.run(
                 layout, config, unit.checks, cwd=layout.root.parent,
                 key=f"ci-{unit.name}", owns=unit.owns, recorded=unit.recorded,
                 judged=False,
+                since=contract_mod.sealed_commit(layout, slug, unit.name),
+                wave=wave,
             )
             flag = {
                 verify.PASS: "ok  ", verify.FAIL: "FAIL",
@@ -1916,6 +2078,34 @@ def cmd_worktree(args):
     return 0
 
 
+def _missing_commit_advice(results, unit):
+    """The long half of "the dispatch point is gone".
+
+    A `Result` message is shown to one terminal width, which is the right size
+    for a scope violation and too small for this: the SHA alone is 40 characters
+    of it. So the check reports the SHA and the flag, and the explanation of
+    *why* a gate can neither pass nor error here lives out here, where there is
+    room for it.
+    """
+    if not any(result.kind == "diff" and result.status == verify.FAIL
+               and str(result.message).startswith(verify.MISSING_COMMIT)
+               for result in results):
+        return []
+    return [
+        "",
+        "The commit recorded when this unit was dispatched was amended, rebased or",
+        "reset away while it ran. The gate cannot establish what the unit changed "
+        "from a",
+        "dispatch point that is no longer in the history, and it will not treat "
+        "\"cannot",
+        "tell\" as \"nothing changed\".",
+        f"  ctx start --reseal {unit.name}   re-records the dispatch point over "
+        "the current HEAD",
+        "and re-seals the contract as it now stands — a deliberate act, journalled "
+        "as one.",
+    ]
+
+
 def _gate_check(layout, config, slug, unit):
     """(ok, reason, lines) — may this unit be marked `done`, and if not, why.
 
@@ -1929,6 +2119,37 @@ def _gate_check(layout, config, slug, unit):
     later.
     """
     lines = []
+
+    # 0. Was this unit ever dispatched through ctx at all?
+    #
+    # The seal exists only if `ctx start` wrote it. A runner sent out by a
+    # direct Task call has no seal, no `before` snapshot and no recorded
+    # dispatch commit — so the contract check below has nothing to compare, the
+    # `diff` check cannot see anything committed, and the review has no
+    # baseline. Three of this gate's four guarantees are absent at once, and
+    # nothing used to say so.
+    #
+    # Scoped to plans that seal at all. A plan where *no* unit has a seal
+    # predates the seal or was never run through `ctx start` in the first
+    # place; refusing there brings back the upgrade brick that `baseline`
+    # returning None exists to avoid. A plan where the siblings are sealed and
+    # this unit is not was dispatched around the ledger, and that is the case
+    # worth refusing.
+    if (contract_mod.load_seal(layout, slug, unit.name) is None
+            and contract_mod.any_seal(layout, slug)):
+        return False, "no dispatch seal", lines + [
+            f"refusing to mark {unit.name} done — it has no dispatch seal, so it "
+            "was never dispatched by ctx:",
+            "  nothing recorded its contract, its review baseline or the commit "
+            "it started from,",
+            "  which is most of what this gate compares against.",
+            "",
+            "`ctx start` is what records a seal. Dispatch the wave through it "
+            "(other units in",
+            f"this plan have one, so this unit was sent out around it), or pass "
+            "--force to accept",
+            "a unit nothing can be checked against.",
+        ]
 
     # 1. Did the unit rewrite its own contract after it was dispatched?
     if contract_mod.baseline(layout, slug, unit) is None:
@@ -1960,15 +2181,30 @@ def _gate_check(layout, config, slug, unit):
         ]
 
     # 3. The checks themselves.
+    #
+    # `since` is where the unit started, so the `diff` check sees what it
+    # *committed* as well as what is still in the working tree; `wave` is what
+    # its concurrent siblings own, so their in-flight writes are not counted as
+    # this unit's scope violation. Both are read here rather than inside
+    # `verify` because `plan` imports `verify`, and the reverse import would
+    # close the loop.
+    since = contract_mod.sealed_commit(layout, slug, unit.name)
+    if since is None and contract_mod.load_seal(layout, slug, unit.name):
+        lines.append(
+            f"note: no dispatch commit recorded for {unit.name}, so anything it "
+            "committed was not checked for scope — /ctx:start records one from now on"
+        )
+    wave, _siblings = review_mod.wave_scope(layout, slug, unit)
     results, verdict = verify.run(
         layout, config, unit.checks, cwd=layout.root.parent,
         key=f"{slug}/{unit.name}", owns=unit.owns, recorded=unit.recorded,
-        judged=False,
+        judged=False, since=since, wave=wave,
     )
     if verdict in (verify.FAIL, verify.PENDING):
         return False, verdict, lines + [
             f"refusing to mark {unit.name} done — the gate did not pass",
             *[result.line() for result in results],
+            *_missing_commit_advice(results, unit),
             "",
             "Fix the failing criterion, or pass --force if you are deliberately",
             "overriding the gate — which is a decision worth saying out loud.",
@@ -2645,10 +2881,17 @@ def build_parser():
                         "branch exclusively and the main tree can no longer "
                         "check it out")
     p.add_argument("--rebaseline", action="append", default=[], metavar="UNIT",
-                   help="re-capture this unit's review baseline and re-seal its "
-                        "contract, replacing what dispatch recorded. Repeatable. "
-                        "For the real crash case; everything else keeps the "
-                        "baseline it was dispatched with")
+                   help="re-capture this unit's review baseline over the current "
+                        "tree, replacing what dispatch recorded. Repeatable. "
+                        "Refuses if the contract itself changed — that is what "
+                        "--reseal is for. For the real crash case; everything "
+                        "else keeps the baseline it was dispatched with")
+    p.add_argument("--reseal", action="append", default=[], metavar="UNIT",
+                   help="accept this unit's contract as it now stands: re-record "
+                        "the promise the done-gate holds it to, and retake the "
+                        "baseline with it. Repeatable, journalled by name and by "
+                        "changed field. A planning decision, never implied by "
+                        "--rebaseline")
     # Accepted and ignored: this was the opt-out before worktrees became opt-in,
     # and it still reads correctly in older docs and scripts.
     p.add_argument("--no-worktree", action="store_true", help=argparse.SUPPRESS)

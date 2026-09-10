@@ -27,6 +27,14 @@ whose snapshot failed, has nothing to compare against. Failing closed there woul
 brick every in-flight plan the moment this shipped, so `baseline()` returns
 `None` and the gate says so out loud and falls through.
 
+**The seal records the commit it was dispatched at.** `verify.changed_files`
+shells out to `git status`, which by construction only ever sees the working
+tree: a runner that committed its out-of-scope edit made it invisible to the
+check meant to police it. So the seal stores `commit` — HEAD at the moment of
+dispatch — and the gate diffs that commit against HEAD *as well as* reading the
+working tree. Best-effort like everything else here: outside a git repository
+`commit` is `None` and the gate says the committed half was not checked.
+
 **Findings are sealed as ctx observes them, and the seal never weakens.** A
 finding recorded through `ctx findings --add` is written to the seal
 authoritatively; a finding merely *read* by a `ctx` command can only add to the
@@ -39,6 +47,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import time
 
 from . import findings as findings_mod, frontmatter, review, snapshot
@@ -148,6 +157,26 @@ def digest_text(text):
 # the seal on disk
 # --------------------------------------------------------------------------- #
 
+def head_commit(root):
+    """The commit HEAD points at in `root`, or None.
+
+    None covers every way this can legitimately fail: no git, no repository,
+    a repository with no commits yet. A dispatch is never refused for it — the
+    gate reports that the committed half of the diff went unchecked instead.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(root), capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    sha = (completed.stdout or "").strip()
+    return sha or None
+
+
 def store_dir(layout):
     return layout.runtime / STORE_SUBDIR
 
@@ -171,6 +200,41 @@ def load_seal(layout, slug, unit_name):
     except (ValueError, OSError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def sealed_commit(layout, slug, unit_name):
+    """The commit this unit was dispatched at, or None when none was recorded.
+
+    None for a seal written by a ctx that predates `commit`, and for a dispatch
+    outside a git repository. Callers treat it as "the committed half of the
+    diff cannot be checked", never as "nothing was committed".
+    """
+    data = load_seal(layout, slug, unit_name)
+    commit = str((data or {}).get("commit") or "").strip()
+    return commit or None
+
+
+def any_seal(layout, slug):
+    """Does any unit of this plan have a dispatch seal?
+
+    The question behind it is "was this plan dispatched through `ctx start`?".
+    A plan where the answer is yes but *this* unit has no seal was dispatched
+    around the ledger — a direct Task call — and the gate says so. A plan where
+    the answer is no predates seals entirely, and refusing there would brick
+    every in-flight plan on upgrade, which is the trade `baseline` already made.
+    """
+    try:
+        paths = sorted(store_dir(layout).glob("*.json"))
+    except OSError:
+        return False
+    for path in paths:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+        if isinstance(data, dict) and data.get("slug") == slug:
+            return True
+    return False
 
 
 def _write_seal(layout, slug, unit_name, data):
@@ -203,6 +267,10 @@ def seal(layout, config, slug, unit, root=None):
         "unit": unit.name,
         "path": layout.rel(unit.path),
         "sealed_at": time.time(),
+        # HEAD at dispatch. The gate diffs from here, so a runner that commits
+        # its out-of-scope edit is no more invisible than one that leaves it in
+        # the working tree.
+        "commit": head_commit(root if root is not None else layout.root.parent),
         "digest": combine(fields),
         "fields": fields,
         # Findings survive a re-seal: a unit re-dispatched for a fix round is
@@ -250,6 +318,24 @@ def baseline(layout, slug, unit):
     compare against."""
     fields = _baseline_fields(layout, slug, unit)
     return None if fields is None else combine(fields)
+
+
+def changed_fields(layout, slug, unit):
+    """Contract fields that differ from the seal, named. `[]` with no baseline.
+
+    `compare` answers "may this unit be marked done", and folds deleted or
+    downgraded findings into the same list. This answers the narrower question
+    `ctx start --rebaseline` has to ask — *has the promise itself moved?* — for
+    which a finding is beside the point: findings survive a re-baseline by
+    design, so counting one as a changed field would refuse a retake for
+    something the retake was never going to erase.
+    """
+    before = _baseline_fields(layout, slug, unit)
+    if before is None:
+        return []
+    now = field_digests(unit.doc)
+    return [LABELS.get(name, name) for name in FIELDS
+            if name in before and before[name] != now.get(name)]
 
 
 def compare(layout, slug, unit):

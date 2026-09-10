@@ -354,16 +354,25 @@ class TestRebaseline(BaselineFixture):
                          "and nothing else in the wave was touched")
         self.assertIn("re-baselined 01-api", out)
 
-    def test_rebaseline_reseals_the_contract_as_it_now_stands(self):
-        """Criterion 5: the escape hatch is only honest if the new contract
-        becomes the new promise, rather than the old seal being dropped."""
+    def test_reseal_makes_the_contract_as_it_now_stands_the_promise(self):
+        """Criterion 5, on the flag that now carries it.
+
+        This test was written against `--rebaseline`, which re-sealed whatever
+        the unit file said at the time. That was a route around the seal: the
+        dispatched runner holds Bash, so it could edit its own contract and then
+        re-seal the edit as the promise. `--rebaseline` now refuses a contract
+        that moved (`test_gate_bypass`) and `--reseal` is the deliberate,
+        journalled door that accepts one. What is pinned here is unchanged and
+        still worth pinning: the escape hatch is only honest if the new contract
+        becomes the new promise, rather than the old seal simply being dropped.
+        """
         self.unit()
         self.dispatch()
         before = self.seal()["digest"]
         self.edit(owns=["src/01-api.py", "src/extra.py"])
         self.assertEqual(self.mark_done()[0], 1, "refused while the seal stands")
 
-        self.dispatch("--rebaseline", "01-api")
+        self.dispatch("--reseal", "01-api")
         self.assertNotEqual(self.seal()["digest"], before, "re-sealed")
         self.assertEqual(self.seal()["digest"],
                          contract_mod.digest(self.find()),
