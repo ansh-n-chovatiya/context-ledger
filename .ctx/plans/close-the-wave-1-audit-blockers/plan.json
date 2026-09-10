@@ -1,0 +1,150 @@
+{
+  "ctx_schema": 1,
+  "plan": "close-the-wave-1-audit-blockers",
+  "spec": "close-the-wave-1-audit-blockers",
+  "revision": 1,
+  "generated": "2026-09-10",
+  "waves": [
+    [
+      "01-verify-kinds",
+      "02-probe-isolation"
+    ],
+    [
+      "03-ungated-is-not-done"
+    ],
+    [
+      "04-baseline-survives-restart"
+    ],
+    [
+      "05-document-wave-1"
+    ]
+  ],
+  "units": {
+    "01-verify-kinds": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/verify.py",
+        "tests/test_audit_verify_kinds.py"
+      ],
+      "reads": [
+        "ctx/config.py",
+        "ctx/hooks.py",
+        "tests/support.py",
+        "report.md"
+      ],
+      "forbid": [
+        "ctx/cli.py",
+        "ctx/hooks.py",
+        "ctx/review.py",
+        "ctx/snapshot.py",
+        "ctx/contract.py"
+      ],
+      "budget_tokens": 60000
+    },
+    "02-probe-isolation": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/cli.py",
+        "tests/test_audit_probe_isolation.py"
+      ],
+      "reads": [
+        "ctx/trust.py",
+        "tests/support.py",
+        "report.md"
+      ],
+      "forbid": [
+        "ctx/verify.py",
+        "ctx/hooks.py",
+        "ctx/review.py",
+        "ctx/snapshot.py"
+      ],
+      "budget_tokens": 55000
+    },
+    "03-ungated-is-not-done": {
+      "tier": "subagent",
+      "wave": 2,
+      "depends_on": [
+        "01-verify-kinds",
+        "02-probe-isolation"
+      ],
+      "owns": [
+        "ctx/cli.py",
+        "ctx/hooks.py",
+        "ctx/contract.py",
+        "tests/test_audit_ungated_gate.py"
+      ],
+      "reads": [
+        "ctx/verify.py",
+        "ctx/snapshot.py",
+        "ctx/review.py",
+        "ctx/plan.py",
+        "ctx/findings.py",
+        "ctx/config.py",
+        "tests/support.py",
+        "report.md"
+      ],
+      "forbid": [
+        "ctx/verify.py",
+        "ctx/review.py",
+        "ctx/snapshot.py"
+      ],
+      "budget_tokens": 75000
+    },
+    "04-baseline-survives-restart": {
+      "tier": "subagent",
+      "wave": 3,
+      "depends_on": [
+        "03-ungated-is-not-done"
+      ],
+      "owns": [
+        "ctx/cli.py",
+        "ctx/review.py",
+        "ctx/snapshot.py",
+        "tests/test_audit_review_baseline.py"
+      ],
+      "reads": [
+        "ctx/contract.py",
+        "ctx/dispatch.py",
+        "ctx/plan.py",
+        "ctx/state.py",
+        "tests/support.py",
+        "report.md"
+      ],
+      "forbid": [
+        "ctx/verify.py",
+        "ctx/hooks.py",
+        "ctx/contract.py"
+      ],
+      "budget_tokens": 70000
+    },
+    "05-document-wave-1": {
+      "tier": "subagent",
+      "wave": 4,
+      "depends_on": [
+        "01-verify-kinds",
+        "03-ungated-is-not-done",
+        "04-baseline-survives-restart"
+      ],
+      "owns": [
+        "README.md",
+        "CHANGELOG.md"
+      ],
+      "reads": [
+        "ctx/verify.py",
+        "ctx/cli.py",
+        "ctx/contract.py",
+        "ctx/__init__.py",
+        "report.md"
+      ],
+      "forbid": [
+        "ctx/",
+        "tests/"
+      ],
+      "budget_tokens": 40000
+    }
+  }
+}
