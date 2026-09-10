@@ -1,5 +1,120 @@
 # Changelog
 
+## Unreleased
+
+Wave 1 of the enterprise-readiness audit remediation. The audit found five
+independent ways to reach `status: done` with nothing verified — one of them the
+*default* configuration on a freshly cloned repo — and one path that executed
+code from a cloned repository before the trust gate could refuse it. Six
+findings, closed here.
+
+### Security
+
+- **Arbitrary code execution from a cloned repo, in front of the trust gate.**
+  `_availability` decided whether `python3 -m «module»` could run by executing a
+  probe with the module name interpolated into its source. `find_spec` on a
+  *dotted* name imports the parent package to read its `__path__`, and `python
+  -c` puts the working directory at the front of `sys.path` — so a hostile
+  repository shipping `run: python3 -m evilpkg.sub` plus an `evilpkg/__init__.py`
+  ran that file the moment anyone typed `ctx doctor`, which is the first thing
+  the docs tell a new user to do. The probe now passes the name in `argv`,
+  resolves only its top-level component, drops the working directory from
+  `sys.path`, and runs in an empty scratch directory. The trust store had always
+  refused to *run* the command; the probe in front of it already had.
+- **`exists` and `symbol` were a content oracle over the whole disk.** Neither
+  kind is trust-gated — neither executes anything — but both honoured absolute
+  paths, so a committed `ctx.yaml` declaring `{kind: exists, path:
+  /home/you/.ssh/id_rsa, matches: "BEGIN OPENSSH"}` turned the PASS/FAIL verdict
+  into one bit per gate run about any file you can read, with `symbol` echoing
+  the probe string back into the transcript. Both kinds now resolve their path
+  inside the project — `realpath` on both sides, so `..` and symlinks are caught
+  — and refuse anything that climbs out. `matches:` was also an unbounded regex
+  from a committed file with no deadline: a catastrophic-backtracking pattern
+  was still running after fifteen seconds *inside the `Stop` hook*, where a
+  killed hook returns no decision at all. It now runs in a killable child
+  process on the gate's remaining `gate.timeout_seconds`.
+
+### Correctness
+
+- **An unrunnable check no longer scores as a passing check.** `verdict_of`
+  ranked ERROR above PASS, but both consumers treated ERROR as non-blocking, so
+  `ctx unit «name» --status done` printed *"no check could run… so this is not
+  blocking"* and marked the unit done. With `PROFILES["code"]` carrying only
+  `cmd` checks, any machine that has never run `ctx trust` errors **every**
+  check — so clone, `ctx start`, `--status done` gave a green board with zero
+  checks executed, on the default configuration. A gate in which no result
+  reached PASS now refuses the transition: ungated is not done. An ERROR beside
+  at least one PASS is still only a warning, and the `Stop` hook still does not
+  block on one — ending a turn is not a claim that the work is finished.
+- **`ctx merge` was a complete route around that refusal.** The same all-ERROR
+  verdict in `worktree.merge`'s preflight warned, merged, and then set
+  `status="done"`. It now refuses on the same condition, in the unit's own
+  worktree, and names the configuration problem. The neighbouring PENDING
+  refusal — a `rubric` or `human` check nobody has signed off — was a hollow
+  guard: mutating it away survived the entire suite. It has tests now.
+- **A runner could forge the contract it was judged against.** `verify.is_ledger`
+  exempts everything under `.ctx/` from the `diff` scope check — it has to, or a
+  wave of concurrent units deadlocks on false Criticals — and the `unit-runner`
+  agent holds `Write`. So a unit that could not make the tests pass could edit
+  the test instead: delete the failing `verify:` entry, trim an acceptance
+  criterion, append `verified: [rubric, human]`, or delete the blocking findings
+  a reviewer raised against it. `ctx start` now seals a digest of the fields that
+  constitute the promise — `verify`, `owns`, `reads`, `forbid`, `depends_on`,
+  `verified`, acceptance criteria — and the done-gate compares against it.
+  `status:` is deliberately outside the digest; flipping it is the edit the
+  transition exists to make. Findings are sealed the same way and the seal never
+  weakens: `ctx findings --add`/`--set` re-seals authoritatively, while a
+  `critical` or `important` finding deleted, downgraded or closed by hand reads
+  as a changed contract. A unit with no seal is not a violation — the gate says
+  so and falls through, because failing closed there would brick every in-flight
+  plan on upgrade.
+- **Re-running `ctx start` destroyed the evidence `ctx review` judges against.**
+  `capture_before` ran unconditionally for every non-`done` unit and
+  `snapshot.capture` began with an `rmtree`, while nothing ever set `status:
+  running` — so the documented crash-recovery step ("run `/ctx:start` again")
+  re-snapshotted finished units over their completed state, and the review then
+  diffed post-work against post-work, handed the reviewer an empty package, and
+  got `verdict: approved`. `snapshot.capture` now refuses to overwrite an
+  existing snapshot without `force`, dispatch marks its units `running`, and a
+  second `ctx start` names the units it left alone.
+- **Real regressions were laundered into "missing tool" ERRORs.** `_missing_tool`
+  scanned the combined output of the *test run*, so a unit that deleted a module
+  produced `No module named 'ctx.foo'` inside pytest's own report and the precise
+  regression the gate exists to catch became a non-blocking warning; the second
+  pattern tripped on any test asserting a shell error string anywhere in a long
+  log. Whether a tool exists is now asked of the machine before the command runs,
+  and the launcher's own exit code (127, or 9009 on `cmd.exe`) decides the rest.
+  Output sniffing survives only on a check that asks for it by name.
+- **Both doors out of the done-gate now leave the same trail.** `ctx unit
+  --status done --force` still runs the gate, prints what it refused, and
+  journals `done (--force overrode the gate: «reason»)`. `ctx merge --skip-gate`
+  journalled only `ok`, with the override text scrolling past in the terminal;
+  it now journals `ok (--skip-gate overrode the gate: …)` naming the checks that
+  did not run. One `grep` for "overrode the gate" finds every override.
+
+### Added
+
+- **`optional: true` on a `cmd` check** — the opt-in for the absent-tool
+  leniency that used to be everyone's default. For the one check whose tool some
+  machines genuinely will not have. Documented with the warning it needs: the
+  work's own failures can resemble an absent tool.
+- **`ctx start --rebaseline «unit»`** — retake one unit's review baseline over
+  the tree as it stands now and re-seal its contract, replacing what dispatch
+  recorded. Repeatable, journalled, and loud on the terminal. Recorded findings
+  are kept, so it cannot launder a deleted one.
+- **`status: running`** — a unit is `running` from dispatch until `--status done`
+  closes it. `ctx status` renders it as `running (in flight)`, and a wave whose
+  units are all `running` stops `/ctx:next` and the board from advising
+  `/ctx:start` again: the wave is out, and the useful next act is a review.
+
+### Documentation
+
+- The verification reference said "Seven kinds" and listed seven; `verify.py` has
+  eight. `test_first` is documented.
+- `ctx findings` was listed among the commands with "no slash command by design",
+  and `commands/findings.md` has shipped all along. `/ctx:findings` is in the
+  slash-command table where it belongs.
+
 ## 0.8.0
 
 Model selection stops following the seat and starts following the task; bug fixes

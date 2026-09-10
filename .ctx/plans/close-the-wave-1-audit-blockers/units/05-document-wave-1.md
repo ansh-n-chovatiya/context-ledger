@@ -24,7 +24,7 @@ forbid:
   - ctx/
   - tests/
 budget_tokens: 40000
-status: pending
+status: done
 verify:
   - kind: cmd
     run: python3 -m unittest discover -s tests -q

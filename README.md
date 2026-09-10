@@ -436,6 +436,25 @@ This prints a brief and **spawns nothing itself** — what to hand a subagent is
 the harness's decision. Claude then sends the whole wave in a single message with
 multiple Task calls, so the units genuinely run in parallel.
 
+Dispatching also does two things on disk: every unit in the wave moves to
+`status: running`, and each one gets a content snapshot plus a sealed copy of its
+contract. Both are evidence that has to predate the work, so **a second
+`/ctx:start` leaves an already-dispatched unit's baseline and seal exactly
+alone** and says which units it skipped. Re-running after a crash is the
+documented recovery path; it used to re-snapshot finished work over its own
+completed state, which handed the reviewer an empty diff and an automatic
+`approved`. To retake one on purpose, name it:
+
+```
+ctx start --rebaseline 03-rotate
+```
+
+That re-captures the baseline over the tree as it stands now and re-seals the
+contract, so the unit file as it currently reads becomes the promise the
+done-gate holds it to. Recorded findings are kept. It is for the real crash
+case — a unit whose snapshot is genuinely wrong — and it is repeatable, one
+`--rebaseline` per unit.
+
 The brief repeats the rule that makes large plans affordable: **the orchestrator
 reads unit files and unit reports, never source.** That's what keeps its context
 flat across a twenty-unit plan.
@@ -479,7 +498,10 @@ ctx unit 03-rotate --status done
 
 This is the step that closes a unit, and it applies however the unit ran. It
 re-runs the unit's own verify checks first and refuses if they do not pass — a
-report claiming success is not evidence of it.
+report claiming success is not evidence of it. It also refuses if *no* check
+could run, and if the unit's contract changed since it was dispatched; both are
+in [Ungated is not done](#ungated-is-not-done). Until this step lands, the unit
+stays `running`.
 
 **Only if you dispatched with `--worktree`** is there a branch to land:
 
@@ -516,10 +538,17 @@ wave board — plan billing-migration:
      01-key-store             session   done
      02-clock                 subagent  done
   wave 2
-   → 03-rotate                subagent  running
-     04-refresh               subagent  pending
-   next: wave 2 — /ctx:start
+   → 03-rotate                subagent  running (in flight)
+     04-refresh               subagent  running (in flight)
+   next: wave 2 is in flight — 2 unit(s) dispatched, none left to start; review what comes back
 ```
+
+A unit is `pending` until `/ctx:start` dispatches it, `running (in flight)` from
+that moment until `ctx unit … --status done` closes it, and `done` after. A wave
+whose units are all `running` has already been sent out, so both the board and
+`/ctx:next` stop advising `/ctx:start` and point at the review instead —
+dispatching again would change nothing, and it is what used to overwrite the
+baselines the review needs.
 
 ---
 
@@ -780,8 +809,9 @@ the point.
 | `/ctx:spec «name» [— intent]` | Intent → checkable criteria → blocking questions |
 | `/ctx:ask [name]` | Show and ask what's still blocking a spec |
 | `/ctx:plan «name»` | Decompose a ready spec into dispatchable units |
-| `/ctx:start [--wave N] [--worktree]` | Dispatch brief for the next wave |
+| `/ctx:start [--wave N] [--worktree] [--rebaseline UNIT]` | Dispatch brief for the next wave |
 | `/ctx:review «unit» [--round N]` | Adversarial review of a completed unit, from a snapshot diff |
+| `/ctx:findings «unit»` | Findings a reviewer raised against a unit; `--add`/`--set` to record or resolve one |
 | `/ctx:merge «unit»` | Land a unit's worktree branch after its gate passes |
 | `/ctx:decide «title»` | Record an ADR |
 | **Memory** | |
@@ -832,14 +862,20 @@ slash command costs always-on context:
 | `ctx plan-check [name]` | Compute waves, check collisions | 0 / 1 |
 | `ctx trust [--yes]` | Review and accept the shell commands the gate will run on this machine | 0 / 1 |
 | `ctx prune [--before D]` | Fold journal days older than `D` (or `journal.keep_days`) into monthly archives | 0 / 1 |
-| `ctx unit «name» [--status S]` | Focus a unit, or record its outcome. `--status done` runs the unit's gate first and refuses if it does not pass; `--force` overrides | 0 / 1 |
+| `ctx unit «name» [--status S]` | Focus a unit, or record its outcome. `--status done` runs the unit's gate first and refuses if it does not pass, if no check could run at all, or if the unit's contract changed since dispatch. `--force` overrides and journals what it overrode — see [Ungated is not done](#ungated-is-not-done) | 0 / 1 |
 | `ctx snapshot «unit» [--phase P]` | Capture a content snapshot by hand. `ctx start` takes the `before` phase itself | 0 / 1 |
-| `ctx findings «unit»` | List findings, or `--add`/`--set` one. See [Review without commits](#review-without-commits) | 0 / 1 |
 | `ctx worktree list\|remove` | Inspect or discard worktrees | 0 / 1 |
 | `ctx level «0\|1\|2»` | Set the level directly | 0 |
 | `ctx briefing` | Print exactly what SessionStart would inject | 0 |
 | `ctx digest` | Regenerate `journal/DIGEST.md` | 0 |
 | `ctx journal «kind» «target»` | Append one journal entry | 0 |
+
+One flag on a command that *does* have a slash command earns its own line, because
+a plain re-run now deliberately does less than it used to:
+
+| Command | Does | Exit |
+|---|---|---|
+| `ctx start --rebaseline «unit»` | Re-capture this unit's review baseline over the tree as it stands now and re-seal its contract, replacing what dispatch recorded. Repeatable, and journalled. A plain `ctx start` re-run **no longer re-snapshots** a unit it has already dispatched — that is what used to diff finished work against itself and hand the reviewer an empty package to approve | 0 |
 
 Global flags: `--cwd PATH` resolves the ledger from elsewhere; `--version`.
 
@@ -909,6 +945,14 @@ verify_candidates: []         # extra commands `init` should consider, for a
 verify:                       # default checks inherited by new tasks/units
   - kind: cmd
     run: npm run typecheck
+  - kind: cmd
+    run: npx playwright test
+    optional: true            # non-blocking when its *tool* looks absent. Only
+                              # for a check whose tool some machines genuinely
+                              # will not have — and read the warning under
+                              # Verification reference before adding it, because
+                              # the work's own failures can look like an absent
+                              # tool.
 ```
 
 **On raising `briefing_chars`:** when `ctx doctor` reports a briefing was
@@ -919,7 +963,7 @@ cap recreates the problem the ledger exists to solve.
 
 ## Verification reference
 
-For "any type of task" to hold, verification can't assume code. Seven kinds,
+For "any type of task" to hold, verification can't assume code. Eight kinds,
 ordered by how much they're trusted:
 
 | Kind | Passes when | Trust | Typical use |
@@ -929,6 +973,7 @@ ordered by how much they're trusted:
 | `diff` | Changed files are a subset of `owns` | objective | scope enforcement on plan units |
 | `symbol` | Every name in `contains:` still appears in `path` | objective | **interface freeze** — see below |
 | `review` | No `critical` or `important` review finding is open | objective | adversarial review of a unit — see [Review without commits](#review-without-commits) |
+| `test_first` | A recorded **failing** run of the paths in `tests:` predates the implementation snapshot | objective | red-before-green on a fix; a unit with no recorded run fails rather than passing |
 | `rubric` | The `verifier` subagent judges criteria against the diff | advisory | prose, research, design, API ergonomics |
 | `human` | You sign off explicitly | authoritative | irreversible or outward-facing steps |
 
@@ -965,8 +1010,45 @@ verify:
     cwd: services/api
 ```
 
-A `cwd` that does not exist is a configuration error, so it warns and passes
-rather than blocking — the same rule as a missing binary.
+A `cwd` that does not exist is a configuration error, so it warns rather than
+failing — the same rule as a missing binary. It stops being harmless when it is
+the *only* thing that happened: see [Ungated is not done](#ungated-is-not-done).
+
+**`exists` and `symbol` read inside the project only.** Both take a path
+relative to the repository root; an absolute path, a `~`, or a `cwd:` and `..`
+that climb out are refused as configuration errors before the file is touched.
+Neither kind runs anything, so neither goes through `ctx trust` — but both report
+a verdict about a file's *contents*, and a committed `ctx.yaml` that could name
+`/home/you/.ssh/id_rsa` would turn the gate into a one-bit oracle over any file
+you can read. `matches:` is also bounded by the gate's remaining
+`gate.timeout_seconds`: a regex out of a committed file is input you did not
+write, handed to a backtracking engine, and the `Stop` hook is the one place
+where hanging is worse than failing.
+
+**`optional: true` — a check whose tool may legitimately be absent.** On a
+`cmd` check, `optional` re-enables the old absent-tool sniffing: if the command
+exits non-zero and its output looks like a missing toolchain (`No module
+named …`, `… command not found`), the result is reported as a configuration
+error instead of a failure.
+
+```yaml
+verify:
+  - kind: cmd
+    run: pytest -q tests/auth        # blocking: a non-zero exit is a failure
+  - kind: cmd
+    run: npx playwright test
+    optional: true                   # browsers may not be installed here
+```
+
+Use it for the one check whose tool you accept some machines will not have —
+end-to-end browsers, a proprietary linter, a GPU suite — and nowhere else.
+**The warning is the point: an `optional` check stops blocking the moment its
+output resembles an absent tool, and the work's own failures can resemble one.**
+A unit that deletes a module makes pytest print `No module named 'app.foo'`; on
+an `optional` check that reads as "the toolchain is missing" and the regression
+walks through the gate. That laundering is exactly why sniffing is no longer the
+default (see [Failure policy](#failure-policy)) — `optional` is how you ask for
+it back, per check, by name.
 
 ### Interface freeze
 
@@ -985,8 +1067,8 @@ It's a substring match, deliberately: crude enough to need no parser per
 language, precise enough to catch the two dangerous cases (renamed, deleted) for
 one file read.
 
-**Checks run cheapest-first** — `diff` → `exists` → `symbol` → `review` → `cmd` →
-`rubric` — and short-circuit on the first failure. A scope violation costs zero
+**Checks run cheapest-first** — `diff` → `exists` → `symbol` → `review` /
+`test_first` → `cmd` → `rubric` — and short-circuit on the first failure. A scope violation costs zero
 model tokens to catch, because the model-based check never runs, and an open
 blocking finding is caught by one file read rather than by a test suite.
 
@@ -1056,10 +1138,19 @@ makes it a new command and revokes acceptance.
   raises the same nudge — it used to walk straight past. Reading a shell command
   is necessarily a heuristic, so the nudge is advisory; the `diff` kind reads git
   and stays the authoritative answer on what actually changed.
-- **Infrastructure failure is not work failure.** A missing binary, exit 127, a
-  timeout, or output matching an absent-tool signature (`No module named …`,
-  `command not found`) warns and passes. Blocking on those would brick every
-  session in a project whose toolchain isn't installed.
+- **Infrastructure failure is not work failure.** A missing binary, exit 127
+  (9009 on `cmd.exe`), an interpreter that cannot import the module it was told
+  to run, a timeout, or a `cwd` that does not exist all warn instead of failing.
+  Blocking on those would brick every session in a project whose toolchain isn't
+  installed.
+- **Which of the two a check is, is decided by how the launcher failed — never
+  by reading the command's output.** Whether a tool exists is a question about
+  this machine, so it is asked of this machine before the command runs, and the
+  exit code says the rest. Sniffing the output for `No module named …` was a
+  laundering machine: a unit that deleted a module produced that string inside
+  pytest's own report, and the precise regression the gate exists to catch
+  became a non-blocking warning. A project that wants that leniency for one
+  check asks for it by name with [`optional: true`](#verification-reference).
 - Bounded at `gate.max_attempts`. Then it marks the work `verify_failed`, stops
   blocking, and escalates to you.
 - **`gate.timeout_seconds` is the budget for the whole gate**, not for each
@@ -1075,6 +1166,92 @@ makes it a new command and revokes acceptance.
   log under `.ctx/runtime/verify/` is left raw — it is gitignored and local, and
   redacting it would hide the line you are debugging.
 - `CTX_GATE=off` disables it outright.
+
+### Ungated is not done
+
+`ctx unit «name» --status done` is the transition that claims work is finished.
+A failing check has always refused it. Two more refusals join that one, and both
+are refusals rather than warnings: `--force` is the only way past either, and it
+records what it stepped over.
+
+**A gate in which no check reached `pass` refuses the transition.** Not one
+check failing — *not one check running*. An unrunnable check used to print a
+warning and mark the unit done, and on the default `code` profile, which carries
+only `cmd` checks, a machine that has never run `ctx trust` errors **every** one
+of them. Clone a repo, `ctx start`, `ctx unit 01-api --status done`, and the
+board went green with zero checks executed. Now:
+
+```
+$ ctx unit 01-key-store --status done
+refusing to mark 01-key-store done — not one check could run, so nothing about
+this unit was verified:
+  warn    cmd: echo ok
+            this command has not been accepted on this machine — review it and
+            run `ctx trust` to allow it
+
+That is a configuration problem, not a work failure — often a command this
+machine has never accepted (`ctx trust`), or a missing tool. But an ungated unit
+is not a done unit: ungated is not done.
+Fix the configuration and re-run, or pass --force to override.
+```
+
+An ERROR alongside at least one `pass` is still only a warning — the refusal is
+for *nothing ran*, never for *something errored*. `ctx merge` refuses on the same
+condition inside the unit's worktree, so a merge is not a way around it;
+`--skip-gate` is that unit's `--force`, and it names the checks it skipped in the
+merge journal entry.
+
+**The `Stop` hook is deliberately not changed.** Ending a turn is not a claim
+that the work is finished, so a check that could not run still lets the session
+end and is journalled as *incomplete, not blocking*. Making the hook block too
+would brick every session in a project whose toolchain is not installed. The
+refusal belongs to the transition that makes the claim.
+
+**A unit's contract is compared against what was sealed at dispatch.** `ctx
+start` records a digest of the fields that constitute the promise — `verify`,
+`owns`, `reads`, `forbid`, `depends_on`, `verified`, and the acceptance criteria
+— alongside the review baseline. The done-gate compares the unit file against
+that seal, and refuses if it moved. `status:` is deliberately not in the digest;
+flipping it is the edit the transition exists to make.
+
+This closes a hole opened by a rule that has to stay: everything under `.ctx/`
+is exempt from the `diff` scope check (a wave of concurrent units writes to the
+ledger constantly, and counting those writes as violations deadlocks the wave),
+and the runner holds `Write`. So a unit that could not make the tests pass could
+edit the test instead — delete the failing `verify:` entry, trim an acceptance
+criterion, append `verified: [rubric, human]`:
+
+```
+$ ctx unit 01-key-store --status done
+refusing to mark 01-key-store done — its contract changed after it was dispatched:
+  changed: verify
+
+A unit does not get to rewrite the promise it is judged against.
+Restore what changed from the plan, or — if the change is a real
+planning decision — say so out loud and pass --force.
+```
+
+Blocking findings are sealed the same way, and the seal never weakens. Recording
+or resolving one through `ctx findings --add` / `--set` is authoritative and
+re-seals; a `critical` or `important` finding deleted from the findings file by
+hand, downgraded, or moved out of `open` behind ctx's back is drift, and reads
+as a changed contract:
+
+```
+  changed: finding [1] (important) was deleted from the findings file:
+           refresh path is untested
+```
+
+A unit with no seal — dispatched by an older `ctx`, or one whose snapshot failed
+— is not treated as a violation. The gate says so out loud and falls through,
+because failing closed there would brick every in-flight plan on upgrade.
+
+**Both overrides leave a trail.** `--force` still runs the gate; it just does not
+obey it. It prints what it refused and journals `done (--force overrode the gate:
+«reason»)`, or `done (--force; the gate passed anyway)` when the gate would have
+signed anyway. `ctx merge --skip-gate` journals `ok (--skip-gate overrode the
+gate: …)` with the checks it did not run. One `grep` over the journal for
+"overrode the gate" finds every override, whichever door it used.
 
 ---
 
