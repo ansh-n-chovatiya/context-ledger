@@ -987,6 +987,55 @@ def _verify_drift(layout, config):
     return drifted
 
 
+def _home_relative(path):
+    """`~/...` where that is shorter and less identifying than the absolute."""
+    text = str(path)
+    home = os.path.expanduser("~")
+    return "~" + text[len(home):] if home and text.startswith(home) else text
+
+
+def _doctor_policy(layout):
+    """Where the active settings came from, and anything a lock refused.
+
+    The point of the section is to make "why is this setting what it is"
+    answerable in one command instead of by opening three files in two
+    directories a developer has never had reason to look in.
+    """
+    _echo("## policy")
+    problems = 0
+    try:
+        policy = config_mod.resolve_policy(layout)
+    except SystemExit as exc:
+        _echo(f"  BAD  {exc}")
+        return 1
+
+    for source, path, present in policy.layers:
+        state_word = "ok  " if present else "none"
+        _echo(f"  {state_word} {source:<10} {_home_relative(path)}"
+              + ("" if present else "  (absent)"))
+
+    above = sorted(key for key, src in policy.origin.items() if src != "repo")
+    for key in above[:12]:
+        holder = policy.locked_by(key)
+        _echo(f"       {key} = {policy.value_of(key)!r} "
+              f"(from {policy.origin[key]}{', locked' if holder else ''})")
+    if len(above) > 12:
+        _echo(f"       … and {len(above) - 12} more setting(s) from policy")
+    for key in sorted(policy.locks):
+        if key not in policy.origin:
+            _echo(f"       {key} locked by {policy.locks[key]} (no value set)")
+    if not above and not policy.locks:
+        _echo("       no policy above the repository — ctx.yaml decides everything")
+
+    for source, key, attempted, held, holder in policy.refusals:
+        _echo(f"  BAD  {source} sets {key}={attempted!r}; {holder} policy locks it "
+              f"to {held!r} — the locked value holds")
+        problems += 1
+    for note in policy.notes:
+        _echo(f"  warn {note}")
+    return problems
+
+
 def cmd_doctor(args):
     layout, config = _loaded(args)
     problems = 0
@@ -1087,11 +1136,21 @@ def cmd_doctor(args):
     _echo("  the briefing above is the hook cost only; the plugin's own always-on")
     _echo("  context is separate — measure it with: claude plugin details ctx")
 
+    problems += _doctor_policy(layout)
+
     _echo("## gate")
-    disabled = os.environ.get("CTX_GATE", "").lower() in ("off", "0", "false")
-    _echo(f"  enabled={bool((config.get('gate') or {}).get('enabled')) and not disabled}"
+    override = config_mod.gate_override(layout, config, "doctor")
+    _echo(f"  enabled={bool((config.get('gate') or {}).get('enabled')) and not override.disabled}"
           f"  max_attempts={(config.get('gate') or {}).get('max_attempts')}"
-          + ("  (CTX_GATE=off in this environment)" if disabled else ""))
+          + (f"  (CTX_GATE={override.value} in this environment)" if override.disabled else "")
+          + (f"  (CTX_GATE={override.value} refused by {override.lock} policy — "
+             "the gate ran)" if override.refused else ""))
+    if override.requested and not override.recorded:
+        # The bypass happened; the journal did not take the line. Reported here
+        # as well as on stderr because stderr scrolls away and this does not.
+        _echo("  BAD  that override could not be journalled — see "
+              f"{layout.rel(layout.errors)}")
+        problems += 1
 
     if layout.errors.is_file():
         text = layout.errors.read_text(encoding="utf-8", errors="replace")
@@ -2530,6 +2589,56 @@ def cmd_escalate(args):
     return 0
 
 
+def _trust_write_lock(layout, config, declared):
+    """Write the committed lockfile. Accepts nothing — this is a review artefact.
+
+    Deliberately separate from `--yes`: accepting is a statement about this
+    machine, locking is a statement about this repository, and one command doing
+    both would make every `ctx trust --yes` quietly commit a file.
+    """
+    entries = trust_mod.lock_write(layout, [check for check, _s in declared])
+    journal.append(layout, config, "trust", trust_mod.LOCK_FILENAME,
+                   f"locked {len(entries)} command(s)")
+    _echo(f"wrote {layout.rel(trust_mod.lock_path(layout))} with "
+          f"{len(entries)} command(s):")
+    for entry in entries:
+        _echo(f"  {entry['id']}  {entry['run']}")
+    _echo("")
+    _echo("Commit it. The diff is the review — CI checks against it with "
+          "`ctx trust --verify-lock`.")
+    return 0
+
+
+def _trust_verify_lock(layout, config, declared):
+    """Check every declared command against the lockfile. Accepts nothing.
+
+    This is what CI runs instead of `ctx trust --yes`. `--yes` on an ephemeral
+    runner accepts whatever the branch under test declares, which makes the
+    control vacuous exactly where it is most needed; this one can only pass on
+    commands somebody already reviewed into the lockfile on the default branch.
+    """
+    missing, unused, problems = trust_mod.lock_verify(layout, config, declared)
+    for problem in problems:
+        _warn(f"ctx trust: {problem}")
+    if missing:
+        _warn(f"{len(missing)} command(s) not in "
+              f"{layout.rel(trust_mod.lock_path(layout))}:")
+        for check, source in missing:
+            _warn(f"  {check.get('run')}")
+            _warn(f"      from {source} · id {trust_mod.command_id(check)}")
+        _warn("")
+        _warn("Each is a command this ledger would run that nobody has reviewed. "
+              "Run `ctx trust --lock` and commit the diff.")
+    if missing or problems:
+        return 1
+    for entry in unused:
+        _echo(f"  note {entry['id']} ({entry['run']}) is locked but no longer "
+              "declared anywhere")
+    _echo(f"all {len(declared)} declared command(s) are in "
+          f"{layout.rel(trust_mod.lock_path(layout))}")
+    return 0
+
+
 def cmd_trust(args):
     """Review and accept the verify commands this machine will execute.
 
@@ -2539,6 +2648,10 @@ def cmd_trust(args):
     """
     layout, config = _loaded(args)
     declared = trust_mod.declared(layout, config)
+    if args.verify_lock:
+        return _trust_verify_lock(layout, config, declared)
+    if args.lock:
+        return _trust_write_lock(layout, config, declared)
     accepted = trust_mod.load(layout)
 
     pending = [(c, s) for c, s in declared if not trust_mod.is_accepted(c, accepted)]
@@ -2712,8 +2825,24 @@ def cmd_ci(args):
     declared = trust_mod.declared(layout, config)
     accepted = trust_mod.load(layout)
     pending = [c for c, _s in declared if not trust_mod.is_accepted(c, accepted)]
-    report("every verify command is accepted on this machine", not pending,
-           f"{len(pending)} awaiting review — run `ctx trust`")
+    if trust_mod.lock_path(layout).is_file():
+        # A committed lockfile is the check that means something on an ephemeral
+        # runner: the store is empty there, so machine acceptance could only ever
+        # be satisfied by `ctx trust --yes`, which accepts whatever the branch
+        # under test declares. Where a lockfile exists it is the gating check and
+        # local acceptance becomes a note — it says nothing about CI either way.
+        missing, _unused, problems = trust_mod.lock_verify(layout, config, declared)
+        report(f"every verify command is in {trust_mod.LOCK_FILENAME}",
+               not missing and not problems,
+               "; ".join(problems) or f"{len(missing)} not locked")
+        for check, source in missing[:4]:
+            _echo(f"       {check.get('run')} — from {source}")
+        if pending:
+            _echo(f"  note {len(pending)} of these are not accepted on this machine "
+                  "— that gates the local gate, not this pipeline")
+    else:
+        report("every verify command is accepted on this machine", not pending,
+               f"{len(pending)} awaiting review — run `ctx trust`")
 
     if current.get("spec"):
         _echo("## spec")
@@ -2959,6 +3088,10 @@ def build_parser():
 
     p = sub.add_parser("trust", help="review and accept the verify commands to run")
     p.add_argument("--yes", action="store_true", help="accept the listed commands")
+    p.add_argument("--lock", action="store_true",
+                   help="write .ctx/trust.lock from the declared commands, to commit")
+    p.add_argument("--verify-lock", dest="verify_lock", action="store_true",
+                   help="check the ledger against .ctx/trust.lock; accepts nothing")
     p.set_defaults(func=cmd_trust)
 
     p = sub.add_parser("migrate", help="upgrade ledger files to this plugin's schema")

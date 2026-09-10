@@ -147,3 +147,140 @@ def declared(layout, config):
         if doc:
             collect(doc.meta.get("verify"), layout.rel(path))
     return found
+
+
+# --------------------------------------------------------------------------- #
+# the committed lockfile
+# --------------------------------------------------------------------------- #
+#
+# The store above is machine-local by design, and that design has a hole the
+# size of CI: every ephemeral runner starts with an empty store, so the only way
+# `ctx ci` ever passed there was `ctx trust --yes`, which accepts whatever the
+# repository's own PR-editable `ctx.yaml` happens to declare. That is not a
+# review; it is a rubber stamp with a hostname on it.
+#
+# The lockfile is the other half. It is committed, so adding a command to it is
+# a diff a human approves in the pull request that adds the command — the review
+# happens where reviews already happen. It grants nothing on a developer's
+# machine: `load`/`is_accepted` do not read it, so the local boundary is exactly
+# what it was. What it does is let CI answer one question without accepting
+# anything: *is every command this ledger will run one that was reviewed?*
+
+LOCK_FILENAME = "trust.lock"
+LOCK_SCHEMA = 1
+
+
+def lock_path(layout):
+    """The committed record of reviewed commands, inside `.ctx/`.
+
+    In the repository, unlike the trust store, and for the opposite reason: this
+    file is not a claim about what a machine trusts, it is the artefact under
+    review. Its authority comes from the pull request that added a line to it.
+    """
+    return layout.root / LOCK_FILENAME
+
+
+def lock_entry(check):
+    """One command as it appears in the lockfile.
+
+    `id` is `command_id`, unchanged — one identity scheme for a command, or the
+    lockfile stops matching the store for reasons nobody can see. `run`, `cwd`
+    and `env` are carried alongside it so the diff is readable: an id on its own
+    is reviewable only by someone willing to recompute a hash.
+    """
+    env = check.get("env")
+    return {
+        "id": command_id(check),
+        "run": str(check.get("run") or ""),
+        "cwd": str(check.get("cwd") or ""),
+        "env": {str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else {},
+    }
+
+
+def lock_render(checks):
+    """The lockfile's exact bytes for a set of commands.
+
+    Deterministic on purpose, and the determinism is a feature, not tidiness: a
+    file that reorders itself between runs is a file reviewers learn to skim,
+    and a lockfile nobody reads is the rubber stamp again. Sorted by id, which
+    is hex and so orders the same under every locale; JSON with sorted keys; no
+    timestamp, no hostname, no absolute path, and `\\n` endings written
+    explicitly so a Windows checkout does not produce a whole-file diff.
+    """
+    entries = {}
+    for check in checks or []:
+        if not isinstance(check, dict) or check.get("kind") != "cmd":
+            continue
+        entry = lock_entry(check)
+        entries[entry["id"]] = entry
+    payload = {
+        "schema": LOCK_SCHEMA,
+        "commands": [entries[key] for key in sorted(entries)],
+    }
+    return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
+
+
+def lock_write(layout, checks):
+    """Write the lockfile. Returns the entries it now holds, in file order."""
+    text = lock_render(checks)
+    target = lock_path(layout)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(target), "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+    return json.loads(text)["commands"]
+
+
+def lock_load(layout):
+    """`(entries by id, problem)` — `({}, None)` when there is no lockfile.
+
+    A lockfile that exists and will not parse is a problem, never an empty one:
+    "unreadable" must not be able to look like "nothing declared", which is the
+    shape of failure that lets a tampered file pass.
+    """
+    path = lock_path(layout)
+    if not path.is_file():
+        return {}, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {}, f"{LOCK_FILENAME} could not be read — {exc}"
+    if not isinstance(data, dict) or not isinstance(data.get("commands"), list):
+        return {}, f"{LOCK_FILENAME} is not a lockfile — expected a `commands` list"
+    schema = data.get("schema")
+    if isinstance(schema, int) and schema > LOCK_SCHEMA:
+        return {}, (f"{LOCK_FILENAME} declares schema {schema} but this plugin "
+                    f"understands {LOCK_SCHEMA} — upgrade the plugin")
+    entries = {}
+    for item in data["commands"]:
+        if isinstance(item, dict) and item.get("id"):
+            entries[str(item["id"])] = item
+    return entries, None
+
+
+def lock_verify(layout, config, found=None):
+    """Check the ledger against the lockfile without accepting anything.
+
+    Returns `(missing, unused, problems)`. `missing` is `(check, source)` for
+    every declared command whose id is not in the lockfile — a command added to
+    `ctx.yaml` after the lock was written, or one whose `run` text was edited,
+    which is the same thing to `command_id` and deliberately so. `unused` is
+    lockfile entries nothing declares any more, which is information rather than
+    a failure: a finished unit's command going away is normal.
+    """
+    entries, problem = lock_load(layout)
+    problems = [problem] if problem else []
+    if not lock_path(layout).is_file():
+        problems.append(
+            f"no {LOCK_FILENAME} in this ledger — write one with `ctx trust --lock` "
+            "and commit it"
+        )
+    declarations = declared(layout, config) if found is None else found
+    seen = set()
+    missing = []
+    for check, source in declarations:
+        key = command_id(check)
+        seen.add(key)
+        if key not in entries:
+            missing.append((check, source))
+    unused = [entries[key] for key in sorted(entries) if key not in seen]
+    return missing, unused, problems

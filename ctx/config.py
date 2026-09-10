@@ -7,9 +7,12 @@ ratio (~3.6 chars/token for prose) is stable enough for a budget.
 """
 
 import copy
+import datetime
+import os
 import sys
+from pathlib import Path
 
-from . import miniyaml
+from . import miniyaml, paths
 
 SCHEMA = 1
 
@@ -158,31 +161,440 @@ PROFILES = {
 }
 
 
-def load(layout):
-    """Config for a ledger, defaults merged under any on-disk overrides."""
-    data = copy.deepcopy(DEFAULTS)
-    path = layout.config
-    if path.is_file():
-        parsed = miniyaml.loads(path.read_text(encoding="utf-8")) or {}
-        if not isinstance(parsed, dict):
-            raise miniyaml.MiniYamlError("ctx.yaml must be a mapping")
-        found = parsed.get("schema", SCHEMA)
-        if isinstance(found, int) and found > SCHEMA:
-            raise SystemExit(
-                f"ctx.yaml declares schema {found} but this plugin understands {SCHEMA} "
-                "— upgrade the plugin rather than downgrading the ledger"
+# --------------------------------------------------------------------------- #
+# the policy layer — system, then user, then the repository
+# --------------------------------------------------------------------------- #
+#
+# `.ctx/ctx.yaml` is editable in a pull request, so every control it holds is a
+# control the repository grants itself. That is right for budgets and profiles
+# and wrong for anything an organisation needs to hold across repositories. So
+# two layers sit *above* it, on the machine rather than in the tree, and a
+# `locked:` list in either one names keys a later layer may not change.
+#
+# Absent both files, the layers are empty and this reduces exactly to what it
+# always was: DEFAULTS under ctx.yaml.
+
+POLICY_FILENAME = "policy.yaml"
+LOCKED_KEY = "locked"
+
+# Distinguishes "locked to no value at all" from "locked to None".
+_MISSING = object()
+
+
+def system_policy_path():
+    """The machine-wide policy file, where only an administrator can write it.
+
+    POSIX: `/etc/ctx/policy.yaml`. Windows: `%PROGRAMDATA%\\ctx\\policy.yaml`.
+    Both are the platform's conventional home for machine-wide configuration,
+    and both are root/Administrator-owned by default — which is the point. A
+    control a repository cannot overrule is worth little if the account running
+    the tool can rewrite it as easily as the repository could.
+    """
+    if os.name == "nt":
+        base = os.environ.get("PROGRAMDATA") or "C:\\ProgramData"
+        return Path(base) / "ctx" / POLICY_FILENAME
+    return Path("/etc/ctx") / POLICY_FILENAME
+
+
+def user_policy_path():
+    """The per-account policy file, beside the trust store in the global root.
+
+    `~/.claude/ctx/policy.yaml`, or `$CTX_GLOBAL_ROOT/policy.yaml` when that is
+    set. It shares a root with `trust/` deliberately: both answer "what has this
+    account agreed to", both must live outside the repository that supplies the
+    commands, and one root is one thing to back up, audit or wipe.
+    """
+    return paths.global_root() / POLICY_FILENAME
+
+
+def policy_layers():
+    """`(source, path)` for every layer above the repository, weakest first."""
+    layers = [("system", system_policy_path())]
+    extra = os.environ.get("CTX_POLICY_SYSTEM")
+    if extra:
+        # Additive, never a replacement. A fleet tool (or a test) can stage a
+        # second machine-wide file, but it is applied *after* the fixed one, so
+        # it cannot unlock anything the fixed one locked. An environment
+        # variable that could void a root-owned policy would be the same
+        # unlogged off-switch this module exists to close.
+        layers.append(("system-env", Path(extra).expanduser()))
+    layers.append(("user", user_policy_path()))
+    return layers
+
+
+class Policy:
+    """A resolved configuration, plus how each value got there.
+
+    `config` is the merged mapping `load` returns. The rest is the audit trail:
+    which layer supplied each live value, which keys are locked and by whom, and
+    every attempt a later layer made to change a locked one.
+    """
+
+    def __init__(self):
+        self.config = copy.deepcopy(DEFAULTS)
+        self.layers = []      # (source, path, present)
+        self.origin = {}      # dotted key -> source that supplied the live value
+        self.locks = {}       # dotted key -> source that locked it
+        self.refusals = []    # (source, dotted key, attempted, held, lock source)
+        self.notes = []       # non-fatal complaints about a layer
+
+    def source_of(self, dotted):
+        """Which layer supplied the active value — `default` when nobody did."""
+        holder, _key = _lock_holder(self.locks, dotted)
+        return self.origin.get(dotted, "default") if holder is None else holder
+
+    def locked_by(self, dotted):
+        """The layer that locked this key (or a parent of it), or None."""
+        return _lock_holder(self.locks, dotted)[0]
+
+    def value_of(self, dotted, default=None):
+        """The active value at a dotted key, or `default` when there is none."""
+        found = _lookup(self.config, dotted)
+        return default if found is _MISSING else found
+
+    def present(self):
+        return [(source, path) for source, path, found in self.layers if found]
+
+
+def _flatten(data, prefix=""):
+    """A mapping as `(dotted key, leaf value)` pairs.
+
+    An empty mapping is skipped rather than emitted, matching `_merge`: `key: {}`
+    in an override has always meant "nothing to say about key", and turning it
+    into an assignment here would let an empty block wipe a populated one.
+    """
+    pairs = []
+    for key, value in data.items():
+        dotted = prefix + str(key)
+        if isinstance(value, dict):
+            if value:
+                pairs.extend(_flatten(value, dotted + "."))
+        else:
+            pairs.append((dotted, value))
+    return pairs
+
+
+def _lookup(data, dotted):
+    node = data
+    for part in dotted.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return _MISSING
+        node = node[part]
+    return node
+
+
+def _assign(data, dotted, value):
+    parts = dotted.split(".")
+    node = data
+    for part in parts[:-1]:
+        child = node.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            node[part] = child
+        node = child
+    node[parts[-1]] = value
+
+
+def _lock_holder(locks, dotted):
+    """`(source, locked key)` for the most specific lock covering `dotted`.
+
+    Prefixes count: `locked: [gate]` locks `gate.enabled` too. Longest match
+    wins, so a broad lock and a narrow one can coexist and the narrow one is the
+    one reported.
+    """
+    parts = dotted.split(".")
+    for size in range(len(parts), 0, -1):
+        key = ".".join(parts[:size])
+        if key in locks:
+            return locks[key], key
+    return None, None
+
+
+def _locked_keys(parsed):
+    """What this layer refuses to let a later one change.
+
+    Two spellings, because both are natural and neither is ambiguous:
+
+        locked: [gate.enabled, gate.allow_override]   # values from the body
+        locked: {gate.allow_override: false}          # sets *and* locks
+
+    The mapping form exists so a value and its lock cannot drift apart, which is
+    what happens when a policy has to state the same setting twice.
+    """
+    raw = parsed.get(LOCKED_KEY)
+    if isinstance(raw, dict):
+        return [(str(key), value) for key, value in raw.items()]
+    if isinstance(raw, (list, tuple)):
+        return [(str(key), _MISSING) for key in raw
+                if not isinstance(key, (dict, list, tuple))]
+    if isinstance(raw, str) and raw.strip():
+        return [(raw.strip(), _MISSING)]
+    return []
+
+
+def _apply_layer(policy, source, parsed, allow_locks=True):
+    """Merge one layer, refusing anything an earlier layer locked."""
+    locked = _locked_keys(parsed) if allow_locks else []
+    body = dict((key, value) for key, value in parsed.items() if key != LOCKED_KEY)
+    pairs = _flatten(body)
+    # A mapping-form lock carries its own value, so it is applied like a body
+    # setting — and, being applied here, it is subject to any earlier lock too.
+    pairs.extend((key, value) for key, value in locked if value is not _MISSING)
+
+    for dotted, value in pairs:
+        if value is None:
+            # `_merge` has always treated an explicit null as "say nothing".
+            continue
+        holder, lock_key = _lock_holder(policy.locks, dotted)
+        if holder is not None:
+            held = _lookup(policy.config, dotted)
+            if held is not _MISSING and held == value:
+                continue  # restating the locked value is not an override
+            policy.refusals.append(
+                (source, dotted, value, None if held is _MISSING else held, holder)
             )
-        _merge(data, parsed)
-    data["level"] = normalise_level(data.get("level"))
-    return data
+            continue
+        _assign(policy.config, dotted, value)
+        policy.origin[dotted] = source
+
+    for dotted, _value in locked:
+        # First lock wins the attribution: a user policy re-stating a system
+        # lock has changed nothing, and the system is who to complain to.
+        policy.locks.setdefault(dotted, source)
 
 
-def _merge(base, override):
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            _merge(base[key], value)
-        elif value is not None:
-            base[key] = value
+def _read_policy(path, source):
+    """One policy file, or None when there is not one.
+
+    A policy file that exists but cannot be read is fatal, deliberately. Every
+    other read in this module fails soft, because the cost of a missing optional
+    file is a smaller feature set. The cost of an unreadable *control plane* is
+    a control silently not applied, which is the failure this whole layer exists
+    to prevent — so it stops the command and names the file instead.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        parsed = miniyaml.loads(text) or {}
+    except miniyaml.MiniYamlError as exc:
+        raise SystemExit(f"{path}: {source} policy is unreadable — {exc}")
+    if not isinstance(parsed, dict):
+        raise SystemExit(f"{path}: {source} policy must be a mapping")
+    return parsed
+
+
+def _read_repo_config(path):
+    parsed = miniyaml.loads(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(parsed, dict):
+        raise miniyaml.MiniYamlError("ctx.yaml must be a mapping")
+    found = parsed.get("schema", SCHEMA)
+    if isinstance(found, int) and found > SCHEMA:
+        raise SystemExit(
+            f"ctx.yaml declares schema {found} but this plugin understands {SCHEMA} "
+            "— upgrade the plugin rather than downgrading the ledger"
+        )
+    return parsed
+
+
+def resolve_policy(layout=None):
+    """Resolve system → user → repo and record how every value got there.
+
+    Pure apart from reading files: it reports, it does not warn. `load` does the
+    warning, so `ctx doctor` can ask this the second time without printing the
+    same complaint twice.
+    """
+    policy = Policy()
+    for source, path in policy_layers():
+        parsed = _read_policy(path, source)
+        policy.layers.append((source, path, parsed is not None))
+        if parsed:
+            _apply_layer(policy, source, parsed)
+
+    if layout is not None:
+        path = layout.config
+        parsed = _read_repo_config(path) if path.is_file() else None
+        policy.layers.append(("repo", path, parsed is not None))
+        if parsed is not None:
+            if LOCKED_KEY in parsed:
+                policy.notes.append(
+                    "`locked:` in ctx.yaml is ignored — a repository cannot lock "
+                    "its own settings; policy belongs in the user or system layer"
+                )
+            _apply_layer(policy, "repo", parsed, allow_locks=False)
+
+    policy.config["level"] = normalise_level(policy.config.get("level"))
+    return policy
+
+
+def load(layout):
+    """Config for a ledger: defaults, under policy, under the repo's own file.
+
+    Precedence is system policy → user policy → `.ctx/ctx.yaml`, later winning,
+    except where an earlier layer locked the key. With no policy files present
+    the two upper layers contribute nothing and this is byte-for-byte the merge
+    it always was.
+    """
+    policy = resolve_policy(layout)
+    for refusal in policy.refusals:
+        _warn_refusal(refusal)
+    for note in policy.notes:
+        _warn_policy(note)
+    return policy.config
+
+
+# Refusals and notes already reported this process, so a command that loads the
+# config four times complains once. Same shape and same reasoning as
+# `_WARNED_LEVELS` above.
+_WARNED_POLICY = set()
+
+
+def reset_policy_warnings():
+    """Forget what has already been reported. For tests, which share a process."""
+    _WARNED_POLICY.clear()
+
+
+def _warn_policy(message):
+    if message in _WARNED_POLICY:
+        return
+    _WARNED_POLICY.add(message)
+    print(f"ctx: {message}", file=sys.stderr)
+
+
+def _warn_refusal(refusal):
+    """One stderr line per attempt to change a locked setting.
+
+    Silence here would be the whole failure mode: a repository that sets
+    `gate.enabled: false` under a lock would run gated and its author would
+    spend an afternoon working out why their config "did not apply".
+    """
+    source, dotted, attempted, held, holder = refusal
+    _warn_policy(
+        f"{source} sets {dotted}={ascii(attempted)} but {holder} policy locks it "
+        f"to {ascii(held)} — the locked value holds"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# the gate's escape hatch
+# --------------------------------------------------------------------------- #
+
+# Every spelling that turns the gate off. One tuple, because the CLI used to
+# honour three of these and the Stop hook four, so `CTX_GATE=disabled` made
+# `ctx doctor` report a gate that the hook had already switched off.
+GATE_OFF_VALUES = ("off", "0", "false", "disabled")
+_ALLOW_OFF_VALUES = ("false", "off", "no", "0", "disabled")
+
+
+class GateOverride:
+    """What `CTX_GATE` did at one site, and whether the record of it landed."""
+
+    def __init__(self, requested=False, value="", disabled=False, refused=False,
+                 lock=None, note="", recorded=None):
+        self.requested = requested   # the variable asked for the gate to be off
+        self.value = value           # what it was actually set to
+        self.disabled = disabled     # the gate will not run here
+        self.refused = refused       # policy said no; the gate runs anyway
+        self.lock = lock             # which layer refused
+        self.note = note             # the journalled sentence
+        self.recorded = recorded     # True once the journal took it
+
+    def __bool__(self):
+        return self.disabled
+
+    __nonzero__ = __bool__  # python 2 spelling, harmless and free
+
+
+def gate_override(layout, config, site):
+    """Whether `CTX_GATE` disables the gate here — and the record that it did.
+
+    Every site that honours the variable calls this, so there is one definition
+    of "off", one journal line per bypass, and one place a policy can refuse it.
+    `site` names the caller (`stop`, `doctor`) and goes into the record, because
+    "the gate was off" and "the gate was off *for the Stop hook*" are different
+    facts to an auditor.
+
+    A `gate.allow_override: false` that a policy has locked refuses the bypass
+    outright: the gate runs, and the attempt is journalled either way.
+    """
+    raw = str(os.environ.get("CTX_GATE", "") or "")
+    if raw.strip().lower() not in GATE_OFF_VALUES:
+        return GateOverride()
+
+    allowed = (config.get("gate") or {}).get("allow_override", True)
+    if allowed is False or str(allowed).strip().lower() in _ALLOW_OFF_VALUES:
+        holder = _override_lock_source(layout)
+        override = GateOverride(
+            requested=True, value=raw, disabled=False, refused=True, lock=holder,
+            note=(f"{site}: CTX_GATE={raw} refused by {holder} policy "
+                  "(gate.allow_override is off) — the gate ran"),
+        )
+    else:
+        override = GateOverride(
+            requested=True, value=raw, disabled=True,
+            note=f"{site}: gate disabled by CTX_GATE={raw}",
+        )
+    return _record_override(layout, config, override)
+
+
+def _override_lock_source(layout):
+    """Which layer refused the bypass. Best effort — it decorates a message."""
+    try:
+        policy = resolve_policy(layout)
+    except Exception:  # pragma: no cover - a policy file that stops loading
+        return "policy"
+    holder, _key = _lock_holder(policy.locks, "gate.allow_override")
+    return holder or policy.origin.get("gate.allow_override", "policy")
+
+
+def _record_override(layout, config, override):
+    """Journal a bypass that has already been decided.
+
+    The tension: an escape hatch nobody can audit is not defensible, and an
+    escape hatch that can *fail a session* because a disk is full is worse than
+    the thing it was protecting. So the decision is made above and passed in;
+    nothing here can change it, and nothing here is allowed to raise. If the
+    journal will not take the line, the bypass still happens — and says so on
+    stderr and in `runtime/hook-errors.log`, which `ctx doctor` already reads.
+    Unrecorded, never unnoticed.
+    """
+    from . import journal  # local: config is imported by nearly everything, and
+                           # a module-level import here would order that graph
+
+    line = None
+    try:
+        line = journal.append(layout, config, "gate", "CTX_GATE", override.note)
+    except Exception:
+        line = None
+    override.recorded = line is not None
+    if line is None:
+        _report_unrecorded(layout, override)
+    return override
+
+
+def _report_unrecorded(layout, override):
+    """Say that a bypass went unrecorded, on both channels, without raising.
+
+    `journal.append` returns None for two different reasons — the write failed,
+    or journalling is switched off in config — and for this one event they are
+    the same reason: the audit trail does not have it. Both get reported.
+    """
+    try:
+        print(
+            f"ctx: CTX_GATE override was not journalled ({override.note}) — the "
+            "gate decision stands, but this bypass is unrecorded",
+            file=sys.stderr,
+        )
+    except Exception:  # pragma: no cover - a console that cannot take the line
+        pass
+    try:
+        layout.runtime.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.datetime.now().isoformat(timespec="seconds")
+        with layout.errors.open("a", encoding="utf-8") as handle:
+            handle.write(f"--- {stamp} gate-override ---\n{override.note}\n")
+    except Exception:
+        pass
 
 
 # Offending level spellings already reported this process.
