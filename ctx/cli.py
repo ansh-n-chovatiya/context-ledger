@@ -1714,6 +1714,32 @@ def cmd_phase(args):
     return 0
 
 
+def _merge_note(ok, messages):
+    """The journal note for a merge — and the second half of the override trail.
+
+    `ctx unit --status done --force` records *what it overrode*, not merely that
+    it was forced. `--skip-gate` is the other door to the same place, and until
+    now it recorded only `ok`: `worktree.merge` returns the override text, the
+    terminal prints it, and it scrolls away. An override nobody can find later
+    is not meaningfully different from no gate at all.
+
+    Same words as the forced-done entry — "overrode the gate" — so one grep over
+    the journal finds every override of the done-gate, whichever door it used.
+    """
+    if not ok:
+        return "refused"
+    override = next((m for m in messages if m and "--skip-gate overrode" in m), "")
+    if not override:
+        return "ok"
+    # What `merge` already worked out about the skipped checks, kept verbatim
+    # rather than recomputed: the count, and as many of them as it named.
+    detail = override.split(" — ", 1)[-1].strip()
+    detail = detail.replace(
+        ", so nothing about this unit was verified before merging", ""
+    )
+    return f"ok (--skip-gate overrode the gate: {detail or 'the gate did not run'})"
+
+
 def cmd_merge(args):
     """Land a unit's worktree branch. Refuses past a failed gate or stray writes."""
     layout, config = _loaded(args)
@@ -1733,9 +1759,7 @@ def cmd_merge(args):
     for message in messages:
         if message:
             _echo(f"  {message}")
-    journal.append(
-        layout, config, "merge", args.name, "ok" if ok else "refused"
-    )
+    journal.append(layout, config, "merge", args.name, _merge_note(ok, messages))
     if ok:
         state.update(layout, unit=None)
         state.clear_attempts(layout, args.name)
