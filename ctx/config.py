@@ -7,6 +7,7 @@ ratio (~3.6 chars/token for prose) is stable enough for a budget.
 """
 
 import copy
+import sys
 
 from . import miniyaml
 
@@ -184,9 +185,70 @@ def _merge(base, override):
             base[key] = value
 
 
+# Offending level spellings already reported this process.
+#
+# `normalise_level` is called from `config.load`, `state.load` and five places
+# in `cli`/`hooks`/`briefing`/`work`, but measured against a ctx.yaml holding
+# `level: L3` the fall-down is reached exactly *once* per invocation of `ctx
+# status`, `doctor`, `briefing` and `spec-ready` — `config.load` writes the
+# coerced level back into the dict it returns, and `state.json` carries a
+# level that has already been through here, so the later calls all see a
+# recognised `"0"`. So this set is a guard rather than a fix for an observed
+# flood: nothing stops a future command loading config twice, and one line is
+# the answer either way. Keyed on the *value*, so a second, different bad
+# spelling still gets its own line. A process is one `ctx` invocation, so the
+# user is told every time they run a command, not just the first.
+_WARNED_LEVELS = set()
+
+
+def reset_level_warnings():
+    """Forget what has already been reported. For tests, which share a process."""
+    _WARNED_LEVELS.clear()
+
+
+def _warn_level_fallback(value, level):
+    """One line on stderr naming the value we could not read and where it landed.
+
+    stderr, not stdout: `ctx briefing` and the hooks put machine-read output on
+    stdout, and a warning mixed into that is a parse error rather than a
+    message. `ascii()` rather than `repr()` so the line is single-line and
+    ASCII-clean whatever the value was, and the line itself carries no
+    non-ASCII punctuation either, so a `cp1252` console cannot raise on it - a
+    `level:` with a newline or a
+    non-encodable character in it must not be able to break the console it is
+    being reported on.
+    """
+    try:
+        shown = ascii(value)
+    except Exception:  # pragma: no cover - a __repr__ that raises
+        shown = "<unprintable>"
+    if shown in _WARNED_LEVELS:
+        return
+    _WARNED_LEVELS.add(shown)
+    name = LEVEL_NAMES.get(level, "")
+    print(
+        f"ctx: unrecognised level {shown} - falling back to L{level} ({name}); "
+        f"expected one of {', '.join('L' + item for item in LEVELS)}",
+        file=sys.stderr,
+    )
+
+
 def normalise_level(value):
+    """A level spelling reduced to a member of `LEVELS`.
+
+    Anything unrecognised falls *down* to `"0"`, deliberately: `briefing_cap`
+    turns this into a spend limit, so an unparseable level must buy the
+    smallest briefing, not the largest. What was missing was not the coercion
+    but the notice — a hand-edited `level: L3` demoted a whole project in
+    silence. `None` is not a mistake (it means "unset", and the caller's
+    default applies), so it stays silent.
+    """
     text = str(value if value is not None else "0").strip().upper().lstrip("L")
-    return text if text in LEVELS else "0"
+    if text in LEVELS:
+        return text
+    if value is not None:
+        _warn_level_fallback(value, "0")
+    return "0"
 
 
 def briefing_cap(config, level):

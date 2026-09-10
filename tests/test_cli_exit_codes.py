@@ -101,27 +101,6 @@ class TestUnexpectedExceptions(Fixture):
             self.cli_streams("status")
 
 
-class TestSpecIntentTooLongForTheFilesystem(Fixture):
-    """The one unexpected exception this CLI is known to raise in normal use.
-
-    `ctx spec «a very long intent»` slugifies the whole intent into a directory
-    name. Past the filesystem's 255-byte limit `mkdir` raises OSError, which
-    reached the user as a traceback. Capping the slug is a separate finding;
-    what is asserted here is only that the catch-all turns it into an error a
-    script can act on.
-    """
-
-    def test_an_over_long_intent_is_an_error_not_a_traceback(self):
-        code, out, err = self.cli_streams("spec", "x" * 400)
-        self.assertEqual(code, 2, f"out={out!r} err={err!r}")
-        self.assertIn("ctx spec failed:", err)
-        self.assertNotIn("Traceback", out + err)
-        self.assertFalse(
-            list(self.layout.specs.glob("xxxx*")),
-            "a spec that could not be created must not be half-created",
-        )
-
-
 class TestRefusalsAreDetectable(Fixture):
     """A message-carrying `SystemExit` is a refusal, whichever command raised."""
 

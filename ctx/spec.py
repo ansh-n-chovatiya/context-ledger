@@ -10,6 +10,7 @@ audit trail: you can show what was asked before work began.
 """
 
 import datetime
+import hashlib
 import re
 
 from . import config as config_mod, frontmatter
@@ -23,8 +24,92 @@ _DONE = re.compile(r"^\s*[-*]\s*\[[xX]\]\s*(.+?)\s*$")
 _ADR = re.compile(r"^(\d{4})-")
 
 
+# The longest a spec slug may be, in bytes of UTF-8.
+#
+# The hard constraint is 255 bytes per path *component*, which is what ext4,
+# APFS and NTFS each allow for one directory name; a 400-character intent blew
+# straight through it and `ctx spec` died with `OSError: [Errno 63] File name
+# too long`. 80 is well under that, and the headroom is deliberate rather than
+# timid: the slug is a directory with files beneath it, so the binding number
+# is not the slug alone but `.ctx/specs/<slug>/questions.md`. At 80 that whole
+# relative path is 104 bytes, which leaves ~155 characters for the repository
+# root before a legacy Windows `MAX_PATH` of 260 is in play - enough for a
+# checkout nested a few directories deep under a long user profile name. A cap
+# nearer 255 would satisfy the filesystem and still fail on Windows.
+#
+# 80 is also about as much of an intent as anyone reads off a directory
+# listing; past that the name has stopped identifying the spec and started
+# quoting it.
+SLUG_MAX_BYTES = 80
+
+# Hex characters of the disambiguating digest. 8 hex characters is 32 bits:
+# collisions need ~77,000 specs sharing one truncated prefix before they are
+# even at even odds, and every one of those would have to be created in the
+# same ledger.
+SLUG_HASH_CHARS = 8
+
+# What a slug becomes when nothing usable survives - an intent written entirely
+# in characters no normalisation keeps. A directory has to be called something,
+# and `spec` is better than a stack trace or, worse, an empty component that
+# silently writes `spec.md` into `.ctx/specs/` itself.
+SLUG_FALLBACK = "spec"
+
+# Characters no path component may contain on all three platforms at once:
+# the ASCII control range, the Windows-reserved set, and both separators.
+_UNSAFE = re.compile(r'[\x00-\x1f\x7f<>:"/\\|?*]+')
+
+
+def normalise_slug(slug):
+    """A slug reduced to one directory name that is safe and short everywhere.
+
+    Every path in this module goes through `spec_dir`, and `spec_dir` goes
+    through here, so the cap applies to whoever derived the slug rather than
+    to whoever called the CLI: `ctx spec`, `ctx question`, `ctx resolve` and
+    the plan-time `spec.create` all land on the same directory for the same
+    intent, and a caller that stored the uncapped slug (in `state.json`, say)
+    still resolves to it.
+
+    Two properties this has to have, and one it must not:
+
+    * Deterministic. The disambiguator is a SHA-256 of the slug itself, so the
+      same intent gives the same directory on every run, machine and platform.
+      Nothing here reads the clock, the filesystem or a counter - if it did,
+      re-running `ctx spec` with the same words would scaffold a second spec
+      beside the first instead of finding it.
+    * Idempotent. `normalise_slug(normalise_slug(x)) == normalise_slug(x)`,
+      because the result is always within the cap and already free of unsafe
+      characters, so a second pass returns it untouched. `spec_dir` is called
+      on slugs that have already been through here, and a cap that re-truncated
+      its own output would walk a slug away from its directory one call at a
+      time.
+
+    It must *not* be a plain truncation. Two 400-character intents that agree
+    for their first 80 characters - the same feature described twice, which is
+    exactly when someone writes a long intent - would truncate to the same
+    directory and the second would silently open the first one's spec. The
+    digest is what keeps them apart, and it is taken from the whole slug, so it
+    differs wherever the slugs do.
+    """
+    # `-` is stripped from the ends alongside dots and spaces: an input of
+    # `///` substitutes to a bare `-`, which is a legal but useless directory
+    # name, and falling through to `SLUG_FALLBACK` is the better answer.
+    text = _UNSAFE.sub("-", str(slug or "")).strip().strip("-. ")
+    if not text:
+        return SLUG_FALLBACK
+    raw = text.encode("utf-8")
+    if len(raw) <= SLUG_MAX_BYTES:
+        return text
+    digest = hashlib.sha256(raw).hexdigest()[:SLUG_HASH_CHARS]
+    # `errors="ignore"` drops a UTF-8 sequence the cut landed in the middle of,
+    # so a non-ASCII intent is shortened to a character boundary rather than to
+    # an undecodable byte string.
+    head = raw[: SLUG_MAX_BYTES - SLUG_HASH_CHARS - 1].decode("utf-8", "ignore")
+    head = head.strip().strip("-. ")
+    return f"{head}-{digest}" if head else digest
+
+
 def spec_dir(layout, slug):
-    return layout.specs / slug
+    return layout.specs / normalise_slug(slug)
 
 
 def spec_path(layout, slug):
@@ -37,6 +122,9 @@ def questions_path(layout, slug):
 
 def create(layout, slug, intent="", verify=None):
     """Scaffold a spec and its questions file. Both are safe to re-run."""
+    # Capped here as well as in `spec_dir`, so the `spec:` recorded in both
+    # files' frontmatter names the directory they actually live in.
+    slug = normalise_slug(slug)
     path = spec_path(layout, slug)
     if not path.exists():
         meta = {
@@ -250,7 +338,10 @@ def next_adr_number(layout):
 
 def write_decision(layout, title, slug, context="", decision="", consequences=""):
     number = next_adr_number(layout)
-    path = layout.decisions / f"{number:04d}-{slug}.md"
+    # `ctx decide` slugifies a free-text title, which has the same failure mode
+    # a long intent had: `0001-<400 characters>.md` is not a filename any of
+    # the three platforms will accept.
+    path = layout.decisions / f"{number:04d}-{normalise_slug(slug)}.md"
     meta = {
         "ctx_schema": config_mod.SCHEMA,
         "adr": number,
