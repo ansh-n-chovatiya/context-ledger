@@ -28,7 +28,18 @@ jobs:
           - os: ubuntu-latest
             python: "3.12"
     steps:
+      # Exactly one matrix entry takes a full-history checkout. The vendored
+      # fixture guard in tests/test_findings_rounds.py corroborates a 399-line
+      # fixture against `git show f7fa623:ctx/findings.py`, and the depth-1
+      # clone actions/checkout@v4 makes by default has no such ref, so that
+      # guard skipped in every job on every push since it was written. The
+      # other eight jobs stay shallow rather than pay the full clone.
       - uses: actions/checkout@v4
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        if: matrix.os != 'ubuntu-latest' || matrix.python != '3.13'
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
@@ -40,8 +51,55 @@ jobs:
           git config --global user.name "CI"
           git config --global init.defaultBranch main
 
+      # `unittest discover` exits 0 on "Ran 0 tests", so one broken top-level
+      # import in tests/support.py empties the suite and all nine jobs go
+      # green having proved nothing. The count is therefore parsed out of the
+      # suite's own output and held to a floor. This is Python rather than
+      # shell because the same step runs on windows-latest: `shell: python`
+      # is the one shell present on every OS in the matrix.
       - name: Test
-        run: python -m unittest discover -s tests
+        shell: python
+        run: |
+          import re
+          import subprocess
+          import sys
+
+          # THE FLOOR. Raise it as the suite grows: it sits just under the
+          # current count on purpose, because what it exists to catch is a
+          # silent DROP, and a floor far below the real count cannot see one.
+          SUITE_FLOOR = 740
+
+          command = [sys.executable, "-m"] + "unittest discover -s tests".split()
+          proc = subprocess.run(command, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace")
+
+          # Echo through the byte stream: a runner console that is not UTF-8
+          # must not turn a test name into a crash in the checker.
+          sys.stdout.flush()
+          sys.stdout.buffer.write((proc.stdout + proc.stderr).encode("utf-8", "replace"))
+          sys.stdout.buffer.flush()
+
+          found = re.search(r"^Ran (\d+) tests? in ", proc.stderr, re.MULTILINE)
+          if found is None:
+              print("FAIL: no test count in the suite output. Expected a "
+                    "'Ran N tests' line reporting at least %d tests; the suite "
+                    "exited %d without running." % (SUITE_FLOOR, proc.returncode))
+              raise SystemExit(1)
+
+          ran = int(found.group(1))
+          if ran < SUITE_FLOOR:
+              print("FAIL: the suite ran %d tests, below the floor of %d. Tests "
+                    "vanished or never ran. If the drop is deliberate, lower "
+                    "SUITE_FLOOR in .github/workflows/ci.yml on purpose."
+                    % (ran, SUITE_FLOOR))
+              raise SystemExit(1)
+
+          if proc.returncode != 0:
+              print("FAIL: the suite ran %d tests (floor %d) and exited %d."
+                    % (ran, SUITE_FLOOR, proc.returncode))
+              raise SystemExit(proc.returncode)
+
+          print("OK: the suite ran %d tests (floor %d)." % (ran, SUITE_FLOOR))
 
   # The Windows wrapper carries logic the POSIX one does not, and nothing ran
   # it: the entry-point check below is a ubuntu-only job, so `bin/ctx.cmd`

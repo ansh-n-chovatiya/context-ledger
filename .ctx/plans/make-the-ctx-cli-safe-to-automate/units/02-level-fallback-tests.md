@@ -19,7 +19,7 @@ forbid:
   - tests/support.py
   - .github/workflows/ci.yml
 budget_tokens: 45000
-status: pending
+status: running
 verify:
   - kind: cmd
     run: python3 -m unittest discover -s tests -q
