@@ -1,0 +1,143 @@
+name: release
+
+# Fires on a version tag and nothing else. There is no `workflow_dispatch` and
+# no branch trigger: what this workflow produces is named after `v*`, and a run
+# that is not anchored to a tag would produce artefacts nobody can pin.
+on:
+  push:
+    tags:
+      - "v*"
+
+# WHAT THIS WORKFLOW DOES NOT DO: it does not publish. There is no PyPI upload,
+# no `twine`, no Trusted Publishing and therefore no `id-token: write`. Turning
+# on Trusted Publishing needs registry-side configuration only the maintainer
+# can do, and a half-configured publish step is worse than none — it fails on
+# tag day, in the one workflow nobody rehearses. tests/test_packaging.py
+# asserts the absence structurally, so adding a publish step here without
+# deciding to is a red suite rather than a surprise release.
+
+# Read-only by default, so a job added later starts with no write scope and has
+# to ask for it in its own block.
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: build, check and attach
+    runs-on: ubuntu-latest
+
+    # Least privilege, and the ceiling on what a compromised build step could
+    # do: `contents: write` is what `gh release` needs to create the release
+    # and attach assets to it. Nothing else is granted — notably not
+    # `id-token: write`, which is the credential a publish step would need.
+    permissions:
+      contents: write
+
+    steps:
+      # Every `uses:` is pinned to a full commit SHA rather than a tag: a tag
+      # is a mutable pointer, and a release workflow that resolves one at run
+      # time executes whatever it was repointed at overnight. The trailing
+      # comment carries the human-readable version.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+
+      # The tag is a claim about the source. Check it before building, so a
+      # mistyped tag fails in ten seconds instead of shipping a wheel whose
+      # filename disagrees with the code inside it.
+      - name: The tag agrees with the source
+        shell: python
+        run: |
+          import json, os, pathlib, re, sys
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          source = pathlib.Path("ctx/__init__.py").read_text(encoding="utf-8")
+          declared = re.search(r'__version__ = "([^"]+)"', source).group(1)
+          manifest = json.loads(
+              pathlib.Path(".claude-plugin/plugin.json").read_text(encoding="utf-8")
+          )["version"]
+
+          if tag != "v" + declared or manifest != declared:
+              print("FAIL: tag %r, ctx.__version__ %r, plugin.json %r do not "
+                    "describe one release." % (tag, declared, manifest))
+              sys.exit(1)
+          print("OK: %s == v%s == v%s" % (tag, declared, manifest))
+
+      # Pinned exactly, and the build then runs with `--no-isolation`, so the
+      # backend that produces the artefacts is the version named here rather
+      # than whatever PyPI resolved `hatchling>=1.18` to this morning.
+      - name: Install the pinned build toolchain
+        run: |
+          python -m pip install --upgrade --disable-pip-version-check \
+            "build==1.6.1" "hatchling==1.32.0" "cyclonedx-bom==7.3.1"
+
+      - name: Build the sdist and the wheel
+        run: python -m build --no-isolation --sdist --wheel --outdir dist/
+
+      # Install what was actually built — not the checkout — and prove the
+      # console script runs. A wheel that imports nothing useful still builds.
+      # `--without-pip` leaves exactly one distribution in the environment,
+      # which is what makes the SBOM below a statement about this artefact
+      # rather than about the venv's own bootstrap tooling.
+      - name: The built wheel installs and runs
+        run: |
+          python -m venv --without-pip /tmp/smoke
+          python -m pip --python /tmp/smoke/bin/python install \
+            --disable-pip-version-check --no-index --find-links dist/ context-ledger
+          test "$(/tmp/smoke/bin/ctx --version)" = "$(python bin/ctx.py --version)"
+          /tmp/smoke/bin/ctx --version
+
+      # The SBOM describes the *installed* distribution, so it reports the
+      # dependency graph a consumer actually gets. For this project that graph
+      # is one component with no dependencies, which is the claim the whole
+      # packaging effort exists to make checkable — so the assertion below is
+      # part of the release, not a nicety: a build that acquired a dependency
+      # fails here instead of shipping an SBOM nobody reads.
+      - name: CycloneDX SBOM
+        run: |
+          cyclonedx-py environment /tmp/smoke \
+            --of JSON --output-reproducible \
+            -o dist/context-ledger.cdx.json
+          python - <<'PY'
+          import json
+          bom = json.load(open("dist/context-ledger.cdx.json"))
+          names = sorted(c["name"] for c in bom.get("components", []))
+          assert bom["bomFormat"] == "CycloneDX", bom["bomFormat"]
+          assert names == ["context-ledger"], names
+          print("SBOM: CycloneDX %s, components=%s" % (bom["specVersion"], names))
+          PY
+
+      # Checksums over everything else in dist/, so a mirror can verify what it
+      # copied without trusting the transport it copied over.
+      - name: SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum -- *.whl *.tar.gz *.cdx.json > SHA256SUMS
+          cat SHA256SUMS
+
+      # Retained on the workflow run as well as on the release: a deleted
+      # release asset then still has a second copy with an audit trail.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-artifacts
+          path: dist/
+          if-no-files-found: error
+
+      # Attach all four artefacts to the GitHub Release. `gh` ships on the
+      # runner and uses the job's own GITHUB_TOKEN, so no third-party action
+      # holds the write scope. This creates a Release; it does not publish to
+      # any package index.
+      - name: Attach the artefacts to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag \
+            dist/*.whl \
+            dist/*.tar.gz \
+            dist/SHA256SUMS \
+            dist/context-ledger.cdx.json

@@ -1,0 +1,98 @@
+# Packaging metadata for Context Ledger.
+#
+# This file exists so that "we run ctx 0.8.0" is a checkable statement. Before
+# it, the plugin *was* the default branch: `.claude-plugin/marketplace.json`
+# declares `"source": "./"`, there were no tags, and `ctx` reached PATH only by
+# a symlink each engineer maintained by hand. Nothing here changes what the
+# code does; it gives a scanner, a mirror and an auditor something to read.
+#
+# Two properties are load-bearing and are asserted by tests/test_packaging.py,
+# so that losing either has to be a deliberate act rather than a drive-by edit:
+#
+#   * zero runtime dependencies — the whole runtime is stdlib, and the empty
+#     `dependencies` list below is the machine-readable form of that claim; and
+#   * one version, not three — the version is *derived* from `ctx/__init__.py`
+#     rather than restated here, so pyproject cannot drift from the source.
+
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "context-ledger"
+# Derived, never restated: see [tool.hatch.version] below. The import package
+# and the console script both stay `ctx`; only the distribution is renamed,
+# because `ctx` is not ours to take on an index.
+dynamic = ["version"]
+description = "Durable specs, plans, decisions and memory on disk for Claude Code sessions."
+readme = "README.md"
+# The floor is an install-time constraint, not a README claim: pip refuses the
+# install on 3.7 rather than failing at the first f-string.
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Ansh Chovatiya" }]
+keywords = [
+    "memory",
+    "context",
+    "planning",
+    "orchestration",
+    "hooks",
+    "verification",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+]
+
+# THE ZERO-DEPENDENCY CLAIM. Empty on purpose and asserted structurally by
+# tests/test_packaging.py: adding a runtime dependency here turns the suite
+# red, so the plugin cannot quietly start adding to a host project's
+# dependency tree.
+dependencies = []
+
+[project.scripts]
+ctx = "ctx.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ansh-n-chovatiya/context-ledger"
+Source = "https://github.com/ansh-n-chovatiya/context-ledger"
+Changelog = "https://github.com/ansh-n-chovatiya/context-ledger/blob/main/CHANGELOG.md"
+
+# One source of truth for the version. `.claude-plugin/plugin.json` is held to
+# the same string by a test here and by the `ledger` job in CI.
+[tool.hatch.version]
+path = "ctx/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+# The wheel is the CLI and nothing else: the plugin assets below are source
+# artefacts for Claude Code, not importable code.
+packages = ["ctx"]
+
+[tool.hatch.build.targets.sdist]
+# An allowlist, not an ignore list, so that a new top-level directory has to be
+# added on purpose to ship. What a rebuild of this plugin needs, and nothing
+# else: notably not `.ctx/runtime/` (3.7 MB of this repository's own ledger
+# state) and not `tests/fixtures/` (a vendored copy of an old module).
+include = [
+    "/ctx",
+    "/bin",
+    "/commands",
+    "/agents",
+    "/skills",
+    "/hooks",
+    "/.claude-plugin",
+    "/LICENSE",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/pyproject.toml",
+]
