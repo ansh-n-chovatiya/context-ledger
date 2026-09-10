@@ -9,6 +9,7 @@ owns:
   - ctx/cli.py
   - ctx/review.py
   - ctx/snapshot.py
+  - ctx/contract.py
   - tests/test_audit_review_baseline.py
 reads:
   - path: ctx/contract.py
@@ -35,7 +36,7 @@ reads:
 forbid:
   - ctx/verify.py
   - ctx/hooks.py
-  - ctx/contract.py
+  - ctx/worktree.py
 budget_tokens: 70000
 status: pending
 verify:
@@ -59,6 +60,28 @@ that are mid-flight or already finished, over their completed state. `ctx review
 then diffs post-work against post-work, hands the reviewer an empty package, and
 gets `verdict: approved` for work nobody looked at. `commands/review.md` warns
 against exactly this in prose, with nothing enforcing it.
+
+## The seal is the same finding
+
+`03-ungated-is-not-done` added `contract.seal(...)` in `cmd_start`, on the line
+after `review_mod.capture_before(...)`. It overwrites unconditionally, exactly as
+`snapshot.capture` does. So a re-run of `ctx start` does not merely destroy the
+review baseline — it **re-seals a forged contract as legitimate**, silently
+undoing the forgery refusal that just shipped. Whatever guard you put around the
+re-capture must cover the seal on the next line. They are one finding with two
+call sites, and fixing only the visible half leaves the more dangerous one open.
+
+Two things to know before you touch it, from the unit that wrote it:
+
+- `seal()` deliberately preserves the existing `findings` block across a re-seal,
+  because a fix round is still answerable to the findings that caused it. Do not
+  fix the re-capture by skipping the whole call for a unit that already has a
+  seal without deciding what round 2 should do.
+- `contract.baseline` falls back to `snapshot.stored_text(before_key, unit path)`
+  when no seal exists, and `seal()` fills those bytes in via
+  `snapshot.store_extra` — so the before-snapshot now carries the unit file and
+  its findings file too. A guard on `snapshot.capture` therefore has reach into
+  the forgery path whether you intend it or not.
 
 ## Decisions already taken (do not relitigate)
 
@@ -90,6 +113,11 @@ Produces:
 1. Running `ctx start` twice for the same wave does not overwrite an existing
    `before` snapshot for any unit that already has one. Assert on the stored
    manifest bytes or its digest, not merely on mtime.
+1b. Nor does it re-seal the contract. A unit whose contract was forged after
+    dispatch is still refused at the gate after a second `ctx start` — assert the
+    refusal, and name the changed field, exactly as the unforged re-run case
+    passes. This is the criterion that keeps the forgery fix from being undone by
+    the documented crash-recovery step.
 2. After that second run, `ctx review` for a unit with real changes still diffs
    against the pre-work baseline and produces a non-empty package. Assert the
    package is non-empty and names a changed file — an empty package that reviews
@@ -98,8 +126,13 @@ Produces:
    file on disk reflects it.
 4. A second `ctx start` reports the already-dispatched units as in flight, by
    name, and says how to deliberately re-baseline one.
-5. `ctx start --rebaseline <unit>` re-captures exactly that unit's baseline and no
-   other unit's, and journals that it did so.
+5. `ctx start --rebaseline <unit>` re-captures exactly that unit's baseline **and
+   re-seals its contract**, for that unit only, and journals that it did so. After
+   a deliberate re-baseline the unit's current contract becomes the new promise —
+   that is what makes it an escape hatch rather than a loophole, so the journal
+   entry must record it plainly enough to be audited later.
+5b. A re-seal preserves the existing `findings` block, so a unit re-baselined for
+    a second round is still answerable to the findings that sent it back.
 6. `ctx unit <name> --status done` still works on a unit in `running`, and the
    gate from `03` still applies to it unchanged.
 7. `_next_action` gives sensible advice for a plan whose units are `running`
