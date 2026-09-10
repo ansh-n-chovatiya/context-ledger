@@ -21,7 +21,7 @@ forbid:
   - tests/test_config_levels.py
   - ctx/config.py
 budget_tokens: 90000
-status: pending
+status: done
 verify:
   - kind: cmd
     run: python3 -m unittest discover -s tests -q

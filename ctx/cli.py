@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 
 from . import (
     __version__, briefing, bundle, complexity as complexity_mod,
@@ -68,6 +69,29 @@ def _echo(*parts):
         encoding = getattr(sys.stdout, "encoding", None) or "ascii"
         print(*[str(part).encode(encoding, "replace").decode(encoding)
                 for part in parts])
+
+
+def _warn(*parts):
+    """`_echo`, onto stderr. Every refusal and every failure goes through here.
+
+    Splitting the streams is what makes a refusal detectable: a caller reads
+    stdout for the answer and stderr for the reason it did not get one.
+    """
+    try:
+        print(*parts, file=sys.stderr)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stderr, "encoding", None) or "ascii"
+        print(*[str(part).encode(encoding, "replace").decode(encoding)
+                for part in parts], file=sys.stderr)
+
+
+def _env_flag(name):
+    """A boolean environment variable, read the way a script would set one.
+
+    `CTX_STRICT=0` means off. Anything else truthy-looking means on, because a
+    caller who exported the variable at all meant to turn it on.
+    """
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 # Slash commands splice whatever the user typed into a shell command line, so an
@@ -133,16 +157,58 @@ def _active_slug(layout, explicit, key):
     return bundle.slugify(name) if name else ""
 
 
+# Advisory conditions: the command finished, and the notice it printed *is* the
+# answer. Exiting 0 here is the designed outcome, not an oversight — which is
+# why each one is listed by hand rather than inferred. A caller that would
+# rather hear about them asks with `--strict` / `CTX_STRICT=1`, which turns the
+# whole run into exit 1. Anything that is a refusal or a failure is not on this
+# list: those exit 2 through `_warn` and `SystemExit`.
+ADVISORY = frozenset({
+    # No argument was typed. `_needs` names what is missing and the prompt body
+    # of the slash command asks for it; a non-zero exit would make Claude Code
+    # abandon the command before the question is ever put to the user.
+    "missing-argument",
+    # Nothing is active for this command to act on. "There is no plan yet" is a
+    # true answer to "what is the plan", not a failure to answer it.
+    "no-active-work",
+    # `ctx snapshot` reached review.max_files. The snapshot was written and the
+    # review can proceed on it; it just does not cover every file, and the cap
+    # that cut it short is a setting the user chose.
+    "snapshot-truncated",
+})
+
+# Advisory conditions hit by the command currently running. `main` clears it at
+# the start of every run, so an in-process caller (the test suite, mainly) does
+# not inherit the previous run's notices.
+_ADVISED = []
+
+
+def _advise(key, code=0):
+    """Record an advisory condition and return the exit code to give back."""
+    if key not in ADVISORY:
+        raise KeyError(f"{key!r} is not an enumerated advisory condition")
+    _ADVISED.append(key)
+    return code
+
+
+def _strict(args):
+    """Is this run strict? The flag wins where it is given, the environment
+    otherwise — `--strict` can only turn strictness on, never off."""
+    return bool(getattr(args, "strict", False)) or _env_flag("CTX_STRICT")
+
+
 def _needs(what, *hints):
     """No name was given. Say what is missing and let the prompt body ask.
 
     Exiting 0 is deliberate: a non-zero exit makes Claude Code abort the whole
     slash command, so the user sees an argparse dump instead of a question.
+    That is a person's need, not a script's, so it is advisory rather than an
+    error and `--strict` turns it into exit 1 for the caller that is a script.
     """
     _echo(f"no {what} given.")
     for hint in hints:
         _echo(hint)
-    return 0
+    return _advise("missing-argument")
 
 
 # (profile, marker, weight). Weight is how much evidence the marker really is.
@@ -686,6 +752,7 @@ def cmd_load(args):
     layout, _config = _loaded(args)
     name = _named(args)
     if not name:
+        _advise("missing-argument")
         _echo("no bundle name given. Saved contexts:")
         _list_bundles(layout)
         _echo("Ask which one to load, then run: ctx load «name»")
@@ -703,6 +770,7 @@ def cmd_promote(args):
     layout, config = _loaded(args)
     name = _named(args)
     if not name:
+        _advise("missing-argument")
         _echo("no bundle name given. Saved contexts:")
         _list_bundles(layout)
         _echo("Ask which one to promote, then run: ctx promote «name»")
@@ -1032,7 +1100,7 @@ def cmd_ask(args):
     slug = _active_slug(layout, args.name, "spec")
     if not slug:
         _echo("no active spec — /ctx:spec «intent» first")
-        return 0
+        return _advise("no-active-work")
     blocking, non_blocking, resolved = spec_mod.questions(layout, slug)
     if blocking:
         _echo(f"BLOCKING ({len(blocking)}) — these must be answered before planning:")
@@ -1056,7 +1124,7 @@ def cmd_resolve(args):
     slug = _active_slug(layout, args.name, "spec")
     if not slug:
         _echo("no active spec — /ctx:spec «intent» first")
-        return 0
+        return _advise("no-active-work")
     if not spec_mod.resolve(layout, slug, args.question, args.answer):
         _echo(f"no open question matching {args.question!r}")
         return 1
@@ -1122,7 +1190,7 @@ def cmd_verify(args):
     item = work.active(layout)
     if item is None:
         _echo("nothing active to verify — /ctx:task or /ctx:spec first")
-        return 0
+        return _advise("no-active-work")
 
     if args.sign_off:
         item.record(args.sign_off, args.note or "")
@@ -1225,7 +1293,7 @@ def cmd_plan_unit(args):
     slug = _active_slug(layout, args.plan, "plan")
     if not slug:
         _echo("no active plan — /ctx:plan «slug» first")
-        return 0
+        return _advise("no-active-work")
     path, fresh = plan_mod.scaffold_unit(
         layout, slug, args.name, objective=args.objective or "",
         tier=args.tier, owns=args.owns or [],
@@ -1241,7 +1309,7 @@ def cmd_plan_check(args):
     slug = _active_slug(layout, args.name, "plan")
     if not slug:
         _echo("no active plan — /ctx:plan «slug» first")
-        return 0
+        return _advise("no-active-work")
 
     grouped, problems = plan_mod.check(layout, slug)
     if problems:
@@ -1304,7 +1372,7 @@ def cmd_start(args):
     slug = _active_slug(layout, args.name, "plan")
     if not slug:
         _echo("no active plan — /ctx:plan «slug» first")
-        return 0
+        return _advise("no-active-work")
 
     level, units, problems, budget = dispatch.prepare(layout, config, slug, args.wave)
     if problems:
@@ -1436,11 +1504,13 @@ def _unit_or_report(layout, args, verb):
     slug = _active_slug(layout, getattr(args, "plan", None), "plan")
     if not slug:
         _echo("no active plan — /ctx:plan «slug» first")
+        _advise("no-active-work")
         return None, None
     if not args.name:
         _echo(f"no unit name given. Units in plan {slug}:")
         _list_units(layout, slug)
         _echo(f"Ask which unit to {verb}, then run: ctx {verb} «unit-name»")
+        _advise("missing-argument")
         return None, None
     unit = plan_mod.find_unit(layout, slug, args.name)
     if unit is None:
@@ -1483,6 +1553,7 @@ def cmd_snapshot(args):
     if manifest.get("truncated"):
         _echo("  warning: the file cap was reached, so this snapshot is incomplete")
         _echo("  — raise review.max_files or widen review.ignore in ctx.yaml")
+        _advise("snapshot-truncated")
     journal.append(layout, config, "snapshot", unit.name, args.phase)
     return 0
 
@@ -1746,12 +1817,12 @@ def cmd_merge(args):
     slug = _active_slug(layout, args.plan, "plan")
     if not slug:
         _echo("no active plan — /ctx:plan «slug» first")
-        return 0
+        return _advise("no-active-work")
     if not args.name:
         _echo(f"no unit name given. Units in plan {slug}:")
         _list_units(layout, slug)
         _echo("Ask which unit to merge, then run: ctx merge «unit-name»")
-        return 0
+        return _advise("missing-argument")
 
     ok, messages = worktree.merge(
         layout, config, slug, args.name, skip_gate=args.skip_gate
@@ -1962,12 +2033,12 @@ def cmd_unit(args):
     slug = _active_slug(layout, args.plan, "plan")
     if not slug:
         _echo("no active plan — /ctx:plan «slug» first")
-        return 0
+        return _advise("no-active-work")
 
     if not args.name:
         _echo(f"no unit name given. Units in plan {slug}:")
         _list_units(layout, slug)
-        return 0
+        return _advise("missing-argument")
 
     unit = plan_mod.find_unit(layout, slug, args.name)
     if unit is None:
@@ -2439,6 +2510,8 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="ctx", description=__doc__)
     parser.add_argument("--version", action="version", version=f"ctx {__version__}")
     parser.add_argument("--cwd", default=None, help="resolve the ledger from here")
+    parser.add_argument("--strict", action="store_true",
+                        help="escalate advisory conditions to exit 1")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("init", help="scaffold .ctx/ and propose verify commands")
@@ -2673,26 +2746,64 @@ def build_parser():
     p.add_argument("name", nargs="?", default=None)
     p.set_defaults(func=cmd_handoff)
 
+    # `--strict` belongs to every command, not to a list of them, because the
+    # caller who needs it is a script and it must not have to remember which
+    # subcommands accept it. SUPPRESS keeps the subparser from writing its own
+    # default over a `--strict` that was given before the subcommand name.
+    for subparser in sub.choices.values():
+        subparser.add_argument("--strict", action="store_true",
+                               default=argparse.SUPPRESS,
+                               help="escalate advisory conditions to exit 1")
+
     return parser
 
 
-# Gates and CI entry points must still fail loudly on a missing ledger. Every
-# other command is something a person typed, and a non-zero exit there makes
-# Claude Code abort the slash command before the prompt body can explain itself.
-HARD_FAIL = frozenset({"verify", "ci", "spec-ready", "plan-check", "doctor",
-                       "migrate", "trust"})
+# Exit codes, and there are only three:
+#
+#   0  the command did what was asked — or hit an advisory condition (see
+#      ADVISORY) while `--strict` was off.
+#   1  an advisory condition, escalated, and only under `--strict`/`CTX_STRICT=1`.
+#   2  the command refused, or failed: a message-carrying `SystemExit` raised
+#      from anywhere, or an exception nobody expected.
+#
+# 2 rather than 1 for refusals because `verify`, `ci`, `spec-ready`,
+# `plan-check`, `doctor`, `migrate` and `trust` already returned 2 here. Every
+# other command moves from 0 to 2, and no caller that already reads an exit
+# code sees the meaning of one change underneath it.
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    _ADVISED.clear()
     try:
-        return args.func(args)
+        code = args.func(args)
     except SystemExit as exc:
+        # How a command refuses: `raise SystemExit("why")`. It used to reach
+        # the shell as exit 0 with the reason on stdout for all but seven
+        # commands, which left a script unable to tell a refusal from a result.
         message = str(exc)
         if message and not message.isdigit():
-            if args.command in HARD_FAIL:
-                print(message, file=sys.stderr)
-                return 2
-            print(message)
-            return 0
+            _warn(message)
+            return 2
         raise
+    except KeyboardInterrupt:
+        # Not ours to describe or to convert: the caller pressed ^C and expects
+        # the interpreter's own 130, not a diagnosis.
+        raise
+    except Exception as exc:  # noqa: BLE001 — the point is to catch everything
+        # Anything unforeseen — an OSError from a path the filesystem refuses,
+        # a bug in this file. A traceback is not a diagnosis for the person who
+        # typed the command, so it goes behind CTX_DEBUG and one line stands in
+        # its place. The exception type is in the line because `[Errno 63] File
+        # name too long` reads very differently from `KeyError: 'wave'`.
+        if _env_flag("CTX_DEBUG"):
+            traceback.print_exc()
+        _warn(f"ctx {args.command} failed: {type(exc).__name__}: {exc}")
+        return 2
+    if _ADVISED and _strict(args) and code in (0, None):
+        # Advisory, and the caller asked to hear about it. The notice itself is
+        # already on stdout; this names the condition so a log says which one.
+        _warn("strict: " + ", ".join(sorted(set(_ADVISED)))
+              + " — advisory, escalated by --strict/CTX_STRICT")
+        return 1
+    return code

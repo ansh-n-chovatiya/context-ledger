@@ -83,11 +83,27 @@ class Fixture(unittest.TestCase):
         _cleanup(self._outside)
 
     def cli(self, *args):
-        """Run a subcommand against the fixture, capturing its output."""
-        buffer = io.StringIO()
-        with contextlib.redirect_stdout(buffer):
-            code = cli_main(["--cwd", str(self.root), *args])
-        return code, buffer.getvalue()
+        """Run a subcommand against the fixture, capturing its output.
+
+        The second value is stdout and stderr together, in that order. Refusals
+        moved to stderr when the CLI learned to exit non-zero on them, and this
+        helper is called from 40-odd test files that assert on the text of a
+        message without caring which stream carried it. Use `cli_streams` where
+        the split is the thing under test.
+        """
+        code, out, err = self.cli_streams(*args)
+        return code, out + err
+
+    def cli_streams(self, *args, cwd=None):
+        """Run a subcommand, keeping stdout and stderr apart: (code, out, err).
+
+        `cwd` runs it somewhere other than the fixture — `self.untracked`, for
+        a project with no ledger at all.
+        """
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli_main(["--cwd", str(cwd or self.root), *args])
+        return code, out.getvalue(), err.getvalue()
 
     def payload(self, **extra):
         base = {"session_id": "sess1234", "cwd": str(self.root)}

@@ -207,25 +207,27 @@ class TestPlanResolvesTheActiveSpec(Fixture):
 
 
 class TestUntrackedProject(Fixture):
-    """No `.ctx/` yet. Guidance, not a shell failure — except for the gates."""
+    """No `.ctx/` yet. Every command refuses, and says so where a script looks.
+
+    These six used to exit 0 with the reason on stdout, so that a non-zero exit
+    could not abort the slash command before its prompt body explained itself.
+    That traded a person's experience against a script's: `ctx status | ...` in
+    an untracked project succeeded and printed advice. The reason now goes to
+    stderr with exit 2, where it aborts nothing that reads stdout and is still
+    the first thing the user sees.
+    """
 
     def cli_outside(self, *args):
-        import contextlib
-        import io
+        code, out, err = self.cli_streams(*args, cwd=self.untracked)
+        return code, out + err
 
-        from ctx.cli import main as cli_main
-
-        buffer = io.StringIO()
-        with contextlib.redirect_stdout(buffer):
-            code = cli_main(["--cwd", str(self.untracked), *args])
-        return code, buffer.getvalue()
-
-    def test_informational_commands_exit_zero_and_point_at_init(self):
+    def test_informational_commands_refuse_and_point_at_init(self):
         for name in ("status", "list", "resume", "load", "task", "ask"):
             with self.subTest(command=name):
-                code, out = self.cli_outside(name)
-                self.assertEqual(code, 0, f"ctx {name} exited {code}")
-                self.assertIn("/ctx:init", out)
+                code, out, err = self.cli_streams(name, cwd=self.untracked)
+                self.assertEqual(code, 2, f"ctx {name} exited {code}: {out}{err}")
+                self.assertIn("/ctx:init", err)
+                self.assertEqual(out, "", f"ctx {name} put a refusal on stdout")
 
     def test_gates_still_fail(self):
         for name in ("verify", "ci", "spec-ready", "doctor"):
