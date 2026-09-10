@@ -1,0 +1,40 @@
+# Dependabot configuration.
+#
+# The point of this file is the `github-actions` ecosystem. `.github/workflows/`
+# pins every action to a full commit SHA, which is what stops a repointed tag
+# changing what CI executes — but a pin is a frozen artefact, and a frozen
+# artefact stops receiving security fixes. Dependabot is the other half of that
+# bargain: it opens a pull request that moves the SHA forward and rewrites the
+# trailing `# vX.Y.Z` comment to match, so the pin stays current on purpose
+# rather than by neglect.
+#
+# There is deliberately no `pip` entry. This plugin is stdlib-only and has no
+# runtime dependencies, and Dependabot errors on an ecosystem whose manifest it
+# cannot find. If a Python packaging manifest lands, add:
+#
+#     - package-ecosystem: "pip"
+#       directory: "/"
+#       schedule:
+#         interval: "weekly"
+#
+# and not before — tests/test_supply_chain.py enforces that ordering, so a pip
+# entry added while the manifest is absent is a red suite rather than a silently
+# broken Dependabot run.
+
+version: 2
+
+updates:
+  # What CI runs. Grouped into one pull request: these move together, and six
+  # separate PRs a month for the same two actions is how a bot gets muted.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "github-actions", "supply-chain"]
+    commit-message:
+      prefix: "ci"

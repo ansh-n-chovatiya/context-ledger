@@ -5,10 +5,26 @@ on:
     branches: [main]
   pull_request:
 
+# Every `uses:` below is pinned to a full commit SHA rather than a mutable
+# tag, so what CI executes is a fixed artefact and not whatever the tag was
+# repointed at overnight. The trailing comment carries the human-readable
+# version; Dependabot (.github/dependabot.yml) bumps both together.
+
+# The workflow-level default, so a job added later starts read-only rather
+# than inheriting whatever the repository default happens to be. Each job
+# restates it: `permissions` at job level replaces this wholesale, and an
+# explicit block is what tests/test_supply_chain.py can hold to account.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: ${{ matrix.os }} · python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
+    # Read the source, and nothing else. No token write scope is needed
+    # to run a test suite.
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -31,16 +47,16 @@ jobs:
       # Exactly one matrix entry takes a full-history checkout. The vendored
       # fixture guard in tests/test_findings_rounds.py corroborates a 399-line
       # fixture against `git show f7fa623:ctx/findings.py`, and the depth-1
-      # clone actions/checkout@v4 makes by default has no such ref, so that
+      # clone actions/checkout makes by default has no such ref, so that
       # guard skipped in every job on every push since it was written. The
       # other eight jobs stay shallow rather than pay the full clone.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
         with:
           fetch-depth: 0
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: matrix.os != 'ubuntu-latest' || matrix.python != '3.13'
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python }}
 
@@ -107,9 +123,13 @@ jobs:
   windows-wrapper:
     name: windows wrapper propagates exit codes
     runs-on: windows-latest
+    # Read the source, and nothing else. No token write scope is needed
+    # to run a test suite.
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
       - name: Version agrees with the python entry point
@@ -131,9 +151,13 @@ jobs:
   ledger:
     name: ledger self-check
     runs-on: ubuntu-latest
+    # Read the source, and nothing else. No token write scope is needed
+    # to run a test suite.
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
 

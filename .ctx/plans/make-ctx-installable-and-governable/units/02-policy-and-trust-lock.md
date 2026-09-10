@@ -21,7 +21,7 @@ forbid:
   - pyproject.toml
   - .github/workflows/ci.yml
 budget_tokens: 110000
-status: pending
+status: done
 verify:
   - kind: cmd
     run: python3 -m unittest discover -s tests -q

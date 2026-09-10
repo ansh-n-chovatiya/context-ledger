@@ -1,0 +1,44 @@
+# Code owners for context-ledger.
+#
+# GitHub reads this file from the repository root (also honoured at .github/ or
+# docs/). Every pattern below requests a review from the named owner when a
+# matching path changes. It is a routing rule, not an access control: it only
+# bites once branch protection on `main` requires review from Code Owners.
+#
+# Syntax is gitignore-style patterns, last matching rule wins.
+
+# Default owner for everything not claimed more specifically below.
+*                           @ansh-n-chovatiya
+
+# --- The parts where a bad change is quiet rather than loud -----------------
+
+# What CI executes, and with what token scope. An unpinned action or a widened
+# `permissions:` block is a supply-chain change wearing a config diff's clothes.
+/.github/                   @ansh-n-chovatiya
+
+# The governance statements themselves. SECURITY.md promises a disclosure
+# channel and a response window to people outside this repository.
+/SECURITY.md                @ansh-n-chovatiya
+/CODEOWNERS                 @ansh-n-chovatiya
+/LICENSE                    @ansh-n-chovatiya
+
+# The tool's own trust and gate machinery: the code that decides whether a
+# command arriving as data is allowed to run.
+/ctx/                       @ansh-n-chovatiya
+
+# The executables a user invokes, including the Windows wrapper whose exit-code
+# propagation is easy to break and hard to notice.
+/bin/                       @ansh-n-chovatiya
+
+# Hooks and commands run inside a user's session.
+/hooks/                     @ansh-n-chovatiya
+/commands/                  @ansh-n-chovatiya
+/agents/                    @ansh-n-chovatiya
+/skills/                    @ansh-n-chovatiya
+
+# The suite is the only thing standing behind every claim above.
+/tests/                     @ansh-n-chovatiya
+
+# Release identity: the version here and in ctx/__init__.py must agree, and CI
+# checks that they do.
+/.claude-plugin/            @ansh-n-chovatiya
