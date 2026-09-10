@@ -1,0 +1,78 @@
+{
+  "ctx_schema": 1,
+  "plan": "make-the-ctx-cli-safe-to-automate",
+  "spec": "make-the-ctx-cli-safe-to-automate",
+  "revision": 1,
+  "generated": "2026-09-10",
+  "waves": [
+    [
+      "01-ci-suite-floor",
+      "02-level-fallback-tests"
+    ],
+    [
+      "03-cli-error-reporting"
+    ]
+  ],
+  "units": {
+    "01-ci-suite-floor": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        ".github/workflows/ci.yml",
+        "tests/test_ci_floor.py"
+      ],
+      "reads": [
+        "tests/test_findings_rounds.py"
+      ],
+      "forbid": [
+        "ctx/cli.py",
+        "tests/support.py",
+        "tests/test_config_levels.py"
+      ],
+      "budget_tokens": 45000
+    },
+    "02-level-fallback-tests": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "tests/test_config_levels.py"
+      ],
+      "reads": [
+        "ctx/config.py"
+      ],
+      "forbid": [
+        "ctx/cli.py",
+        "ctx/config.py",
+        "tests/support.py",
+        ".github/workflows/ci.yml"
+      ],
+      "budget_tokens": 45000
+    },
+    "03-cli-error-reporting": {
+      "tier": "subagent",
+      "wave": 2,
+      "depends_on": [
+        "01-ci-suite-floor",
+        "02-level-fallback-tests"
+      ],
+      "owns": [
+        "ctx/cli.py",
+        "tests/support.py",
+        "tests/test_cli_exit_codes.py",
+        "tests/test_commands.py",
+        "tests/test_unproven_claims.py"
+      ],
+      "reads": [
+        "ctx/hooks.py"
+      ],
+      "forbid": [
+        ".github/workflows/ci.yml",
+        "tests/test_config_levels.py",
+        "ctx/config.py"
+      ],
+      "budget_tokens": 90000
+    }
+  }
+}
