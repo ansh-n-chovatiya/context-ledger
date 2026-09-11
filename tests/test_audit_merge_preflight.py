@@ -91,7 +91,7 @@ class MergePreflightFixture(Fixture):
         _path, branch, created, error = wt.create(self.layout, self.slug, name)
         self.assertEqual(error, "")
         self.assertTrue(created)
-        tree = wt.path_for(self.layout, name)
+        tree = wt.path_for(self.layout, self.slug, name)
         target = tree / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("x = 1\n", encoding="utf-8")
@@ -116,7 +116,7 @@ class MergePreflightFixture(Fixture):
             (self.root / relative).exists(), f"{relative} landed in the root tree"
         )
         self.assertTrue(
-            wt.path_for(self.layout, "01-a").exists(), "the worktree was removed"
+            wt.path_for(self.layout, self.slug, "01-a").exists(), "the worktree was removed"
         )
         text = self.unit_path.read_text(encoding="utf-8")
         self.assertNotIn("status: done", text)

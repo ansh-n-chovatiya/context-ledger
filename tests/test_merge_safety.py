@@ -88,11 +88,11 @@ class MergeSafetyFixture(Fixture):
         self.git("commit", "-qm", "plan")
 
     def work_in(self, unit_name, relative, text, commit=True):
-        path = wt.path_for(self.layout, unit_name) / relative
+        path = wt.path_for(self.layout, self.slug, unit_name) / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         if commit:
-            tree = wt.path_for(self.layout, unit_name)
+            tree = wt.path_for(self.layout, self.slug, unit_name)
             self.git("add", "-A", cwd=tree)
             self.git("commit", "-qm", f"work {unit_name}", cwd=tree)
         return path
@@ -147,7 +147,7 @@ class TestMergeTarget(MergeSafetyFixture):
         self.assertEqual(still, tip)
         _code, containing = self.git_out("branch", "--contains", tip)
         self.assertNotEqual(containing.strip(), "", "the work is still reachable")
-        self.assertTrue(wt.path_for(self.layout, "01-a").is_dir())
+        self.assertTrue(wt.path_for(self.layout, self.slug, "01-a").is_dir())
         self.assertEqual(self.unit_meta()["status"], "pending", "not marked done")
 
     def test_merging_from_a_different_branch_names_both(self):
@@ -230,7 +230,7 @@ class TestRemoveAndListing(MergeSafetyFixture):
         branch = self.dispatched()
         # Take the tree away behind ctx's back, then hold the branch so it cannot
         # be deleted — the two halves of the old bug at once.
-        self.git("worktree", "remove", str(wt.path_for(self.layout, "01-a")))
+        self.git("worktree", "remove", str(wt.path_for(self.layout, self.slug, "01-a")))
         self.git("checkout", "--quiet", branch)
 
         error = wt.remove(self.layout, "01-a", self.slug)

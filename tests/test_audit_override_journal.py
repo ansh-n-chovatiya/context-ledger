@@ -218,7 +218,7 @@ class TestRefusalIsUnchanged(OverrideJournalFixture):
         self.dispatched(checks=self.UNTRUSTED, accept=(), relative="src/a.py")
         # A stray write outside `owns`, committed in the worktree: refused at
         # step 3, before the gate is reached at all.
-        tree = wt.path_for(self.layout, "01-a")
+        tree = wt.path_for(self.layout, self.slug, "01-a")
         stray = tree / "src" / "stray.py"
         stray.parent.mkdir(parents=True, exist_ok=True)
         stray.write_text("y = 2\n", encoding="utf-8")

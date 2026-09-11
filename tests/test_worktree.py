@@ -62,11 +62,11 @@ class WorktreeFixture(Fixture):
         self.git("commit", "-qm", "plan")
 
     def work_in(self, unit_name, relative, text, commit=True):
-        path = wt.path_for(self.layout, unit_name) / relative
+        path = wt.path_for(self.layout, self.slug, unit_name) / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         if commit:
-            tree = wt.path_for(self.layout, unit_name)
+            tree = wt.path_for(self.layout, self.slug, unit_name)
             self.git("add", "-A", cwd=tree)
             self.git("commit", "-qm", f"work {unit_name}", cwd=tree)
         return path
@@ -102,7 +102,7 @@ class TestWorktreeLifecycle(WorktreeFixture):
         self.plan_ready()
         wt.create(self.layout, self.slug, "01-a")
         self.assertEqual(wt.remove(self.layout, "01-a"), "")
-        self.assertFalse(wt.path_for(self.layout, "01-a").exists())
+        self.assertFalse(wt.path_for(self.layout, self.slug, "01-a").exists())
         self.assertEqual(wt.listing(self.layout), [])
 
     def test_remove_protects_uncommitted_work_unless_forced(self):
@@ -112,7 +112,7 @@ class TestWorktreeLifecycle(WorktreeFixture):
         self.work_in("01-a", "src/a.py", "x = 1\n", commit=False)
 
         self.assertNotEqual(wt.remove(self.layout, "01-a"), "", "must refuse")
-        self.assertTrue(wt.path_for(self.layout, "01-a").exists())
+        self.assertTrue(wt.path_for(self.layout, self.slug, "01-a").exists())
         self.assertEqual(wt.remove(self.layout, "01-a", force=True), "")
 
     def test_no_repo_is_reported_not_crashed_on(self):
@@ -130,7 +130,7 @@ class TestMergeRefusals(WorktreeFixture):
         ok, messages = wt.merge(self.layout, self.config, self.slug, "01-a")
         self.assertFalse(ok)
         self.assertIn("done-gate failed", " ".join(messages))
-        self.assertTrue(wt.path_for(self.layout, "01-a").exists(), "worktree survives")
+        self.assertTrue(wt.path_for(self.layout, self.slug, "01-a").exists(), "worktree survives")
         doc = frontmatter.read(plan_mod.units_dir(self.layout, self.slug) / "01-a.md")
         self.assertEqual(doc.meta["status"], "pending", "not marked done")
 
@@ -213,7 +213,7 @@ class TestMergeSuccess(WorktreeFixture):
         self.assertIn("merged ctx/auth/01-a", joined)
 
         self.assertTrue((self.root / "src" / "a.py").is_file(), "work landed")
-        self.assertFalse(wt.path_for(self.layout, "01-a").exists(), "worktree removed")
+        self.assertFalse(wt.path_for(self.layout, self.slug, "01-a").exists(), "worktree removed")
         self.assertEqual(wt.listing(self.layout), [])
         doc = frontmatter.read(plan_mod.units_dir(self.layout, self.slug) / "01-a.md")
         self.assertEqual(doc.meta["status"], "done")
@@ -300,7 +300,7 @@ class TestDispatchWithWorktrees(WorktreeFixture):
         self.assertIn("ctx unit 01-a", out)
         self.assertIn("ctx merge", out)
         for name in ("01-a", "02-b"):
-            self.assertTrue(wt.path_for(self.layout, name).is_dir(), name)
+            self.assertTrue(wt.path_for(self.layout, self.slug, name).is_dir(), name)
 
     def test_start_creates_nothing_in_git_unless_asked(self):
         """A worktree holds its branch exclusively, so creating one by default
@@ -309,7 +309,7 @@ class TestDispatchWithWorktrees(WorktreeFixture):
         self.plan_ready()
         code, out = self.cli("start")
         self.assertEqual(code, 0, out)
-        self.assertFalse(wt.path_for(self.layout, "01-a").exists())
+        self.assertFalse(wt.path_for(self.layout, self.slug, "01-a").exists())
         self.assertIn("run them in this tree", out)
         self.assertIn("--worktree", out, "and it says how to opt in")
 
@@ -318,7 +318,7 @@ class TestDispatchWithWorktrees(WorktreeFixture):
         self.plan_ready()
         code, _out = self.cli("start", "--no-worktree")
         self.assertEqual(code, 0)
-        self.assertFalse(wt.path_for(self.layout, "01-a").exists())
+        self.assertFalse(wt.path_for(self.layout, self.slug, "01-a").exists())
 
     def test_start_explains_that_a_worktree_takes_the_branch(self):
         self.unit("01-a", owns=["src/a.py"])

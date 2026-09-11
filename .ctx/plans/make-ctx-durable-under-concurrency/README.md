@@ -7,13 +7,14 @@ Spec: `.ctx/specs/make-ctx-durable-under-concurrency/spec.md`
 
 ## Units
 
+
 **Wave 1** — these may run concurrently
 
-- `01-atomic-writer` (subagent, pending) — Extract the temp-file + fsync + `os.replace` write that `frontmatter.Document.write` already implements into o
+- `01-atomic-writer` (subagent, done) — Extract the temp-file + fsync + `os.replace` write that `frontmatter.Document.write` already implements into o
   - owns: ctx/atomic.py, tests/test_atomic_writes.py
-- `02-plan-scoped-lock` (subagent, pending) — Generalise the `O_EXCL` lock that `state.locked` already holds correctly under 8-way contention into a named, 
+- `02-plan-scoped-lock` (subagent, done) — Generalise the `O_EXCL` lock that `state.locked` already holds correctly under 8-way contention into a named, 
   - owns: ctx/lock.py, ctx/state.py, tests/test_plan_lock.py
-- `03-worktree-plan-scope` (subagent, pending) — Give `worktree.path_for` the plan slug that `worktree.branch_for` already has, so `ctx worktree remove 01-api 
+- `03-worktree-plan-scope` (subagent, done) — Give `worktree.path_for` the plan slug that `worktree.branch_for` already has, so `ctx worktree remove 01-api 
   - owns: ctx/worktree.py, tests/test_worktree_plan_scope.py, tests/test_worktree.py, tests/test_merge_safety.py, tests/test_git_invariant.py, tests/test_audit_merge_preflight.py, tests/test_audit_override_journal.py, tests/test_audit_wave1.py, tests/test_flow_end_to_end.py
 
 **Wave 2** — these may run concurrently
@@ -33,7 +34,7 @@ Spec: `.ctx/specs/make-ctx-durable-under-concurrency/spec.md`
 **Wave 4** — these may run concurrently
 
 - `08-gate-window-and-doctor` (subagent, pending) — Close the read-modify-write window that spans the done-gate and silently erases `base_branch`, and give `ctx d
-  - owns: ctx/cli.py, ctx/plan.py, .ctx/.gitignore, tests/test_gate_window.py, tests/test_doctor_collisions.py, tests/test_durable_writes.py
+  - owns: ctx/cli.py, ctx/plan.py, .ctx/.gitignore, README.md, tests/test_gate_window.py, tests/test_doctor_collisions.py, tests/test_durable_writes.py
 
 **Wave 5** — these may run concurrently
 

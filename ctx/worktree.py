@@ -55,8 +55,42 @@ def worktree_root(layout):
     return layout.runtime / WORKTREE_SUBDIR
 
 
-def path_for(layout, unit_name):
+def path_for(layout, plan_slug, unit_name):
+    """`.ctx/runtime/worktrees/<plan_slug>/<unit_name>`.
+
+    `plan_slug` is required, and positional rather than optional on purpose: the
+    defect this partition fixes is that *every* caller omitted the plan, so an
+    optional parameter would have preserved the collision for everyone who did
+    not opt in. Two plans with a unit called `01-api` — numbered kebab names make
+    that likely, not exotic — used to share one directory, and discarding one
+    unit deleted the other's tree and the uncommitted work inside it.
+    """
+    if not plan_slug:
+        raise ValueError(
+            "path_for needs a plan slug — a worktree path is not knowable from "
+            "the unit name alone"
+        )
+    return worktree_root(layout) / plan_slug / unit_name
+
+
+def legacy_path_for(layout, unit_name):
+    """Where a worktree made before the partition sits: `worktrees/<unit_name>`."""
     return worktree_root(layout) / unit_name
+
+
+def split_branch(branch):
+    """`ctx/<plan-slug>/<unit>` -> `(plan_slug, unit_name)`, or `("", branch)`.
+
+    Splits off the `ctx/` prefix from the left and the unit from the right, so a
+    plan slug with hyphens in it — every real one — survives the round trip.
+    """
+    if not branch.startswith(BRANCH_PREFIX):
+        return "", branch
+    rest = branch[len(BRANCH_PREFIX):]
+    if "/" not in rest:
+        return "", rest
+    slug, unit_name = rest.rsplit("/", 1)
+    return slug, unit_name
 
 
 def branch_for(plan_slug, unit_name):
@@ -148,7 +182,7 @@ def create(layout, plan_slug, unit_name):
         return None, "", False, problem
 
     root = repo_root(layout)
-    path = path_for(layout, unit_name)
+    path = _tree_path(layout, plan_slug, unit_name)
     branch = branch_for(plan_slug, unit_name)
 
     if path.is_dir():
@@ -160,12 +194,12 @@ def create(layout, plan_slug, unit_name):
         )
 
     try:
-        worktree_root(layout).mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         # The documented contract is `(path, branch, created, error)` and never an
         # exception: one unwritable runtime directory must not abort the dispatch
         # of every other unit in the wave.
-        return None, branch, False, f"cannot create {worktree_root(layout)}: {exc}"
+        return None, branch, False, f"cannot create {path.parent}: {exc}"
 
     code, _output = git(["rev-parse", "--verify", branch], root)
     adopted = code == 0
@@ -226,11 +260,83 @@ def listing(layout):
 
 
 def branch_of(layout, unit_name):
-    """The branch this worktree is actually on, according to git."""
+    """The branch this worktree is actually on, according to git.
+
+    Answers by unit name alone, so it cannot tell two plans' `01-api` apart.
+    `remove` resolves the plan first and uses `branch_for`; this is left for the
+    case where no directory is left to resolve from.
+    """
     for name, _path, branch in listing(layout):
         if name == unit_name:
             return branch
     return ""
+
+
+def branch_at(layout, path):
+    """The branch git says is checked out in `path`, "" if it is not a worktree.
+
+    The tree is the thing being deleted, so its branch is read off the tree and
+    not off the name we hoped it had.
+    """
+    code, output = git(["worktree", "list", "--porcelain"], repo_root(layout))
+    if code != 0:
+        return ""
+    target = os.path.realpath(str(path))
+    here = False
+    for line in output.splitlines():
+        if line.startswith("worktree "):
+            here = os.path.realpath(line.split(" ", 1)[1]) == target
+        elif here and line.startswith("branch "):
+            return _short_branch(line.split(" ", 1)[1])
+    return ""
+
+
+def _tree_path(layout, plan_slug, unit_name):
+    """This unit's worktree directory, preferring the plan-scoped layout.
+
+    A tree created before worktrees were partitioned by plan sits flat, at
+    `worktrees/<unit>`. Ignoring it would orphan a real checkout with real work
+    in it — `create` would try to add a second worktree on a branch git has
+    already checked out, and `merge` would stop seeing the uncommitted work that
+    a merge silently drops. So a flat directory git still counts as a worktree is
+    adopted — but only when git says it has *this unit's* branch checked out. A
+    flat tree belonging to another plan is exactly the collision the partition
+    exists to end, and adopting it here would let it back in through the side
+    door. A leftover directory git has pruned is not adopted either; the
+    plan-scoped path is used instead.
+    """
+    path = path_for(layout, plan_slug, unit_name)
+    if path.is_dir():
+        return path
+    legacy = legacy_path_for(layout, unit_name)
+    if (legacy.is_dir() and _registered(layout, legacy)
+            and branch_at(layout, legacy) == branch_for(plan_slug, unit_name)):
+        return legacy
+    return path
+
+
+def trees_named(layout, unit_name):
+    """[(plan_slug, path)] for every worktree directory that could be `unit_name`.
+
+    This is how `remove` answers "which plan?" without being told. Scanning the
+    directories rather than the branches is deliberate: a branch may exist with
+    no tree, and the tree is what a removal destroys.
+    """
+    root = worktree_root(layout)
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        entries = []
+    found = [
+        (entry.name, entry / unit_name)
+        for entry in entries
+        if entry.is_dir() and (entry / unit_name).is_dir()
+    ]
+    legacy = legacy_path_for(layout, unit_name)
+    if legacy.is_dir() and _registered(layout, legacy):
+        slug, _unit = split_branch(branch_at(layout, legacy))
+        found.append((slug, legacy))
+    return found
 
 
 def remove(layout, unit_name, plan_slug=None, delete_branch=True, force=False):
@@ -248,10 +354,32 @@ def remove(layout, unit_name, plan_slug=None, delete_branch=True, force=False):
     happened to be absent, and the `branch -D` return code was discarded
     entirely, so `ctx worktree remove` printed "removed worktree and branch"
     over a branch that was still there.
+
+    `plan_slug` is still optional, because `ctx worktree remove <name>` is how a
+    unit is discarded and the single-plan case should not have to say the plan
+    twice. Omitting it now *resolves* rather than guesses: one tree by that name
+    is used, several is a refusal naming each plan, none falls back to whatever
+    git still registers. The flat `worktrees/<unit>` path the previous layout
+    used is resolved too, so a tree left by it is not orphaned.
     """
     root = repo_root(layout)
-    path = path_for(layout, unit_name)
-    branch = branch_for(plan_slug, unit_name) if plan_slug else branch_of(layout, unit_name)
+    if plan_slug:
+        path = _tree_path(layout, plan_slug, unit_name)
+        branch = branch_for(plan_slug, unit_name)
+    else:
+        path, branch, problem = _resolve(layout, unit_name)
+        if problem:
+            return problem
+
+    # The tree, not the name, decides. A directory in `plan-a`'s slot that has
+    # some other branch checked out is not this unit's worktree, and deleting it
+    # would take work nothing else references.
+    checked_out = branch_at(layout, path)
+    if checked_out and branch and checked_out != branch:
+        return (
+            f"{path} has {checked_out} checked out, not {branch} — refusing to "
+            "remove a worktree that is not this unit's; nothing was removed"
+        )
 
     args = ["worktree", "remove", str(path)]
     if force:
@@ -271,6 +399,30 @@ def remove(layout, unit_name, plan_slug=None, delete_branch=True, force=False):
                 + (lines[-1] if lines else "git branch -D failed")
             )
     return ""
+
+
+def _resolve(layout, unit_name):
+    """(path, branch, problem) for a removal that was not told which plan.
+
+    Exactly one tree by that name: use it. Several: refuse and name them all,
+    because picking one is how `ctx worktree remove 01-api` run from plan-b came
+    to delete plan-a's tree. None: today's behaviour — git may still register a
+    worktree whose directory was taken away behind ctx's back, and the branch it
+    holds is still worth deleting.
+    """
+    matches = trees_named(layout, unit_name)
+    if len(matches) > 1:
+        plans = ", ".join(sorted(slug or "(unpartitioned)" for slug, _p in matches))
+        return None, "", (
+            f"{len(matches)} plans have a worktree named {unit_name}: {plans} — "
+            f"pass --plan to say which one to discard. Nothing was removed, and "
+            "no branch was deleted"
+        )
+    if matches:
+        slug, path = matches[0]
+        branch = branch_for(slug, unit_name) if slug else branch_at(layout, path)
+        return path, branch, ""
+    return legacy_path_for(layout, unit_name), branch_of(layout, unit_name), ""
 
 
 def _registered(layout, path):
@@ -308,7 +460,9 @@ def branch_changes(layout, branch):
 
     # Work left uncommitted inside the worktree would be silently dropped by a
     # merge, so it counts as a change the caller must be told about.
-    path = path_for(layout, branch.rsplit("/", 1)[-1])
+    slug, unit_name = split_branch(branch)
+    path = (_tree_path(layout, slug, unit_name) if slug
+            else legacy_path_for(layout, unit_name))
     uncommitted = []
     if path.is_dir():
         code, output = git(["status", "--porcelain", "--untracked-files=all"], path)
@@ -443,7 +597,8 @@ def merge(layout, config, plan_slug, unit_name, skip_gate=False):
         if not checks:
             return False, [f"{unit_name} has no verify checks — refusing to merge blind"]
         results, verdict = verify.run(
-            layout, config, unit.checks, cwd=path_for(layout, unit_name),
+            layout, config, unit.checks,
+            cwd=_tree_path(layout, plan_slug, unit_name),
             key=f"merge-{unit_name}", owns=unit.owns, recorded=unit.recorded,
             judged=False,
         )
@@ -514,7 +669,8 @@ def merge(layout, config, plan_slug, unit_name, skip_gate=False):
                 "first, or a second merge running concurrently, is the usual "
                 "cause — not this unit",
                 f"bring the unit up to date in its own tree (`git -C "
-                f"{path_for(layout, unit_name)} merge {target}`), resolve the "
+                f"{_tree_path(layout, plan_slug, unit_name)} merge {target}`), "
+                "resolve the "
                 "conflict there, then merge again",
             ]
         else:

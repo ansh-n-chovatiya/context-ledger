@@ -209,7 +209,7 @@ class TestFullFlow(Fixture):
         self.assertIn("worktree", out.lower())
 
         wt = __import__("ctx.worktree", fromlist=["worktree"])
-        tree = wt.path_for(self.layout, "01-keys")
+        tree = wt.path_for(self.layout, "auth", "01-keys")
         self.assertTrue(tree.is_dir(), "the unit got its own checkout")
         self.assertTrue((tree / ".ctx").is_dir(),
                         "and therefore its own runtime state")

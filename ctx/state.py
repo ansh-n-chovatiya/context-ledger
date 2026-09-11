@@ -6,25 +6,25 @@ leave a half-written pointer that breaks the next SessionStart.
 """
 
 import contextlib
-import errno
 import json
 import os
 import tempfile
-import time
 
-from . import config as config_mod
+from . import config as config_mod, lock as lock_mod
 
 # A wave means several `ctx` processes writing this file at once. `os.replace`
 # already made each *write* atomic, but load-then-save is not: two processes that
 # both read before either wrote leave one of the updates gone, which is how
 # attempt counts under-count and a `unit` claim disappears.
 #
-# The timeout is generous because giving up means taking the lost update the
-# lock exists to prevent. Five seconds was not enough on Windows under a wave —
-# CI lost one increment in eighty — where creating and unlinking a file costs
-# far more than it does on a POSIX filesystem.
-LOCK_TIMEOUT = 30.0
-LOCK_STALE_SECONDS = 60.0
+# The loop that prevents that now lives in `ctx.lock`, because four other
+# ledgers need it too. The limits stay here, and stay generous, because giving
+# up means taking the lost update the lock exists to prevent: five seconds was
+# not enough on Windows under a wave — CI lost one increment in eighty — where
+# creating and unlinking a file costs far more than it does on a POSIX
+# filesystem. `lock.limits` is the one source of both numbers.
+LOCK_NAME = "state"
+LOCK_TIMEOUT, LOCK_STALE_SECONDS = lock_mod.limits(LOCK_NAME)
 
 EMPTY = {
     "schema": config_mod.SCHEMA,
@@ -78,35 +78,14 @@ def locked(layout):
     cannot take is a reason to risk a lost update, never a reason to break a
     session. A lock left behind by a killed process is reclaimed once it is
     older than `LOCK_STALE_SECONDS`.
+
+    The file stays at `.ctx/runtime/state.lock` rather than moving under
+    `runtime/locks/` with the others: a process still running the older code
+    would take the new path, serialise against nobody, and lose exactly the
+    update this exists to keep.
     """
-    layout.runtime.mkdir(parents=True, exist_ok=True)
-    path = layout.runtime / "state.lock"
-    deadline = time.monotonic() + LOCK_TIMEOUT
-    handle = None
-    while handle is None and time.monotonic() < deadline:
-        try:
-            handle = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        except FileExistsError:
-            try:
-                if time.time() - path.stat().st_mtime > LOCK_STALE_SECONDS:
-                    path.unlink()
-                    continue
-            except OSError:
-                pass
-            time.sleep(0.02)
-        except OSError as exc:
-            if exc.errno in (errno.EACCES, errno.EROFS):
-                break  # read-only checkout: nothing to serialise against
-            break
-    try:
-        yield
-    finally:
-        if handle is not None:
-            os.close(handle)
-            try:
-                path.unlink()
-            except OSError:
-                pass
+    with lock_mod.held(layout, LOCK_NAME) as taken:
+        yield taken
 
 
 def update(layout, **changes):

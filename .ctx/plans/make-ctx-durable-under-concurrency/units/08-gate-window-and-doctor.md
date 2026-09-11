@@ -13,6 +13,7 @@ owns:
   - ctx/cli.py
   - ctx/plan.py
   - .ctx/.gitignore
+  - README.md
   - tests/test_gate_window.py
   - tests/test_doctor_collisions.py
   - tests/test_durable_writes.py
@@ -136,18 +137,34 @@ duplicate.** Do not implement ULIDs.
     report, not exit non-zero. Pin that, so an existing project does not have its
     CI broken by an upgrade.
 
-**The worktree call site (from unit 03).**
+**The worktree call site (from unit 03, which has landed — read its report's
+`notes` section in the journal if you need the detail).**
 15. `cmd_worktree` passes the active plan slug to `worktree.remove` when there is
     one, so the common case resolves without relying on 03's ambiguity scan. The
     ambiguity refusal stays reachable for the no-active-plan case; assert both.
+16. `ctx worktree` gains `--plan`. Unit 03's ambiguity refusal tells the user to
+    "pass --plan to say which one to discard" and **no such flag exists** — the
+    subparser defines only `action`, `name` and `--force`, so from the CLI that
+    refusal is correct and unactionable. Add `--plan` and thread it through to
+    `worktree.remove`. `ctx merge` already has the flag; match its spelling. A
+    test drives the two-plan ambiguity through the CLI and asserts `--plan
+    plan-b` resolves it and removes only plan-b's tree.
+17. `README.md:439` and `:442` still document the pre-unit-03 flat worktree path
+    (`cd .ctx/runtime/worktrees/03-rotate`); it is now
+    `.ctx/runtime/worktrees/<plan>/03-rotate`. Fix **exactly those two lines and
+    nothing else in README.md.** This is a factual correction to a path that no
+    longer exists, not an invitation to restructure — wave 3 asked for targeted
+    corrections in this file and got a restructure that pre-empted wave 5. Do not
+    repeat that. If you find a third stale claim, report it rather than fixing it.
 
 **All.**
-16. `python3 -m unittest discover -s tests -q` passes, `ctx doctor` exits 0 and
+18. `python3 -m unittest discover -s tests -q` passes, `ctx doctor` exits 0 and
     `ctx ci` exits 0 on this repository. Suite count strictly up.
-17. No file outside `owns` is modified.
+19. No file outside `owns` is modified.
 
 ## Return contract
 Report: files changed · which criteria passed · verbatim verify output · the
 before/after runs proving criterion 2 is a real positive control · your answers to
 criteria 4 and 5, stated either way · confirmation that `DIGEST.md` regenerates
-after being untracked · the final suite count, which unit 09 needs.
+after being untracked · any third stale README claim you found and did not fix ·
+the final suite count, which unit 09 needs.

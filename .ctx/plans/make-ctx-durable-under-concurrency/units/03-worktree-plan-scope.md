@@ -29,7 +29,7 @@ forbid:
   - ctx/lock.py
   - ctx/journal.py
 budget_tokens: 60000
-status: pending
+status: done
 verify:
   - kind: cmd
     run: python3 -m unittest discover -s tests -q

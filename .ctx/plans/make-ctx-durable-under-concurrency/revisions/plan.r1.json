@@ -2,7 +2,7 @@
   "ctx_schema": 1,
   "plan": "make-ctx-durable-under-concurrency",
   "spec": "make-ctx-durable-under-concurrency",
-  "revision": 2,
+  "revision": 1,
   "generated": "2026-09-11",
   "waves": [
     [
@@ -209,7 +209,6 @@
         "ctx/cli.py",
         "ctx/plan.py",
         ".ctx/.gitignore",
-        "README.md",
         "tests/test_gate_window.py",
         "tests/test_doctor_collisions.py",
         "tests/test_durable_writes.py"

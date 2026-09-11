@@ -296,7 +296,7 @@ class TestWorktreesAreScaffolding(GitInvariantFixture):
 
         during = self.snapshot()
         branch = wt.branch_for(self.slug, "01-a")
-        self.assertTrue(wt.path_for(self.layout, "01-a").is_dir(), "a tree appeared")
+        self.assertTrue(wt.path_for(self.layout, self.slug, "01-a").is_dir(), "a tree appeared")
         self.assertIn(branch, during["branches"], "and so did its branch")
         self.assertIn(branch, during["worktrees"], "git knows it as a worktree")
         self.assert_git_unchanged(
@@ -311,7 +311,7 @@ class TestWorktreesAreScaffolding(GitInvariantFixture):
         self.assertEqual(code, 0, out)
 
         after = self.snapshot()
-        self.assertFalse(wt.path_for(self.layout, "01-a").exists(), "tree is gone")
+        self.assertFalse(wt.path_for(self.layout, self.slug, "01-a").exists(), "tree is gone")
         self.assertNotIn(branch, after["branches"], "branch is gone")
         self.assert_git_unchanged(
             before, after, note="a worktree round trip must be a no-op",
@@ -330,7 +330,7 @@ class TestWorktreesAreScaffolding(GitInvariantFixture):
         self.plan_ready()
         self.assertEqual(self.cli("start", "--worktree")[0], 0)
 
-        tree = wt.path_for(self.layout, "01-a")
+        tree = wt.path_for(self.layout, self.slug, "01-a")
         work = tree / "src" / "a.py"
         work.parent.mkdir(parents=True, exist_ok=True)
         work.write_text("PRECIOUS = 1\n", encoding="utf-8")
@@ -367,7 +367,7 @@ class TestTheExplicitMergeStillWorks(GitInvariantFixture):
         self.plan_ready()
         self.assertEqual(self.cli("start", "--worktree")[0], 0)
 
-        tree = wt.path_for(self.layout, "01-a")
+        tree = wt.path_for(self.layout, self.slug, "01-a")
         (tree / "src").mkdir(parents=True, exist_ok=True)
         (tree / "src" / "a.py").write_text("A = 1\n", encoding="utf-8")
         self.git("add", "-A", cwd=tree)
