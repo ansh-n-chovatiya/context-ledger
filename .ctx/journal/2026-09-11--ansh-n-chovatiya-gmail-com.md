@@ -43,3 +43,6 @@
 23:24 | spec | make-ctx-tell-you-the-plan-is-slow | opened
 23:25 | plan | make-ctx-tell-you-the-plan-is-slow | opened (0 unit stubs)
 23:25 | plan | make-ctx-tell-you-the-plan-is-slow | checked, graph r1
+23:25 | start | make-ctx-tell-you-the-plan-is-slow | wave 1, 2 unit(s), 0 worktree(s), 2 snapshot(s), 0 already in flight
+23:52 | unit | 01-plan-time-intelligence | done
+23:54 | unit | 02-gate-warns-on-untracked | done

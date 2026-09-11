@@ -1250,6 +1250,40 @@ def _missing_commit_advice(results, unit):
     ]
 
 
+def _untracked_within(cwd, owns):
+    """Untracked repo-relative paths inside `owns`, ledger churn excluded.
+
+    Advisory only, and this is why: the done-gate runs *before* the unit's
+    work is committed, so any check that enumerates through `git ls-files` is
+    blind to files the unit has just written — they pass such a check
+    vacuously and go red on the next commit. The gate cannot see inside a
+    `cmd` check to know it is scoped that way, but it can see that new files
+    exist, and say so.
+
+    `.ctx/` paths are excluded by reusing `is_ledger` rather than writing a
+    second rule for the same thing — the ledger churns on every command and
+    is owned by no unit.
+    """
+    scope = [str(p) for p in (owns or [])]
+    if not scope:
+        return []
+    code, stdout, error = _git(
+        ["status", "--porcelain", "--untracked-files=all"], cwd
+    )
+    if error or code != 0:
+        return []
+    found = []
+    for line in stdout.splitlines():
+        if not line.startswith("??"):
+            continue
+        entry = line[3:].strip().strip('"')
+        if not entry or is_ledger(entry):
+            continue
+        if _within(entry, scope):
+            found.append(entry)
+    return found
+
+
 def gate_check(layout, config, slug, unit):
     """(ok, reason, lines) — may this unit be marked `done`, and if not, why.
 
@@ -1382,6 +1416,13 @@ def gate_check(layout, config, slug, unit):
             "not a work failure, so this is not blocking:",
             *[result.line() for result in results],
         ]
+    untracked = _untracked_within(layout.root.parent, unit.owns)
+    if untracked:
+        lines.append(
+            f"note: {len(untracked)} untracked file(s) in {unit.name}'s owns — "
+            "a check that enumerates `git ls-files` will not see them until "
+            "they are committed"
+        )
     return True, "", lines
 
 

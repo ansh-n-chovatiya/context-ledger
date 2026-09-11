@@ -17,7 +17,7 @@ forbid:
   - ctx/complexity.py
   - ctx/dispatch.py
 budget_tokens: 35000
-status: pending
+status: done
 verify:
   - kind: cmd
     run: python3 -m unittest discover -s tests -q

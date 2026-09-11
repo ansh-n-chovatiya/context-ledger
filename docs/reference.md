@@ -86,7 +86,9 @@ complexity:
     reads_per_2paths: 0.5     # per two paths in `reads`
     depends_on_each: 0.5      # per entry in `depends_on`
     judged_verify: 2.0        # flat, if any `rubric` or `human` check is declared
-    publishes_iface: 2.0      # flat, if the unit has a non-empty `## Interfaces`
+    publishes_iface: 2.0      # flat, if a sibling `depends_on` this unit
+                              # AND reads a path it owns — a section nobody
+                              # consumes is not a published interface
     kind_bug: 2.0             # flat, if `kind: bug`
   thresholds:
     standard: 3.0             # at or above this, dispatch tier `standard`
@@ -621,7 +623,7 @@ carries the message that also went to stderr, and `data` is `null`.
 | `doctor` | `problems`, `ok`, `checks[]` — each row naming its `section`, `status` and `detail`, plus whatever that section checks |
 | `ci` | `ok`, `failures[]`, `checks[]` (`section`, `name`, `ok`, `detail`) |
 | `verify` | `mode`, `plan`, `key`, `verdict`, `checks[]` (`kind`, `label`, `status`, `message`), `pending[]` |
-| `plan-check` | `plan`, `problems[]`, `units`, `revision`, `graph`, `waves[]` (each with its `units[]`), `session_units[]` |
+| `plan-check` | `plan`, `problems[]`, `units`, `revision`, `graph`, `waves[]` (each with its `units[]`), `session_units[]`, `parallelism` (`units`/`waves`/`ratio`), `bottlenecks[]` (`path`, `units[]`), `critical_path` (`estimate_tokens`, `total_tokens`, `waves[]`, `basis`), `ownership_gaps` (`files[]`, `truncated`) |
 | `findings` | `mode`, `plan`, `unit`, `round`, `summary`, `findings[]`, `escalations[]`, `blocking`, `ok`, `problem` |
 
 A command without the flag still refuses it, rather than accepting it and

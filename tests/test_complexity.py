@@ -100,11 +100,31 @@ class TestOneSignalAtATime(ComplexityFixture):
         self.assertGreater(some, none)
 
     def test_published_interface_alone_changes_the_score(self):
-        empty, _ = complexity.score(self.config, self.unit(interfaces=""))
-        published, _ = complexity.score(
-            self.config, self.unit(interfaces="`thing.do(x) -> y`")
+        """The term needs a consumer, not just a section.
+
+        This used to pass with an `## Interfaces` heading and nothing reading
+        it, which put 41 of 49 units across this repo's plans into the term
+        and most of them into the `deep` tier. The weight is unchanged at 2.0;
+        what changed is that a sibling must actually `depends_on` this unit
+        and read a path it owns.
+        """
+        empty, _ = complexity.score(
+            self.config, self.unit(owns=["api.py"], interfaces="")
         )
+        publisher = self.unit(owns=["api.py"], interfaces="`thing.do(x) -> y`")
+        self.unit(depends_on=[publisher.name], reads=["api.py"])
+        published, _ = complexity.score(self.config, publisher)
         self.assertGreater(published, empty)
+
+    def test_an_interfaces_section_nobody_consumes_does_not_fire(self):
+        """The other half, and the reason the narrowing is worth having."""
+        empty, _ = complexity.score(
+            self.config, self.unit(owns=["api.py"], interfaces="")
+        )
+        unread, _ = complexity.score(
+            self.config, self.unit(owns=["api.py"], interfaces="`thing.do(x)`")
+        )
+        self.assertEqual(unread, empty)
 
     def test_bug_kind_alone_changes_the_score(self):
         feature, _ = complexity.score(self.config, self.unit(kind="feature"))

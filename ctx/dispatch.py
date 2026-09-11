@@ -40,7 +40,8 @@ def _small_package_bytes(config):
     )
 
 
-def model_for(config, unit=None, role="runner", *, stats=None, round=1):
+def model_for(config, unit=None, role="runner", *, stats=None, round=1,
+              siblings=None):
     """The model a dispatched role should run on.
 
     Precedence, highest first:
@@ -77,6 +78,14 @@ def model_for(config, unit=None, role="runner", *, stats=None, round=1):
     model is not "the cheap one", it is whatever the orchestrating session
     happens to be running, which is the expensive one.
 
+    `siblings` is passed straight through to `complexity.score`: the rest of
+    the plan, for the one term that cannot be decided from this unit's own
+    frontmatter. A caller that already has the plan loaded hands it over so the
+    scoring does not re-read the directory once per unit; a caller that does
+    not leaves it out and `score` finds them itself. Either way the tier is the
+    same — the parameter is about how many times the disk is read, not about
+    which model is picked.
+
     `round` and `models.escalate_on_failed_round` apply last, on top of
     whichever tier steps 2-5 picked. Off — the default — every round of a
     unit dispatches at the same model: the working assumption when the flag
@@ -96,7 +105,7 @@ def model_for(config, unit=None, role="runner", *, stats=None, round=1):
 
     picked = floor
     if unit is not None:
-        score, _breakdown = complexity_mod.score(config, unit)
+        score, _breakdown = complexity_mod.score(config, unit, siblings)
         band = complexity_mod.tier_for(config, score)
         index = min(_BAND_INDEX[band], len(tiers) - 1)
         picked = tiers[index]
@@ -198,6 +207,12 @@ def instructions(layout, config, slug, level, units, budget, worktrees=(),
     sessions = [u for u in units if u.tier == "session"]
 
     if concurrent:
+        # Loaded once for the whole block rather than per unit:
+        # `complexity.score` needs the plan around a unit to decide whether
+        # anything consumes its interface, and `units` here is one wave with
+        # the finished units already dropped — a consumer is in a *later* wave
+        # by definition, so the wave on its own can never answer the question.
+        siblings = plan_mod.load_units(layout, slug)
         lines += [
             f"## Dispatch these {len(concurrent)} concurrently",
             "",
@@ -208,11 +223,12 @@ def instructions(layout, config, slug, level, units, budget, worktrees=(),
             "",
         ]
         for unit in concurrent:
-            score, breakdown = complexity_mod.score(config, unit)
+            score, breakdown = complexity_mod.score(config, unit, siblings)
             tier = complexity_mod.tier_for(config, score)
             detail = ", ".join(f"{label}={points}" for label, points in breakdown)
             lines.append(
-                f"- `{unit.name}` → unit-runner on **{model_for(config, unit)}** "
+                f"- `{unit.name}` → unit-runner on "
+                f"**{model_for(config, unit, siblings=siblings)}** "
                 f"(score {score} = {detail or 'no signals'} → {tier}): "
                 f"\"Execute the unit contract at {layout.rel(unit.path)}\""
             )

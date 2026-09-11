@@ -21,7 +21,7 @@ module. See that block's comments for the reasoning behind each constant;
 this module only ever reads them, never repeats them.
 """
 
-from . import config as config_mod, verify
+from . import config as config_mod, plan as plan_mod, verify
 
 # `judged_verify` fires once, flat, if *either* judged kind is present — but the
 # breakdown label names which one actually fired, because "rubric=2.0" and
@@ -75,7 +75,7 @@ def _term(label, points):
     return [(label, points)] if points > 0 else []
 
 
-def score(config, unit):
+def score(config, unit, siblings=None):
     """(score, breakdown). `breakdown` is `[(label, points), ...]`; `score` is
     exactly `sum(points for _, points in breakdown)` — computed that way, not
     recomputed from the raw weights a second time, so the two can never drift.
@@ -88,7 +88,19 @@ def score(config, unit):
     or rounding it again after summing — is what this function deliberately
     does not do, because a second rounding step is exactly the kind of "close
     enough" that turns "sums to the score" into "sums to the score, allegedly".
+
+    `siblings` is the rest of the plan this unit belongs to, and only the
+    `publishes_iface` term reads it — see below for why that term cannot be
+    decided from the unit alone. A caller that has the plan loaded passes it; a
+    caller that does not gets `plan.siblings_on_disk`, which re-reads the unit's
+    own directory. It deliberately does **not** fall back to the old, wider
+    behaviour when the plan cannot be found: a default that scores a unit as
+    though a consumer existed is the bug this parameter was added to fix, and a
+    future call site that forgets to pass the list must not silently reinstate
+    it.
     """
+    if siblings is None:
+        siblings = plan_mod.siblings_on_disk(unit)
     weights = _weights(config)
     breakdown = []
 
@@ -125,8 +137,20 @@ def score(config, unit):
     if judged:
         breakdown += _term("+".join(judged), weights["judged_verify"])
 
-    if unit.publishes_interface:
-        breakdown += _term("interface", weights["publishes_iface"])
+    # A published interface costs someone else's work only when someone else
+    # is actually reading it, so both halves are required: a sibling that
+    # declares `depends_on` this unit *and* reads a path this unit owns. The
+    # section existing is not the signal — it fired for 16 of 17 units in one
+    # session, including a pure file move, and put all of them on the dearest
+    # model. The weight is unchanged at 2.0; only the trigger narrowed.
+    #
+    # The label names the consumer rather than saying "interface", because the
+    # dispatch line is the audit trail: "why is this unit on opus" should be
+    # answerable by reading it, and the answer here is a specific sibling.
+    consumers = plan_mod.consumers_of(unit, siblings)
+    if unit.publishes_interface and consumers:
+        shown = consumers[0] if len(consumers) == 1 else f"{len(consumers)} units"
+        breakdown += _term(f"interface for {shown}", weights["publishes_iface"])
 
     if unit.kind == "bug":
         breakdown += _term("bug", weights["kind_bug"])

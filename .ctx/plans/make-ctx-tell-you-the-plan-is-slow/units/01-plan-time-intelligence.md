@@ -19,7 +19,7 @@ forbid:
   - ctx/verify.py
   - ctx/config.py
 budget_tokens: 85000
-status: pending
+status: done
 verify:
   - kind: cmd
     run: python3 -m unittest discover -s tests -q

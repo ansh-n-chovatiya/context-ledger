@@ -191,6 +191,13 @@ ADVISORY = frozenset({
     # review can proceed on it; it just does not cover every file, and the cap
     # that cut it short is a setting the user chose.
     "snapshot-truncated",
+    # `plan-check` found a file three or more units own, or a test referencing
+    # an owned file that no unit owns. The plan is valid and was written — this
+    # says it will run slower, or block, than its wave count suggests. Refusing
+    # would be wrong: a serial plan is sometimes the correct plan, and only the
+    # person who cut it can say. A script that would rather hear about it asks
+    # with `--strict`.
+    "plan-slow",
 })
 
 # Advisory conditions hit by the command currently running. `main` clears it at
@@ -1562,6 +1569,97 @@ def cmd_plan_unit(args):
     return 0
 
 
+# How much of the plan-time report is printed before it stops being read. A
+# plan with forty contended files needs re-cutting, not forty lines about it —
+# the same reasoning as `plan.MAX_REPORTED` on collisions.
+_MAX_BOTTLENECKS = 5
+_MAX_GAPS = 8
+_MAX_GAP_TESTS = 3
+_MAX_OWNER_NAMES = 6
+
+
+def _names(names, limit=_MAX_OWNER_NAMES):
+    shown = ", ".join(names[:limit])
+    return shown if len(names) <= limit else f"{shown}, +{len(names) - limit} more"
+
+
+def _plan_intelligence(layout, slug, grouped):
+    """`(data, lines, notable)` — what the graph already knew and never said.
+
+    Three reports, all advisory, all derived from the plan that was just
+    checked: how wide it actually is, which file is holding it narrow, roughly
+    what the critical path costs, and which owned files have tests nobody in
+    the plan may edit.
+
+    `notable` is whether anything here is worth a caller escalating under
+    `--strict`. The parallelism line and the critical-path estimate are never
+    notable on their own — a one-wave plan is a fact about the work, not a
+    defect — while a contended file and an unowned test are both things a
+    human can act on before the wave starts rather than ninety minutes into it.
+    """
+    units = [unit for level in sorted(grouped) for unit in grouped[level]]
+    count, wave_count, ratio = plan_mod.parallelism(grouped)
+    contended = plan_mod.bottlenecks(units)
+    estimate, total_tokens, per_wave = plan_mod.critical_path(grouped)
+    gaps, truncated = plan_mod.ownership_gaps(layout, units)
+
+    data = {
+        "parallelism": {"units": count, "waves": wave_count, "ratio": ratio},
+        "bottlenecks": [{"path": path, "units": owners}
+                        for path, owners in contended],
+        "critical_path": {
+            "estimate_tokens": estimate,
+            "total_tokens": total_tokens,
+            "waves": [{"wave": level, "tokens": tokens}
+                      for level, tokens in per_wave],
+            "basis": "widest unit per wave, summed — an estimate from stated "
+                     "budget_tokens, not a measurement",
+        },
+        "ownership_gaps": {
+            "files": [{"path": path, "tests": tests} for path, tests in gaps],
+            "truncated": truncated,
+        },
+    }
+
+    lines = ["", f"concurrency: {ratio} unit(s) per wave "
+                 f"({count} unit(s), {wave_count} wave(s))"]
+    if wave_count and ratio <= 1.0 and count > 1:
+        lines.append("  every wave is one unit wide — this plan runs serially, "
+                     "which is sometimes right and is worth having said")
+    for path, owners in contended[:_MAX_BOTTLENECKS]:
+        lines.append(
+            f"  {path} is owned by {len(owners)} units ({_names(owners)}) — "
+            "extract it first, or merge those units: they cannot share a wave"
+        )
+    if len(contended) > _MAX_BOTTLENECKS:
+        lines.append(f"  ... and {len(contended) - _MAX_BOTTLENECKS} more "
+                     "contended path(s) — this plan needs re-cutting")
+
+    lines.append(
+        f"estimated critical path ~{estimate:,} tokens of {total_tokens:,} stated"
+    )
+    lines.append("  an estimate, not a measurement: the widest unit's "
+                 "`budget_tokens` in each wave, summed")
+
+    if gaps:
+        lines.append("ownership gaps — a test references an owned file and no "
+                     "unit owns the test:")
+        for path, tests in gaps[:_MAX_GAPS]:
+            shown = ", ".join(tests[:_MAX_GAP_TESTS])
+            if len(tests) > _MAX_GAP_TESTS:
+                shown += f", +{len(tests) - _MAX_GAP_TESTS} more"
+            lines.append(f"  {path} → {shown}")
+        if len(gaps) > _MAX_GAPS:
+            lines.append(f"  ... and {len(gaps) - _MAX_GAPS} more")
+        lines.append("  add each to the `owns` of the unit that will change it, "
+                     "or that unit blocks mid-wave holding a test it may not edit")
+        if truncated:
+            lines.append(f"  (scan stopped at {plan_mod.MAX_TEST_FILES} test "
+                         "files — there may be more)")
+
+    return data, lines, bool(contended or gaps)
+
+
 def cmd_plan_check(args):
     """Validate, compute waves from depends_on, and derive plan.json."""
     layout, config = _loaded(args)
@@ -1571,9 +1669,17 @@ def cmd_plan_check(args):
 
     grouped, problems = plan_mod.check(layout, slug)
     if problems:
+        # The advisory keys are carried empty rather than omitted: a consumer
+        # reading `parallelism.units` should not have to branch on whether the
+        # plan was valid to know the key exists.
         _emit(
             {"plan": slug, "problems": list(problems), "waves": [], "units": 0,
-             "revision": None, "graph": None, "session_units": []},
+             "revision": None, "graph": None, "session_units": [],
+             "parallelism": {"units": 0, "waves": 0, "ratio": 0.0},
+             "bottlenecks": [],
+             "critical_path": {"estimate_tokens": 0, "total_tokens": 0,
+                               "waves": [], "basis": ""},
+             "ownership_gaps": {"files": [], "truncated": False}},
             [f"plan {slug}: {len(problems)} problem(s) — nothing was written"]
             + [f"  - {problem}" for problem in problems]
             + ["",
@@ -1593,6 +1699,9 @@ def cmd_plan_check(args):
     for level in sorted(grouped):
         names = ", ".join(u.name for u in grouped[level])
         out.append(f"  wave {level}: {names}")
+    intelligence, advisory_lines, notable = _plan_intelligence(layout, slug, grouped)
+    out.extend(advisory_lines)
+
     sessions = [u.name for units in grouped.values() for u in units if u.tier == "session"]
     problem = ""
     if sessions:
@@ -1608,15 +1717,22 @@ def cmd_plan_check(args):
                 + " in the main tree unless you dispatch with `ctx start --worktree`"
             )
     out.append(f"wrote {layout.rel(path)}")
-    _emit(
-        {"plan": slug, "problems": [], "units": total, "revision": revision,
-         "graph": layout.rel(path),
-         "waves": [{"wave": level,
-                    "units": [{"name": u.name, "tier": u.tier} for u in grouped[level]]}
-                   for level in sorted(grouped)],
-         "session_units": sessions},
-        out,
-    )
+    document = {
+        "plan": slug, "problems": [], "units": total, "revision": revision,
+        "graph": layout.rel(path),
+        "waves": [{"wave": level,
+                   "units": [{"name": u.name, "tier": u.tier}
+                             for u in grouped[level]]}
+                  for level in sorted(grouped)],
+        "session_units": sessions,
+    }
+    document.update(intelligence)
+    _emit(document, out)
+    # The plan is valid and written; what the report found is a judgement for
+    # the person reading it, so this stays exit 0 and `--strict` is how a
+    # script asks to hear about it. A serial plan is sometimes the right plan.
+    if notable:
+        return _advise("plan-slow")
     return 0
 
 
@@ -1853,16 +1969,22 @@ def cmd_start(args):
                 "promise it will be judged against (recorded findings kept)",
             )
 
+    # The same list the dispatch brief scored against, loaded once. Scoring
+    # needs the whole plan, not this wave: whether a unit's interface has a
+    # consumer is a question about units that depend on it, and those are in
+    # later waves by construction.
+    siblings = plan_mod.load_units(layout, slug)
     for unit in units:
         # One record per dispatched unit, regardless of tier: `model` and
         # `score` are exactly what the dispatch line above already prints for
         # `subagent` units, recorded here too so `ctx telemetry`'s `by_role`
         # breakdown has something to group spend on for every wave, not just
         # the ones a human happened to be reading when it ran.
-        score, _breakdown = complexity_mod.score(config, unit)
+        score, _breakdown = complexity_mod.score(config, unit, siblings)
         telemetry.record(
             layout, "dispatch", 0,
-            model=dispatch.model_for(config, unit), role="runner", score=score,
+            model=dispatch.model_for(config, unit, siblings=siblings),
+            role="runner", score=score,
         )
 
     if resealed:
@@ -2717,9 +2839,14 @@ def _print_reported_spend(layout, config, args):
     scored = {}
     if plan_slug:
         grouped, _problems = plan_mod.check(layout, plan_slug)
-        for level in sorted(grouped):
-            for unit in grouped[level]:
-                scored[unit.name], _breakdown = complexity_mod.score(config, unit)
+        # Every unit of the plan, flattened once: the score of any one of them
+        # depends on whether a later unit consumes its interface, so each is
+        # scored against the whole plan rather than against its own wave.
+        everything = [unit for level in sorted(grouped) for unit in grouped[level]]
+        for unit in everything:
+            scored[unit.name], _breakdown = complexity_mod.score(
+                config, unit, everything
+            )
     if not scored and not spend:
         return
 

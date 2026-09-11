@@ -24,6 +24,7 @@ import fnmatch
 import json
 import os
 import re
+from pathlib import Path
 
 from . import atomic, config as config_mod, frontmatter, verify
 
@@ -573,6 +574,272 @@ def _covers(path, pattern):
     if fnmatch.fnmatchcase(path, pattern):
         return True
     return path.startswith(pattern + "/")
+
+
+# --------------------------------------------------------------------------- #
+# plan-time intelligence
+# --------------------------------------------------------------------------- #
+#
+# Everything below reports; nothing below refuses. A serial plan is sometimes
+# the correct plan, and a warning that cannot be overruled is a refusal wearing
+# a warning's clothes — so these are advisory at the command layer and `ctx
+# plan-check` still exits 0 on a slow-but-valid plan.
+#
+# None of it needs new data. The graph already knows who owns what, which unit
+# waits on which, and what each unit says it will cost; the reason a wave of
+# eight units took ninety-five minutes of wall clock was not that the
+# information was missing, it was that nobody printed it.
+
+# How many units have to own one path before it is worth naming. Three is a
+# judgement call, recorded as a decision rather than asked: two units sharing a
+# file is an ordinary `depends_on` edge, three is a file that is deciding the
+# shape of the plan.
+BOTTLENECK_OWNERS = 3
+
+
+def parallelism(grouped):
+    """`(units, waves, ratio)` — how much of this plan can actually run at once.
+
+    The ratio is units per wave, which is the average width of the plan. It is
+    deliberately not "speed-up": the widest wave and the critical path say
+    different things, and a single number claiming to be both would be wrong
+    twice.
+    """
+    units = sum(len(members) for members in grouped.values())
+    waves_count = len(grouped)
+    ratio = round(units / waves_count, 2) if waves_count else 0.0
+    return units, waves_count, ratio
+
+
+def bottlenecks(units, minimum=BOTTLENECK_OWNERS):
+    """`[(path, [unit name, ...]), ...]` — every path `minimum`+ units own.
+
+    Asked through `_OwnsIndex`, not by comparing the raw strings, so a unit
+    owning `ctx/*.py` counts as an owner of `ctx/cli.py` exactly as it would
+    for a collision. The two questions have to agree: a path that would collide
+    if those units shared a wave is the same path that is serialising them now
+    that they do not.
+    """
+    ordered = list(units)
+    index = _OwnsIndex(ordered)
+    found = {}
+    for unit in ordered:
+        for raw in unit.owns:
+            path = _normalise(raw)
+            if not path or path in found:
+                continue
+            owners = sorted({ordered[position].name
+                             for position in index.owners_of(path)})
+            if len(owners) >= minimum:
+                found[path] = owners
+    # Most contended first; ties by path so the report is stable run to run.
+    return sorted(found.items(), key=lambda item: (-len(item[1]), item[0]))
+
+
+def critical_path(grouped):
+    """`(estimate, total, [(wave, tokens), ...])` — an **estimate**, in tokens.
+
+    A wave's units run concurrently, so the wave costs about what its widest
+    unit costs, and the plan costs about the sum of those. That is the whole
+    model, and it is wrong in both directions: units do not all start at once,
+    a stated `budget_tokens` is the author's guess rather than a measurement,
+    and tokens are not minutes. It is still the only number available before
+    anything runs, which is why it is reported *and* labelled an estimate
+    everywhere it is printed. Presenting it as a measurement would be worse
+    than not printing it: wave 5 of the remediation is the evidence — a plan
+    that looked eight-wide took ninety-five minutes of critical path.
+    """
+    rows = []
+    for level in sorted(grouped):
+        rows.append((level, max((unit.budget for unit in grouped[level]),
+                                default=0)))
+    estimate = sum(tokens for _, tokens in rows)
+    total = sum(unit.budget for members in grouped.values() for unit in members)
+    return estimate, total, rows
+
+
+# A test file by name, either convention. Matched on the basename: where a
+# project keeps its tests is its own business, what they are called is not.
+_TEST_FILE = re.compile(r"^(test_[^/]+|[^/]+_test)\.py$")
+
+# Directories never walked looking for tests: version control, the ledger
+# itself, and the usual vendored or generated trees. A dotted directory is
+# skipped wholesale — `.git` and `.venv` are the cases that matter and neither
+# holds a test this repository wrote.
+_SKIP_DIRS = frozenset({
+    "node_modules", "__pycache__", "build", "dist", "site-packages",
+    "venv", "env",
+})
+
+# How many test files are read before the scan gives up. Reading every test in
+# a large monorepo at plan-check time would turn an advisory report into the
+# slowest thing the command does; a truncated scan reports what it found and
+# says it was truncated, which is the honest failure mode.
+MAX_TEST_FILES = 400
+
+# `from pkg import a, b as c` — the parenthesised form spans lines, so the
+# alternation takes the whole bracket before it falls back to the rest of the
+# line.
+_FROM_IMPORT = re.compile(
+    r"^[ \t]*from[ \t]+([\w.]+)[ \t]+import[ \t]+(\([^)]*\)|[^\n]*)", re.M
+)
+_PLAIN_IMPORT = re.compile(r"^[ \t]*import[ \t]+([\w.]+)", re.M)
+# A path-ish literal anywhere in the text: a test that names `ctx/plan.py` in a
+# string is exercising it even if it never imports it.
+_PATH_LITERAL = re.compile(r"[\w./-]+\.py")
+
+
+def _imported(text):
+    """Dotted module names a Python source file refers to.
+
+    Import statements only, plus `.py` literals — read with regexes rather than
+    `ast`, because a test file that does not parse (a syntax error mid-edit, a
+    file for a newer interpreter) must degrade to "found nothing here" instead
+    of taking `plan-check` down with it.
+    """
+    modules, literals = set(), set(_PATH_LITERAL.findall(text))
+    for module, names in _FROM_IMPORT.findall(text):
+        modules.add(module)
+        for entry in names.strip("()").split(","):
+            first = entry.strip().split()[0] if entry.strip() else ""
+            if first.isidentifier():
+                modules.add(f"{module}.{first}")
+    for module in _PLAIN_IMPORT.findall(text):
+        modules.add(module)
+    return modules, literals
+
+
+def _dotted(path):
+    """`ctx/plan.py` -> `ctx.plan`. Empty for anything that is not a module."""
+    path = _normalise(path)
+    if not path.endswith(".py"):
+        return ""
+    return path[:-3].replace("/", ".")
+
+
+def _is_test_path(path):
+    return bool(_TEST_FILE.match(_normalise(path).rsplit("/", 1)[-1]))
+
+
+def _test_files(root):
+    """`([repo-relative path, ...], truncated)` — every test file under `root`."""
+    found, truncated = [], False
+    for directory, subdirectories, filenames in os.walk(root):
+        subdirectories[:] = sorted(
+            name for name in subdirectories
+            if name not in _SKIP_DIRS and not name.startswith(".")
+        )
+        for name in sorted(filenames):
+            if not _TEST_FILE.match(name):
+                continue
+            if len(found) >= MAX_TEST_FILES:
+                truncated = True
+                return found, truncated
+            found.append(
+                os.path.relpath(os.path.join(directory, name), root).replace(os.sep, "/")
+            )
+    return found, truncated
+
+
+def ownership_gaps(layout, units, root=None):
+    """`([(source, [test, ...]), ...], truncated)` — tests nobody in the plan owns.
+
+    The failure this is for: a unit owns `ctx/state.py`, changes it, and is
+    blocked mid-wave by `tests/test_core.py` — a file it may not edit, because
+    no unit in the plan declared it. Everything needed to see that coming is on
+    disk at plan time; nothing was looking.
+
+    The detection is a heuristic and is worth stating as one. It finds a test
+    that *imports* the module (either import form, including the parenthesised
+    multi-line one) or names its path in a string. It does **not** find a test
+    that reaches the module indirectly — through the CLI, through a subprocess,
+    or through another module that imports it — so a clean report here means
+    "no test names this file", not "no test can break". It also only looks at
+    owned paths that are Python modules: an owned `README.md` or workflow file
+    has no import to find.
+    """
+    root = Path(root) if root is not None else Path(layout.root).parent
+    owned_patterns = [path for unit in units for path in unit.owns]
+    sources = sorted({
+        _normalise(path) for unit in units for path in unit.owns
+        if _dotted(path) and not _is_test_path(path) and not _MAGIC.search(str(path))
+    })
+    if not sources:
+        return [], False
+
+    candidates, truncated = _test_files(root)
+    unowned = [path for path in candidates if not covers_any(path, owned_patterns)]
+
+    referenced = {}
+    for test in unowned:
+        try:
+            text = (root / test).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        referenced[test] = _imported(text)
+
+    gaps = []
+    for source in sources:
+        dotted = _dotted(source)
+        hits = sorted(
+            test for test, (modules, literals) in referenced.items()
+            if dotted in modules or source in literals
+        )
+        if hits:
+            gaps.append((source, hits))
+    return gaps, truncated
+
+
+def consumers_of(unit, siblings):
+    """Units that both `depends_on` this one and read a path it owns.
+
+    This is what "publishes an interface" has to mean to be worth scoring. A
+    `## Interfaces` section on its own says the author wrote a heading; a
+    sibling that declares the dependency *and* reads the file is the thing that
+    makes getting the signature wrong cost somebody else's work — which is the
+    entire justification `config.DEFAULTS` gives for the weight.
+
+    Both halves are required on purpose. `depends_on` alone is ordinary
+    sequencing (a unit that waits for a migration to run reads none of its
+    code), and reading an owned path alone is what the wave's read/write race
+    check already refuses. Together they are a consumer.
+    """
+    found = []
+    for other in siblings or ():
+        if other.name == unit.name:
+            continue
+        if unit.name not in other.depends_on:
+            continue
+        # `_overlap`, not `covers_any`: the same both-directions rule the
+        # wave's read/write race check uses. A sibling that reads `src/*.py`
+        # is reading `src/api.py`, and the two questions must not disagree
+        # about the same pair of units.
+        if _overlap(other.reads, unit.owns):
+            found.append(other.name)
+    return sorted(found)
+
+
+def siblings_on_disk(unit):
+    """The plan `unit` belongs to, re-read from its own directory.
+
+    The fallback for a caller that scores one unit without having loaded the
+    plan around it. A `Unit` knows its own path, and a plan is a directory of
+    unit files, so "which units are in the same plan as this one" is answerable
+    without the caller threading a list through — and a caller that cannot
+    answer it must not silently get the old, wider behaviour instead. Anything
+    that is not a unit file sitting in a `units/` directory gets an empty list
+    rather than a scan of whatever directory it happens to be in.
+    """
+    path = Path(unit.path)
+    directory = path.parent
+    if directory.name != "units" or not path.is_file():
+        return []
+    out = []
+    for candidate in sorted(directory.glob("*.md")):
+        doc = frontmatter.read(candidate)
+        if doc is not None:
+            out.append(Unit(candidate, doc))
+    return out
 
 
 def check(layout, slug):

@@ -223,6 +223,10 @@ all checks passed
         """\
 plan auth: 2 unit(s) in 1 wave(s) · graph r2
   wave 1: 01-login, 02-logout
+
+concurrency: 2.0 unit(s) per wave (2 unit(s), 1 wave(s))
+estimated critical path ~1,000 tokens of 2,000 stated
+  an estimate, not a measurement: the widest unit's `budget_tokens` in each wave, summed
 wrote .ctx/plans/auth/plan.json
 """.split("\n")[:-1]),
     'findings': (0, 
@@ -312,6 +316,16 @@ SHAPES = {
         "graph": (str, NONE),
         "waves": [{"wave": int, "units": [{"name": str, "tier": str}]}],
         "session_units": [str],
+        # Added with the plan-time reporting. Additive: a consumer reading the
+        # keys above is unaffected, which is why `cli.JSON_SCHEMA` stays at 1.
+        # A bump would signal a break to callers that did not suffer one.
+        "parallelism": {"units": int, "waves": int, "ratio": float},
+        "bottlenecks": [{"path": str, "units": [str]}],
+        "critical_path": {"estimate_tokens": int, "total_tokens": int,
+                          "waves": [{"wave": int, "tokens": int}],
+                          "basis": str},
+        "ownership_gaps": {"files": [{"path": str, "tests": [str]}],
+                           "truncated": bool},
     },
     "findings": {
         "mode": str,
