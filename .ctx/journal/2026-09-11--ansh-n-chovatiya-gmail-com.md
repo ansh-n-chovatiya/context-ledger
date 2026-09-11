@@ -25,3 +25,5 @@
 21:12 | unit | 02-caps-and-reported-spend | done
 21:12 | start | make-ctx-maintainable-and-documented | wave 2, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
 21:32 | unit | 03-verify-dispatch-and-gate | done
+21:32 | start | make-ctx-maintainable-and-documented | wave 3, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+21:50 | unit | 04-detect-and-advice | done

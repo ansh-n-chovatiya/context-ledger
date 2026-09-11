@@ -10,17 +10,15 @@ import copy
 import datetime
 import os
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
 import traceback
 
 from . import (
-    __version__, atomic, briefing, bundle, complexity as complexity_mod,
-    config as config_mod, contract as contract_mod, dispatch, frontmatter,
-    journal, lock, migrate as migrate_mod, paths, phases as phases_mod,
-    plan as plan_mod, spec as spec_mod,
+    __version__, advice, atomic, briefing, bundle, complexity as complexity_mod,
+    config as config_mod, contract as contract_mod, detect, dispatch,
+    frontmatter, journal, lock, migrate as migrate_mod, paths,
+    phases as phases_mod, plan as plan_mod, spec as spec_mod,
     findings as findings_mod, review as review_mod, snapshot as snapshot_mod,
     state, telemetry, trust as trust_mod, verify, work, worktree,
 )
@@ -213,223 +211,66 @@ def _needs(what, *hints):
     return _advise("missing-argument")
 
 
-# (profile, marker, weight). Weight is how much evidence the marker really is.
-# A build manifest at the root says what the project *is*; a directory named
-# `docs` or `notebooks` says only that the project has some, which most projects
-# of every kind do.
-_PROFILE_MARKERS = (
-    ("code", "package.json", 10), ("code", "pyproject.toml", 10),
-    ("code", "go.mod", 10), ("code", "Cargo.toml", 10),
-    ("code", "pom.xml", 10), ("code", "build.gradle", 10),
-    ("code", "build.gradle.kts", 10), ("code", "Gemfile", 10),
-    ("code", "composer.json", 10), ("code", "mix.exs", 10),
-    ("code", "Package.swift", 10), ("code", "*.sln", 10),
-    ("code", "*.csproj", 10), ("code", "setup.py", 8),
-    ("code", "Makefile", 4),
-    ("infra", "main.tf", 10), ("infra", "Chart.yaml", 10),
-    ("infra", "terraform", 3),
-    ("data", "dbt_project.yml", 10), ("data", "notebooks", 2),
-    ("docs", "mkdocs.yml", 10), ("docs", "docusaurus.config.js", 10),
-    ("docs", "docs", 2),
-)
-
-# Ties break toward the profile that has real commands to propose.
-_PROFILE_ORDER = ("code", "infra", "data", "docs")
-
-
-def _detect_profile(root):
-    """Score every marker rather than returning on the first one that matches.
-
-    First-match tested `docs` before `code`, and its markers included a bare
-    `docs` directory — so a Python project that documented itself came out as a
-    documentation project, which has no command candidates at all and fell back
-    to a judged check. Most repositories have a `docs/`, so most repositories
-    were mis-profiled into an ungated ledger.
-    """
-    scores = {}
-    for profile, marker, weight in _PROFILE_MARKERS:
-        if next(root.glob(marker), None) is not None:
-            scores[profile] = scores.get(profile, 0) + weight
-    if not scores:
-        return "code"
-    best = max(scores.values())
-    for profile in _PROFILE_ORDER:
-        if scores.get(profile) == best:
-            return profile
-    return "code"
-
-
-def _python_exe():
-    """An interpreter name that will still resolve when the gate runs.
-
-    `python` is absent from Homebrew and python.org installs, so proposing
-    `python -m pytest` had `_runnable` reject it and `init` wrote `verify: []` —
-    an ungated ledger, from the feature whose whole job is to configure the gate.
-    A bare name rather than `sys.executable` because ctx.yaml is committed and
-    shared; an absolute path from one machine is wrong on every other.
-    """
-    for candidate in ("python3", "python"):
-        if shutil.which(candidate):
-            return candidate
-    return sys.executable or "python3"
-
-
-# (marker, commands). Data rather than an if-ladder so adding an ecosystem is a
-# line here — and so `ctx.yaml` can extend it without a code change. Ordered by
-# how commonly the marker is the project's real entry point.
-_ECOSYSTEMS = (
-    ("go.mod", ("go build ./...", "go test ./...")),
-    ("Cargo.toml", ("cargo check",)),
-    ("pom.xml", ("mvn -q -B test-compile",)),
-    ("build.gradle", ("./gradlew --console=plain compileJava",)),
-    ("build.gradle.kts", ("./gradlew --console=plain compileKotlin",)),
-    ("Gemfile", ("bundle exec rake test",)),
-    ("composer.json", ("composer run-script test",)),
-    ("mix.exs", ("mix compile --warnings-as-errors",)),
-    ("Package.swift", ("swift build",)),
-    ("*.sln", ("dotnet build --nologo",)),
-    ("*.csproj", ("dotnet build --nologo",)),
-    ("dbt_project.yml", ("dbt compile",)),
-    ("main.tf", ("terraform validate",)),
-    ("Chart.yaml", ("helm lint .",)),
-)
-
-# Node is special-cased because what to run is inside package.json, not implied
-# by its presence — and the workspace tools each front the same scripts.
-_NODE_RUNNERS = (
-    ("pnpm-workspace.yaml", "pnpm"), ("pnpm-lock.yaml", "pnpm"),
-    ("yarn.lock", "yarn"), ("bun.lockb", "bun"),
-)
-
-
-def _node_candidates(root):
-    manifest = root / "package.json"
-    if not manifest.is_file():
-        return []
-    text = manifest.read_text(encoding="utf-8", errors="replace")
-    runner = "npm"
-    for marker, name in _NODE_RUNNERS:
-        if (root / marker).exists():
-            runner = name
-            break
-    run = f"{runner} run" if runner == "npm" else runner
-    out = []
-    if '"typecheck"' in text:
-        out.append(f"{run} typecheck")
-    elif '"tsc"' in text or (root / "tsconfig.json").exists():
-        out.append("npx tsc --noEmit")
-    if '"test"' in text:
-        out.append(f"{runner} test")
-    if '"lint"' in text:
-        out.append(f"{run} lint")
-    return out
-
-
-def _verify_candidates(root, profile, extra=()):
-    """Commands we would propose. Availability is checked; passing is not.
-
-    `extra` comes from `verify_candidates` in ctx.yaml, so a house toolchain no
-    table could anticipate — bazel, a wrapper script, a Makefile target — is a
-    config line rather than a fork.
-    """
-    out = []
-    if (root / "pyproject.toml").exists() or (root / "setup.py").exists():
-        out.append(f"{_python_exe()} -m pytest -q")
-    out.extend(_node_candidates(root))
-    for marker, commands in _ECOSYSTEMS:
-        if next(root.glob(marker), None) is not None:
-            out.extend(commands)
-    if (root / "Makefile").exists():
-        text = (root / "Makefile").read_text(encoding="utf-8", errors="replace")
-        for target in ("test", "check", "build"):
-            if re.search(rf"(?m)^{target}\s*:", text):
-                out.append(f"make {target}")
-                break
-    for entry in extra or ():
-        if str(entry).strip():
-            out.append(str(entry).strip())
-
-    seen, unique = set(), []
-    for command in out:
-        if command not in seen:
-            seen.add(command)
-            unique.append(command)
-    return unique
-
-
-# A module name, not a path and not an expression. Anything else is refused
-# rather than resolved: the string reaches here from a committed ctx.yaml.
-_MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-# Asked as a question about the *machine*, which means it must read nothing
-# from the repository. The name under test arrives in a cloned ctx.yaml, and
-# this probe was once the shortest path to arbitrary code execution in the
-# whole tool, so the defences are layered rather than singular:
+# Which argument of `args` holds the *plan* name, per command.
 #
-#   * the name is passed as `argv[1]`, never interpolated into source;
-#   * only its top-level component is resolved by the caller — `find_spec`
-#     on a dotted name *imports the parent package* to read its `__path__`,
-#     so `find_spec("evilpkg.sub")` executed `evilpkg/__init__.py`;
-#   * `sys.path[0]` is dropped, because `python -c` prepends the working
-#     directory there, and any other entry naming that directory goes too;
-#   * and the caller runs it in an empty scratch directory, so `sys.path[0]`
-#     was never the repository to begin with.
-#
-# `find_spec` locates a module without executing it, which is the entire point
-# of using it over an import — but only once the search path is trustworthy.
-_PROBE = (
-    "import importlib.util, os, sys; "
-    "here = os.getcwd(); "
-    "sys.path = [p for p in sys.path[1:] if p and os.path.abspath(p) != here]; "
-    "sys.exit(0 if importlib.util.find_spec(sys.argv[1]) else 1)"
-)
+# Six commands opened with the same four lines — resolve the plan, and if there
+# is none, say so and return an advisory zero — and they did not agree on where
+# the plan name came from. `plan-check` and `start` take the plan as their
+# positional `name`; the other four take a *unit* as `name` and the plan as
+# `--plan`. Deduplicating those four lines mechanically would have quietly
+# swapped one for the other at three call sites, which is why the mapping is
+# written out here by command rather than sniffed from the namespace: the
+# namespace shape is the thing that used to differ, so inferring from it is
+# inferring from the bug. `tests/test_advice.py` pins every entry against the
+# argument that call site read before the deduplication, and against what
+# argparse actually defines for that command.
+_PLAN_ARGUMENT = {
+    "plan-unit": "plan",
+    "plan-check": "name",
+    "start": "name",
+    "merge": "plan",
+    "unit": "plan",
+    # Routed through `_unit_or_report`, which passes the verb straight down.
+    "snapshot": "plan",
+    "review": "plan",
+    "findings": "plan",
+    "phase": "plan",
+}
 
 
-def _availability(command):
-    """(can_it_start, why_not). The reason is user-facing, so it must be true.
+def _plan_or_report(layout, args, verb):
+    """`(slug, None)`, or `(None, exit_code)` having already said there is none.
 
-    PATH alone is not enough for the interpreter forms: `python3 -m pytest` with
-    pytest absent exits 1 from an interpreter that is very much present, so a
-    PATH check accepts a command the gate can never actually run — and reports
-    the wrong reason when it does reject one.
-
-    Availability is decided *before* the trust store is consulted — `ctx doctor`
-    prints MISS for a command it will never run — so everything this function
-    does happens to strings the user has not reviewed yet. It therefore reads
-    the module name and runs nothing that the repository supplied.
-
-    A dotted name is answered for its top-level package only. `python3 -m
-    json.tool` on a machine with `json` is reported available even though
-    nothing checked `tool`; the alternative is importing `json` to ask, and the
-    cost of that trade is a command that fails at the gate instead of at the
-    probe, one layer later and with the trust store already passed.
+    The exit code is handed back rather than raised because "there is no plan
+    yet" is a true answer to the question, not a failure to answer it — it is
+    the enumerated `no-active-work` advisory, and `--strict` is the only thing
+    that turns it into a non-zero exit.
     """
-    parts = command.split()
-    if not parts:
-        return False, "empty command"
-    if shutil.which(parts[0]) is None:
-        return False, f"{parts[0]} is not on PATH"
-    if os.path.basename(parts[0]).startswith("python") and "-m" in parts[:3]:
-        module = parts[parts.index("-m") + 1:parts.index("-m") + 2]
-        if module:
-            top = module[0].split(".", 1)[0]
-            if not _MODULE_NAME.match(top):
-                return False, f"{parts[0]} cannot import {module[0]}"
-            try:
-                with tempfile.TemporaryDirectory() as elsewhere:
-                    ok = subprocess.run(
-                        [parts[0], "-c", _PROBE, top], capture_output=True,
-                        timeout=20, cwd=elsewhere,
-                    ).returncode == 0
-            except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
-                return False, f"could not probe {module[0]}: {exc}"
-            if not ok:
-                return False, f"{parts[0]} cannot import {module[0]}"
-    return True, ""
+    try:
+        source = _PLAN_ARGUMENT[verb]
+    except KeyError:
+        raise KeyError(
+            f"{verb!r} has no entry in _PLAN_ARGUMENT — name the argument it "
+            f"reads the plan from before routing it through _plan_or_report"
+        ) from None
+    slug = _active_slug(layout, getattr(args, source, None), "plan")
+    if slug:
+        return slug, None
+    _echo("no active plan — /ctx:plan «slug» first")
+    return None, _advise("no-active-work")
 
 
-def _runnable(command):
-    return _availability(command)[0]
+# The detection table and the availability probe moved to `ctx/detect.py`:
+# they answer questions about the *machine*, read nothing from `.ctx/`, and
+# `availability` shells out, so a reviewer should be able to find all of that
+# blast radius in one file. The names below are the old private spellings,
+# kept because the audit suites pin them; everything in this module calls
+# `detect.<public name>` directly.
+_availability = detect.availability
+_detect_profile = detect.detect_profile
+_python_exe = detect.python_exe
+_runnable = detect.runnable
+_verify_candidates = detect.verify_candidates
 
 
 def _run(command, cwd, timeout):
@@ -456,10 +297,10 @@ def cmd_init(args):
     for directory in layout.dirs():
         directory.mkdir(parents=True, exist_ok=True)
 
-    profile = args.profile or _detect_profile(root)
+    profile = args.profile or detect.detect_profile(root)
     # Re-running init keeps any house commands already declared in ctx.yaml.
     existing = config_mod.load(layout) if layout.config.is_file() else {}
-    candidates = _verify_candidates(
+    candidates = detect.verify_candidates(
         root, profile, existing.get("verify_candidates") or []
     )
     # Candidates the ecosystem table produced are ours; candidates the ledger's
@@ -472,7 +313,7 @@ def cmd_init(args):
                    (existing.get("verify_candidates") or []) if str(entry).strip()}
     accepted, rejected, needs_review = [], [], []
     for command in candidates:
-        available, why = _availability(command)
+        available, why = detect.availability(command)
         if not available:
             rejected.append((command, why))
             continue
@@ -597,7 +438,8 @@ def cmd_status(args):
             _echo(f"   ! {problem}")
         if not problems:
             nxt = plan_mod.next_wave(layout, current["plan"])
-            dispatched, waiting = _wave_in_flight(layout, current["plan"], nxt)
+            dispatched, waiting = advice.wave_in_flight(
+                layout, current["plan"], nxt)
             if nxt and dispatched and not waiting:
                 _echo(f"   next: wave {nxt} is in flight — {len(dispatched)} unit(s) "
                       "dispatched, none left to start; review what comes back")
@@ -800,24 +642,6 @@ def cmd_promote(args):
     journal.append(layout, config, "promote", name, "to global store")
     _echo(f"promoted to {target}")
     return 0
-
-
-def _wave_in_flight(layout, slug, wave):
-    """(dispatched, waiting) — names of a wave's `running` and `pending` units.
-
-    Both lists are needed to tell "this wave has not been started" from "this
-    wave is out and nobody has reported back yet". Advising `/ctx:start` for
-    the second is a loop: the wave is dispatched, nothing about running it
-    again changes anything, and the answer never stops being the same command.
-    """
-    if not wave:
-        return [], []
-    grouped, problems = plan_mod.check(layout, slug)
-    if problems or wave not in grouped:
-        return [], []
-    members = [unit for unit in grouped[wave] if unit.status != "done"]
-    return ([unit.name for unit in members if unit.status == "running"],
-            [unit.name for unit in members if unit.status == "pending"])
 
 
 def _status_cell(status, unsealed=False):
@@ -1162,7 +986,7 @@ def cmd_doctor(args):
             _echo(f"  ok   {kind} (no command to probe)")
             continue
         command = str(entry.get("run") or "")
-        available, why = _availability(command)
+        available, why = detect.availability(command)
         if not available:
             _echo(f"  MISS {command} — {why}")
             problems += 1
@@ -1529,10 +1353,9 @@ def cmd_plan(args):
 
 def cmd_plan_unit(args):
     layout, config = _loaded(args)
-    slug = _active_slug(layout, args.plan, "plan")
-    if not slug:
-        _echo("no active plan — /ctx:plan «slug» first")
-        return _advise("no-active-work")
+    slug, code = _plan_or_report(layout, args, "plan-unit")
+    if slug is None:
+        return code
     path, fresh = plan_mod.scaffold_unit(
         layout, slug, args.name, objective=args.objective or "",
         tier=args.tier, owns=args.owns or [],
@@ -1545,10 +1368,9 @@ def cmd_plan_unit(args):
 def cmd_plan_check(args):
     """Validate, compute waves from depends_on, and derive plan.json."""
     layout, config = _loaded(args)
-    slug = _active_slug(layout, args.name, "plan")
-    if not slug:
-        _echo("no active plan — /ctx:plan «slug» first")
-        return _advise("no-active-work")
+    slug, code = _plan_or_report(layout, args, "plan-check")
+    if slug is None:
+        return code
 
     grouped, problems = plan_mod.check(layout, slug)
     if problems:
@@ -1675,10 +1497,9 @@ def _asked_for(args, flag, known, level):
 def cmd_start(args):
     """Print the dispatch brief for a wave. Spawns nothing itself."""
     layout, config = _loaded(args)
-    slug = _active_slug(layout, args.name, "plan")
-    if not slug:
-        _echo("no active plan — /ctx:plan «slug» first")
-        return _advise("no-active-work")
+    slug, code = _plan_or_report(layout, args, "start")
+    if slug is None:
+        return code
 
     level, units, problems, budget = dispatch.prepare(layout, config, slug, args.wave)
     if problems:
@@ -1877,10 +1698,8 @@ def cmd_start(args):
 
 def _unit_or_report(layout, args, verb):
     """(slug, unit) for a unit-scoped command, or (None, None) having said why."""
-    slug = _active_slug(layout, getattr(args, "plan", None), "plan")
-    if not slug:
-        _echo("no active plan — /ctx:plan «slug» first")
-        _advise("no-active-work")
+    slug, _code = _plan_or_report(layout, args, verb)
+    if slug is None:
         return None, None
     if not args.name:
         _echo(f"no unit name given. Units in plan {slug}:")
@@ -2190,10 +2009,9 @@ def _merge_note(ok, messages):
 def cmd_merge(args):
     """Land a unit's worktree branch. Refuses past a failed gate or stray writes."""
     layout, config = _loaded(args)
-    slug = _active_slug(layout, args.plan, "plan")
-    if not slug:
-        _echo("no active plan — /ctx:plan «slug» first")
-        return _advise("no-active-work")
+    slug, code = _plan_or_report(layout, args, "merge")
+    if slug is None:
+        return code
     if not args.name:
         _echo(f"no unit name given. Units in plan {slug}:")
         _list_units(layout, slug)
@@ -2265,10 +2083,9 @@ def cmd_worktree(args):
 def cmd_unit(args):
     """Focus a unit so the done-gate applies to it, or record its outcome."""
     layout, config = _loaded(args)
-    slug = _active_slug(layout, args.plan, "plan")
-    if not slug:
-        _echo("no active plan — /ctx:plan «slug» first")
-        return _advise("no-active-work")
+    slug, code = _plan_or_report(layout, args, "unit")
+    if slug is None:
+        return code
 
     if not args.name:
         _echo(f"no unit name given. Units in plan {slug}:")
@@ -2384,98 +2201,15 @@ def cmd_handoff(args):
 # phase 7 — hardening
 # --------------------------------------------------------------------------- #
 
-def _next_action(layout, config):
-    """(command, why). The one thing worth doing, from state alone.
-
-    Everything this reads was already on disk and already decidable; it was just
-    spread across `status`, `ask`, `plan-check` and `start`, so using the tool
-    meant knowing which level you were at and which command that level implied.
-    """
-    current = state.load(layout)
-    level = config_mod.normalise_level(current.get("level"))
-
-    behind, ahead = migrate_mod.pending(layout)
-    if ahead:
-        return "ctx migrate", "ledger files are newer than this plugin — upgrade it"
-    if behind:
-        return "ctx migrate", f"{len(behind)} ledger file(s) are on an older schema"
-
-    accepted = trust_mod.load(layout)
-    pending = [c for c, _s in trust_mod.declared(layout, config)
-               if not trust_mod.is_accepted(c, accepted)]
-    if pending:
-        return "ctx trust", (
-            f"{len(pending)} verify command(s) will not run until this machine "
-            "accepts them"
-        )
-
-    if level == "2":
-        spec = current.get("spec")
-        plan = current.get("plan")
-        if spec and not plan:
-            ready, blocking = spec_mod.ready(layout, spec)
-            if not ready:
-                return "/ctx:ask", (
-                    f"spec {spec} has {len(blocking)} unanswered blocking "
-                    "question(s); planning around them is the failure this exists "
-                    "to prevent"
-                )
-            return f"/ctx:plan {spec}", f"spec {spec} is ready to decompose"
-        if plan:
-            _grouped, problems = plan_mod.check(layout, plan)
-            if problems:
-                return "/ctx:doctor", (
-                    f"plan {plan} has {len(problems)} problem(s); nothing "
-                    "dispatches until they are fixed — `ctx plan-check` names them"
-                )
-            unit = work.claim()[0] or current.get("unit")
-            if unit:
-                return "/ctx:verify", f"unit {unit} is in progress — run its gate"
-            wave = plan_mod.next_wave(layout, plan)
-            if wave:
-                # A wave whose units are all `running` has been dispatched
-                # already. Saying `/ctx:start` again would be advice that never
-                # changes anything and never stops being given — and it used to
-                # cost more than a wasted command, because a second `ctx start`
-                # overwrote the very baselines the review needed.
-                dispatched, waiting = _wave_in_flight(layout, plan, wave)
-                if dispatched and not waiting:
-                    return f"/ctx:review {dispatched[0]}", (
-                        f"wave {wave} is in flight — {len(dispatched)} unit(s) "
-                        f"dispatched and not yet done ({', '.join(dispatched)}); "
-                        "review what came back instead of dispatching again"
-                    )
-                return "/ctx:start", f"plan {plan} has wave {wave} ready to dispatch"
-            return "/ctx:handoff", f"plan {plan} is complete — write the resume packet"
-        return "/ctx:spec", "at L2 with nothing active"
-
-    if level == "1":
-        task = current.get("task")
-        if not task:
-            return "/ctx:task", "at L1 with no task file"
-        item = work.active(layout, current)
-        if item is None:
-            return "/ctx:task", f"task {task} has no file on disk"
-        attempts = (current.get("attempts") or {}).get(item.attempt_key, 0)
-        if attempts:
-            return "/ctx:verify", (
-                f"the gate has blocked {task} {attempts} time(s) — see what is failing"
-            )
-        return "/ctx:verify", f"task {task} is active — run its gate when you are done"
-
-    recent = journal.recent_paths(layout, 3)
-    if recent:
-        return "/ctx:resume", "at L0 with recent work — pick up where you left off"
-    return "/ctx:task «goal»", (
-        "at L0 with nothing recorded. Stay here for anything you could finish in "
-        "one sitting; escalate only when criteria are worth writing down"
-    )
+# `advice.next_action` — the whole decision tree, now callable without a
+# parser. The old private name is kept because the audit suite pins it.
+_next_action = advice.next_action
 
 
 def cmd_next(args):
     """Name the single most useful next action, and why."""
     layout, config = _loaded(args)
-    command, why = _next_action(layout, config)
+    command, why = advice.next_action(layout, config)
     _echo(f"next: {command}")
     _echo(f"      {why}")
     return 0
@@ -2850,7 +2584,7 @@ def cmd_ci(args):
         if entry.get("kind") != "cmd":
             continue
         command = str(entry.get("run") or "")
-        available, why = _availability(command)
+        available, why = detect.availability(command)
         report(f"available: {command}", available, why)
     if not entries:
         _echo("  none configured")

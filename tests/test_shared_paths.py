@@ -34,8 +34,9 @@ PACKAGE = Path(__file__).resolve().parent.parent / "ctx"
 # of the enumeration below is that a *new* module is either listed here or the
 # completeness test goes red, and a glob would quietly absorb it instead.
 ALL_MODULES = (
-    "__init__.py", "__main__.py", "atomic.py", "briefing.py", "bundle.py",
-    "cli.py", "complexity.py", "config.py", "contract.py", "dispatch.py",
+    "__init__.py", "__main__.py", "advice.py", "atomic.py", "briefing.py",
+    "bundle.py", "cli.py", "complexity.py", "config.py", "contract.py",
+    "detect.py", "dispatch.py",
     "findings.py", "frontmatter.py", "hooks.py", "journal.py", "lock.py",
     "migrate.py", "miniyaml.py", "paths.py", "phases.py", "plan.py",
     "redact.py", "review.py", "snapshot.py", "spec.py", "state.py",

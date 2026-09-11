@@ -27,7 +27,16 @@ from . import config as config_mod, verify
 # breakdown label names which one actually fired, because "rubric=2.0" and
 # "human=2.0" are printed on the dispatch line as different diagnoses even
 # though they cost the same.
-_JUDGED_KINDS = tuple(verify.JUDGED)
+#
+# Which kinds those are is asked of `verify` at the moment it is needed, never
+# frozen here. `_JUDGED_KINDS = tuple(verify.JUDGED)` at import time used to
+# snapshot the two kinds that existed when this module was first imported, so a
+# judged kind registered into `verify.KIND_TABLE` afterwards was invisible to
+# scoring: the unit that declared it was tiered as though its gate were
+# mechanical, and the `judged_verify` weight silently never applied. That is a
+# direct hole in the claim `KIND_TABLE` exists to make — that a new kind is one
+# dict entry and every consumer sees it — and a frozen tuple is exactly the
+# shape of consumer that makes the claim false.
 
 
 def _weights(config):
@@ -111,7 +120,7 @@ def score(config, unit):
 
     judged = sorted({
         check.get("kind") for check in (unit.checks or [])
-        if isinstance(check, dict) and check.get("kind") in _JUDGED_KINDS
+        if isinstance(check, dict) and check.get("kind") in verify.JUDGED
     })
     if judged:
         breakdown += _term("+".join(judged), weights["judged_verify"])
