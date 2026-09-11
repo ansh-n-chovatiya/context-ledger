@@ -17,15 +17,24 @@ import tempfile
 import traceback
 
 from . import (
-    __version__, briefing, bundle, complexity as complexity_mod,
+    __version__, atomic, briefing, bundle, complexity as complexity_mod,
     config as config_mod, contract as contract_mod, dispatch, frontmatter,
-    journal, migrate as migrate_mod, paths, phases as phases_mod,
+    journal, lock, migrate as migrate_mod, paths, phases as phases_mod,
     plan as plan_mod, spec as spec_mod,
     findings as findings_mod, review as review_mod, snapshot as snapshot_mod,
     state, telemetry, trust as trust_mod, verify, work, worktree,
 )
 
-GITIGNORE = "runtime/\n"
+# `journal/DIGEST.md` is a *derived* file — `journal.write_digest` regenerates it
+# from the day files on every hook fire — and it is rewritten by every author on
+# every session. Tracked, it is a guaranteed conflict on every merge of two
+# branches that both worked; ignored, it costs nothing, because anything it
+# contains can be rebuilt with `ctx digest`.
+GITIGNORE = "runtime/\njournal/DIGEST.md\n"
+
+# The line above, on its own, for the advisory `ctx doctor` prints at someone
+# else's project — where nothing here may edit a `.gitignore`.
+DIGEST_IGNORE_LINE = "journal/DIGEST.md"
 
 TASK_TEMPLATE = """## Objective
 {objective}
@@ -507,9 +516,9 @@ def cmd_init(args):
         settings["redact"] = []
         settings["verify_candidates"] = list(existing.get("verify_candidates") or [])
         settings["verify"] = accepted or config_mod.PROFILES.get(profile, [])
-        layout.config.write_text(config_mod.render(settings), encoding="utf-8")
+        atomic.write_text(layout.config, config_mod.render(settings))
 
-    (layout.root / ".gitignore").write_text(GITIGNORE, encoding="utf-8")
+    atomic.write_text(layout.root / ".gitignore", GITIGNORE)
     config = config_mod.load(layout)
     # Accept only what *this run* detected and is about to print, never
     # `config["verify"]`. On a pre-existing ledger those are different lists: the
@@ -994,6 +1003,84 @@ def _home_relative(path):
     return "~" + text[len(home):] if home and text.startswith(home) else text
 
 
+_ADR_NUMBER = re.compile(r"^(\d{4})-")
+
+
+def duplicate_adrs(layout):
+    """`[(number, [names])]` for every ADR id that more than one file claims.
+
+    ADR numbers are allocated local-max+1 (`spec.next_adr_number`), which is the
+    right trade — a padded sequence is what makes `0007-…` citable in prose —
+    and it is not collision-free across branches. Two branches each write
+    `0003-*.md` under different titles, git sees two new files and no conflict,
+    and the merge lands two ADR 0003s. Nothing downstream errors; the numbering
+    just quietly stops meaning anything.
+
+    Detection, therefore, rather than prevention: the allocator is unchanged and
+    the duplicate is named the moment `doctor` or `ci` next runs.
+    """
+    by_number = {}
+    try:
+        found = sorted(layout.decisions.glob("*.md"))
+    except OSError:
+        return []
+    for path in found:
+        match = _ADR_NUMBER.match(path.name)
+        if match:
+            by_number.setdefault(int(match.group(1)), []).append(path.name)
+    return [(number, names) for number, names in sorted(by_number.items())
+            if len(names) > 1]
+
+
+def _git_tracked(layout, path):
+    """Whether git has `path` in its index. Reads; never writes.
+
+    `--error-unmatch` is the only form that answers for one exact path: a bare
+    `git ls-files <path>` exits 0 and prints nothing for an untracked file,
+    which is indistinguishable from a failure at the exit code alone.
+    """
+    root = layout.root.parent
+    if not (root / ".git").exists():
+        return False
+    try:
+        completed = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", str(path)],
+            cwd=str(root), capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False  # no git, or it would not answer: not a claim either way
+    return completed.returncode == 0
+
+
+def _digest_advisory(layout):
+    """Lines advising that a tracked `DIGEST.md` will conflict, or `[]`.
+
+    Advisory, and deliberately not a failure. `DIGEST.md` is derived — every
+    session regenerates it from the day files — so two branches that both did
+    any work conflict on it every single time, and the conflict carries no
+    information because `ctx digest` rebuilds either side.
+
+    **Nothing here runs `git rm`.** Untracking a file changes what a commit in
+    somebody else's repository contains, and a diagnostic command that quietly
+    stages a deletion is a worse surprise than the conflict it saves. The tool
+    says what to type; the human types it.
+    """
+    if not _git_tracked(layout, layout.digest):
+        return []
+    return [
+        f"  warn {layout.rel(layout.digest)} is tracked by git — it is "
+        "regenerated on every",
+        "       session, so every merge of two working branches conflicts on "
+        "it, and the",
+        "       conflict says nothing `ctx digest` could not rebuild. To stop "
+        "that, run:",
+        f"         git rm --cached {layout.rel(layout.digest)}",
+        f"         echo {DIGEST_IGNORE_LINE} >> {layout.rel(layout.root)}/.gitignore",
+        "       Advisory, not a failure: nothing here will edit your repository "
+        "for you.",
+    ]
+
+
 def _doctor_policy(layout):
     """Where the active settings came from, and anything a lock refused.
 
@@ -1131,6 +1218,26 @@ def cmd_doctor(args):
         for path in drifted[:4]:
             _echo(f"       {layout.rel(path)}")
         _echo("       that is expected for finished work; re-scaffold if it is not")
+
+    _echo("## decisions")
+    duplicates = duplicate_adrs(layout)
+    if duplicates:
+        for number, names in duplicates:
+            _echo(f"  BAD  {len(names)} files claim ADR {number:04d}: "
+                  + ", ".join(names))
+            problems += 1
+        _echo("       Two branches each allocated the next free number and "
+              "merged without a")
+        _echo("       conflict. Renumber all but one — the id is what every "
+              "reference cites.")
+    else:
+        _echo("  ok   every ADR id is claimed by exactly one file")
+
+    advisory = _digest_advisory(layout)
+    if advisory:
+        _echo("## journal digest")
+        for line in advisory:
+            _echo(line)
 
     _echo("## plugin footprint")
     _echo("  the briefing above is the hook cost only; the plugin's own always-on")
@@ -1487,6 +1594,63 @@ def cmd_plan_check(args):
     return 0
 
 
+def _adopt_disk_state(layout, slug, units):
+    """Replace each unit's parsed document with what is on disk *now*.
+
+    A `Unit` is a whole document held in memory, and `Unit.set` writes that
+    whole document back. So the value of one is only as fresh as the moment it
+    was parsed, and every field it is not being asked to change is carried
+    along for the ride — including fields another writer has since added.
+
+    Units not found on disk are left exactly as they are: a unit file that was
+    deleted mid-command is not a reason to lose the write that was about to be
+    made to it.
+    """
+    fresh = {unit.name: unit for unit in plan_mod.load_units(layout, slug)}
+    for unit in units:
+        found = fresh.get(unit.name)
+        if found is not None:
+            unit.doc = found.doc
+    return units
+
+
+def _set_unit_status(layout, slug, units, status):
+    """Write `status` onto each unit, over the document that is on disk now.
+
+    The read-modify-write this closes is not a narrow one. Between the moment a
+    unit file is parsed and the moment `unit.set` writes it back whole, this
+    process may have spent four minutes running a verify command (`ctx unit
+    --status done`) or created a worktree (`ctx start --worktree`) — and
+    `worktree._record_fork_point` writes `base_branch` into that same file
+    through a *separate* read. Writing the stale document back erases it, which
+    silently disarms the merge-target guard the whole of `worktree.py` is built
+    around: `merge` reads `base_branch`, finds nothing, and merges into
+    whatever HEAD happens to be on.
+
+    The lock spans the re-read and the write and nothing else. The expensive
+    part — the gate, the worktree creation — deliberately runs outside it:
+    holding `plan-<slug>` for the length of the slowest verify command would
+    block every sibling in a concurrent wave, which is a worse defect than the
+    one being fixed. `lock.held` is not re-entrant and the findings and phases
+    mutators take this same lock internally, so nothing that can reach one of
+    them may be called from inside this span.
+
+    The caller's verdict wins over the disk for `status` and only for `status`.
+    A sibling process that wrote `status: pending` while the gate was deciding
+    `done` does not get to overturn the gate; it does get to keep every other
+    field it wrote.
+    """
+    with lock.held(layout, f"plan-{slug}"):
+        _adopt_disk_state(layout, slug, units)
+        for unit in units:
+            # Compared against the raw frontmatter value, not `unit.status`,
+            # which normalises anything unrecognised to `pending` — a file
+            # reading `status: half-done` must be corrected, not skipped.
+            if str(unit.doc.meta.get("status") or "") != status:
+                unit.set(status=status)
+    return units
+
+
 def _already_dispatched(layout, slug, unit):
     """Whether this unit has already been sent out once.
 
@@ -1605,9 +1769,14 @@ def cmd_start(args):
     # `pending` until an explicit `--status done` — so a re-run of `ctx start`
     # could not tell work that had never been sent out from work that was
     # halfway through, and treated both as fresh.
-    for unit in units:
-        if unit.status != "running":
-            unit.set(status="running")
+    #
+    # Re-read first. `prepare_worktrees` above has already written `base_branch`
+    # into some of these very files, through its own fresh read — so `units`,
+    # parsed by `dispatch.prepare` before any of that happened, is stale, and
+    # writing it back whole erased the fork point on the same line that recorded
+    # the dispatch. That was not a race: it happened every time `ctx start
+    # --worktree` ran, in one process.
+    _set_unit_status(layout, slug, units, "running")
 
     # The snapshot has to exist before the work does, and dispatch is the only
     # moment we know that is true. Taking it here is what lets `ctx review` need
@@ -2116,6 +2285,26 @@ def _verify_plan(layout, config, slug):
     return 1 if failed else 0
 
 
+def _worktree_plan(layout, args):
+    """Which plan's worktree `remove` should act on, or None to let it resolve.
+
+    `--plan` is explicit and always wins. Otherwise the active plan answers —
+    but only when it actually has a tree by that name. That guard is the whole
+    point: handing `remove` a plan that has no such worktree would turn the
+    ordinary "I am working on plan-a, discard 03-rotate" into a path that does
+    not exist, where the honest answer is the one `worktree._resolve` already
+    gives. So the common case resolves without the ambiguity scan, and the scan
+    stays reachable — and stays the thing that refuses — for every case the
+    active plan cannot answer.
+    """
+    if getattr(args, "plan", None):
+        return args.plan
+    slug = (state.load(layout) or {}).get("plan")
+    if slug and args.name and worktree.path_for(layout, slug, args.name).is_dir():
+        return slug
+    return None
+
+
 def cmd_worktree(args):
     layout, config = _loaded(args)
     if args.action == "list":
@@ -2127,7 +2316,8 @@ def cmd_worktree(args):
             _echo(f"{name:<24} {branch:<36} {path}")
         return 0
 
-    error = worktree.remove(layout, args.name, force=args.force)
+    error = worktree.remove(layout, args.name, plan_slug=_worktree_plan(layout, args),
+                            force=args.force)
     if error:
         _echo(f"could not remove: {error}")
         _echo("pass --force to discard uncommitted work in the worktree")
@@ -2362,7 +2552,10 @@ def cmd_unit(args):
                 for line in lines:
                     _echo(line)
 
-    unit.set(status=args.status)
+    # The gate above ran outside any lock and may have taken minutes. Re-read
+    # under `plan-<slug>` before writing, so the verdict lands on the document
+    # as it is now rather than as it was before the checks started.
+    _set_unit_status(layout, slug, [unit], args.status)
     if args.status == "done":
         state.update(layout, unit=None)
         state.clear_attempts(layout, unit.name)
@@ -2844,6 +3037,21 @@ def cmd_ci(args):
         report("every verify command is accepted on this machine", not pending,
                f"{len(pending)} awaiting review — run `ctx trust`")
 
+    _echo("## decisions")
+    duplicates = duplicate_adrs(layout)
+    report("every ADR id is claimed by exactly one file", not duplicates,
+           "; ".join(f"{len(names)} files claim ADR {number:04d}: "
+                     + ", ".join(names) for number, names in duplicates))
+
+    advisory = _digest_advisory(layout)
+    if advisory:
+        # Reported, never failed. An existing project that upgrades ctx must not
+        # find its pipeline red over a file that has been tracked since the day
+        # it ran `ctx init`.
+        _echo("## journal digest")
+        for line in advisory:
+            _echo(line)
+
     if current.get("spec"):
         _echo("## spec")
         ready, blocking = spec_mod.ready(layout, current["spec"])
@@ -3075,6 +3283,12 @@ def build_parser():
     p = sub.add_parser("worktree", help="list or discard ctx worktrees")
     p.add_argument("action", choices=["list", "remove"])
     p.add_argument("name", nargs="?", default=None)
+    # Spelled as `ctx merge --plan` is. Without it the ambiguity refusal that
+    # `worktree.remove` raises — "pass --plan to say which one to discard" —
+    # named a flag the subparser did not define, so the one message that told
+    # the user what to do could not be acted on.
+    p.add_argument("--plan", default=None,
+                   help="which plan's worktree to discard, when two share a name")
     p.add_argument("--force", action="store_true",
                    help="discard uncommitted work in the worktree")
     p.set_defaults(func=cmd_worktree)

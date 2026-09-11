@@ -408,7 +408,7 @@ class TestInit(Fixture):
             self.assertTrue(directory.is_dir(), directory)
         self.assertEqual(
             (self.layout.root / ".gitignore").read_text(encoding="utf-8").strip(),
-            "runtime/",
+            "runtime/\njournal/DIGEST.md",
         )
         self.assertTrue(self.layout.digest.is_file())
         self.assertTrue(self.layout.context_index.is_file())

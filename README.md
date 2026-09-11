@@ -436,10 +436,10 @@ ctx unit 03-rotate          # arms the done-gate for this unit
 ```
 
 `ctx start --worktree` opts into physical isolation instead: each `session` unit
-gets a temporary checkout and branch under `.ctx/runtime/worktrees/`.
+gets a temporary checkout and branch under `.ctx/runtime/worktrees/<plan>/`.
 
 ```
-cd .ctx/runtime/worktrees/03-rotate
+cd .ctx/runtime/worktrees/auth-rotation/03-rotate
 ctx unit 03-rotate
 claude
 ```
@@ -1258,8 +1258,13 @@ One `grep` for "overrode the gate" finds every override, whichever door it used.
       worktrees/              session-tier checkouts
 ```
 
-**Only `runtime/` is gitignored.** Everything else — including `trust.lock` — is
-authored to be reviewed in a pull request. The layout is shaped by one hard
+**`runtime/` and `journal/DIGEST.md` are gitignored.** Everything else —
+including `trust.lock` — is authored to be reviewed in a pull request. The
+digest is the one exception because it is *derived*: it is a mechanical tail of
+`journal/`, regenerated at session end and on compaction, so two agents finishing
+at once conflict on a file neither of them authored. `ctx doctor` reports a
+still-tracked `DIGEST.md` and prints the two commands to untrack it; it never
+runs them for you. The layout is shaped by one hard
 requirement: **concurrent agents must never write the same file.** There is no
 central mutable state blob; unit status lives in per-unit frontmatter and the
 journal is partitioned by date.

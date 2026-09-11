@@ -100,11 +100,87 @@ class TestContention(Fixture):
         total = self._run(_LOCKED_BODY.format(name="plan-demo"))
         self.assertEqual(total, EXPECTED)
 
-    def test_the_same_workload_unlocked_loses_updates(self):
-        """The positive control. If this ever reached 320 the test above would
-        be asserting that a race happens not to have fired today."""
+    def test_the_same_workload_unlocked_does_not_serialise(self):
+        """The statistical half of the control: the unlocked run does not land
+        on a correct count.
+
+        It asserts inequality, not `assertLess`, and the direction matters. An
+        unlocked run can finish *above* EXPECTED as well as below, because the
+        write is not atomic either: two workers both open with truncation, and a
+        shorter value written over a longer one leaves the previous value's
+        trailing digits behind — 45 landing on 320 reads back as 450. This test
+        asserted `< EXPECTED` and went red at 322 under load, which is the
+        control reporting the bug it exists to find as a test failure.
+
+        The deterministic proof of the lost update is the test below; this one
+        only says the unserialised workload is not a correct serialisation.
+        """
         total = self._run(_UNLOCKED_BODY)
-        self.assertLess(total, EXPECTED)
+        self.assertNotEqual(
+            total, EXPECTED,
+            "the unlocked workload produced a correct count, so the locked "
+            "test above is asserting that a race happened not to fire today",
+        )
+
+    def test_without_the_lock_one_writer_erases_the_other(self):
+        """The deterministic control. No timing, no luck, no load sensitivity.
+
+        Two workers are held at a rendezvous until both have read the same
+        value, so the lost update is forced rather than raced. Both then write
+        `value + 1`. Serialised that is 2; unserialised the second save erases
+        the first and it is 1.
+        """
+        counter = self.layout.runtime / "counter.json"
+        self.layout.runtime.mkdir(parents=True, exist_ok=True)
+        counter.write_text(json.dumps(0))
+        gate = self.layout.runtime / "rendezvous"
+        gate.mkdir()
+
+        script = """
+import json, sys, time
+from pathlib import Path
+sys.path.insert(0, {repo!r})
+
+counter = Path({counter!r})
+gate = Path({gate!r})
+me = {me!r}
+
+value = json.loads(counter.read_text())
+(gate / ("read-" + me)).write_text("")
+
+deadline = time.time() + 30
+while time.time() < deadline:
+    if len(list(gate.glob("read-*"))) == 2:
+        break
+    time.sleep(0.01)
+else:
+    raise SystemExit("timed out waiting for the other reader")
+
+counter.write_text(json.dumps(value + 1))
+"""
+        workers = [
+            subprocess.Popen(
+                [sys.executable, "-c", script.format(
+                    repo=REPO, counter=str(counter), gate=str(gate), me=name)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            for name in ("a", "b")
+        ]
+        for worker in workers:
+            _out, err = worker.communicate(timeout=60)
+            self.assertEqual(worker.returncode, 0, err.decode())
+
+        # Assert the race actually happened before asserting its outcome, so
+        # the test cannot pass by never having raced.
+        self.assertEqual(
+            sorted(path.name for path in gate.glob("read-*")),
+            ["read-a", "read-b"],
+            "both workers must have read before either wrote",
+        )
+        self.assertEqual(
+            json.loads(counter.read_text()), 1,
+            "both writers saw 0 and both wrote 1, so one update must be lost — "
+            "if this is 2 the unserialised path is somehow serialising",
+        )
 
     def test_a_plan_name_locks_under_runtime_locks(self):
         with lock.held(self.layout, "plan-demo") as taken:
