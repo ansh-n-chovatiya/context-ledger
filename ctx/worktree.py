@@ -26,7 +26,7 @@ the unit was planned against.
 import os
 import subprocess
 
-from . import plan as plan_mod, verify
+from . import paths, plan as plan_mod, verify
 
 WORKTREE_SUBDIR = "worktrees"
 BRANCH_PREFIX = "ctx/"
@@ -127,9 +127,6 @@ def check_repo(layout):
     return ""
 
 
-LEDGER_PREFIX = ".ctx/"
-
-
 def _is_ledger(path):
     """Ledger bookkeeping, excluded from merge preflight.
 
@@ -139,7 +136,7 @@ def _is_ledger(path):
     merge-safe by construction (append-only journal partitioned by date, one file
     per unit, immutable ADRs), which is exactly what §03 of the design claimed.
     """
-    return str(path).replace("\\", "/").startswith(LEDGER_PREFIX)
+    return str(path).replace("\\", "/").startswith(paths.LEDGER_PREFIX)
 
 
 def dirty_paths(layout):

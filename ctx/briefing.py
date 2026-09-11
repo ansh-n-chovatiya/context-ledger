@@ -85,7 +85,7 @@ def _plan_blocks(layout, state):
         return _spec_blocks(layout, state)
     if not unit:
         return [f"plan {plan} · no unit dispatched · /ctx:status for the board"]
-    path = layout.plans / plan / "units" / f"{unit}.md"
+    path = layout.unit_file(plan, unit)
     doc = frontmatter.read(path)
     if doc is None:
         return [f"plan {plan} · unit file missing at {layout.rel(path)}"]

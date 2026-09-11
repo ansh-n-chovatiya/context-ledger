@@ -46,7 +46,25 @@ DEFAULTS = {
         # killed hook returns no decision, so the gate silently stopped applying.
         "timeout_seconds": 240,
     },
-    "plan": {"wave_budget_tokens": 250000},
+    "plan": {
+        "wave_budget_tokens": 250000,
+        # Two different failure modes need two different caps. A wave can be
+        # affordable and still be too *wide*: twelve 5k units clear the token
+        # budget above with room to spare, and still ask one orchestrating
+        # session to hold twelve concurrent Task calls, twelve reports and
+        # twelve review packages at once — which is the context flatness the
+        # whole dispatch discipline exists to protect.
+        #
+        # 8 rather than something tighter because the cap has to be checked
+        # against history, not taste: the widest wave this project has itself
+        # dispatched is 4 units, and a shipped default that would have refused
+        # the tool's own past waves is a default every user immediately edits
+        # — at which point it has taught them to ignore it. 8 is twice that
+        # high-water mark, so it refuses the runaway twenty-unit wave while
+        # leaving normal practice untouched. 0 disables the check, exactly as
+        # it does for `wave_budget_tokens`.
+        "max_wave_units": 8,
+    },
     # Which model each dispatched role runs on. Declared here rather than left to
     # the dispatching session's judgement: a Task call with no model named
     # inherits the caller's, which is the most capable and most expensive one

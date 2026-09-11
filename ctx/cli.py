@@ -2943,11 +2943,101 @@ def cmd_budget(args):
     return 0
 
 
+def _record_spend(layout, config, args):
+    """`ctx telemetry --spend «tokens» --unit «name»`.
+
+    Spend arrives by report, not by observation: this process cannot see what
+    a model was billed, so the only honest source is the session that ran the
+    unit. That is why this is a command and not a measurement, and why every
+    display of the result is labelled partial.
+
+    Exits 0 even when the record could not be written. Telemetry never breaks
+    a session — that guarantee is older than this command and this command
+    does not get to be the exception — so a runtime directory that cannot be
+    written costs a data point and says so on stderr, rather than failing a
+    wave that already happened.
+    """
+    name = (args.unit or "").strip()
+    if not name:
+        _warn("--spend needs --unit «name»: a token count attached to nothing "
+              "cannot be compared with anything, which is the only reason to "
+              "record it")
+        return 2
+    try:
+        tokens = int(str(args.spend).replace(",", "").replace("_", "").strip())
+    except ValueError:
+        _warn(f"--spend {args.spend!r} is not a number of tokens")
+        return 2
+    if tokens < 0:
+        _warn("--spend cannot be negative — a negative spend is not a smaller "
+              "measurement, it is an absent one")
+        return 2
+    if not telemetry.enabled(config):
+        _echo("telemetry is off (telemetry.enabled: false in ctx.yaml) — "
+              "nothing recorded")
+        return 0
+    if not telemetry.record_spend(layout, name, tokens):
+        _warn("spend not recorded — .ctx/runtime/ could not be written. This is "
+              "machine-local measurement and never fails a run, so the number "
+              "is lost and nothing else is.")
+        return 0
+    _echo(f"recorded {tokens:,} tokens against {name}")
+    for line in telemetry.SPEND_NOTICE:
+        _echo(f"  {line}")
+    return 0
+
+
+def _print_reported_spend(layout, config, args):
+    """Reported spend beside the predicted complexity score, unit by unit.
+
+    The pairing is the whole point. A complexity weight is currently checked
+    only against the reasoning that produced it; putting what a unit was
+    reported to cost next to what its score predicted is the first thing that
+    can disagree with that reasoning. It is deliberately not a verdict — the
+    sample is partial by construction, which is what `SPEND_NOTICE` says
+    directly above every one of these tables.
+
+    Absent and zero are rendered differently on purpose: "unreported" is not a
+    small number, and a zero printed for a unit nobody reported would be read
+    as one the next time somebody tunes the weights.
+    """
+    spend = telemetry.spend_by_unit(layout)
+    plan_slug = args.plan or state.load(layout).get("plan")
+    scored = {}
+    if plan_slug:
+        grouped, _problems = plan_mod.check(layout, plan_slug)
+        for level in sorted(grouped):
+            for unit in grouped[level]:
+                scored[unit.name], _breakdown = complexity_mod.score(config, unit)
+    if not scored and not spend:
+        return
+
+    _echo("")
+    _echo("## reported spend vs predicted score"
+          + (f" — plan {plan_slug}" if plan_slug else ""))
+    for line in telemetry.SPEND_NOTICE:
+        _echo(f"  {line}")
+    if not plan_slug:
+        _echo("  no active plan — predicted scores unavailable; name one with "
+              "`ctx telemetry --plan «slug»`")
+    _echo(f"  {'unit':<32}{'score':>7}{'reported tokens':>18}{'reports':>9}")
+    for name in sorted(set(scored) | set(spend)):
+        score = scored.get(name)
+        entry = spend.get(name)
+        score_text = f"{score:.1f}" if score is not None else "-"
+        tokens_text = f"{entry['tokens']:,}" if entry else "unreported"
+        reports_text = str(entry["reports"]) if entry else "-"
+        _echo(f"  {name:<32}{score_text:>7}{tokens_text:>18}{reports_text:>9}")
+
+
 def cmd_telemetry(args):
-    layout = _layout(args)
+    layout, config = _loaded(args)
+    if args.spend is not None:
+        return _record_spend(layout, config, args)
     rows = telemetry.summarise(layout)
     if not rows:
         _echo("no telemetry recorded yet — hooks write it as they run")
+        _print_reported_spend(layout, config, args)
         return 0
     _echo(f"{'event':<20}{'n':>5}{'median ms':>11}{'max ms':>9}{'median chars':>14}")
     for row in rows:
@@ -2969,6 +3059,7 @@ def cmd_telemetry(args):
         _echo("slow hooks (>1s worst case): " + ", ".join(r["event"] for r in slow))
         _echo("SessionStart and UserPromptSubmit sit in front of every turn — a slow")
         _echo("one is felt directly. Check hook-errors.log and the verify commands.")
+    _print_reported_spend(layout, config, args)
     return 0
 
 
@@ -3317,7 +3408,19 @@ def build_parser():
     p.add_argument("--plan", default=None)
     p.set_defaults(func=cmd_budget)
 
-    p = sub.add_parser("telemetry", help="hook durations and injected briefing sizes")
+    p = sub.add_parser("telemetry",
+                       help="hook durations, briefing sizes, reported spend")
+    # Spend is reported, never observed: this process cannot see a model's
+    # token usage, so the orchestrator that ran the wave hands the number over
+    # afterwards. Kept as a flag on `telemetry` rather than its own command
+    # because it writes to, and is read back out of, exactly the same file.
+    p.add_argument("--spend", default=None, metavar="TOKENS",
+                   help="record what --unit actually cost, as reported by its "
+                        "runner (partial data by construction)")
+    p.add_argument("--unit", default=None, metavar="NAME",
+                   help="the unit --spend refers to")
+    p.add_argument("--plan", default=None,
+                   help="pair reported spend with this plan's predicted scores")
     p.set_defaults(func=cmd_telemetry)
 
     p = sub.add_parser("ci", help="every headless check in one exit code")

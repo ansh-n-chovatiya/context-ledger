@@ -28,7 +28,7 @@ import shutil
 import time
 from pathlib import Path
 
-from . import atomic
+from . import atomic, paths
 
 SNAPSHOT_SUBDIR = "snapshots"
 
@@ -147,12 +147,9 @@ def covers(relpath, patterns):
 # capture
 # --------------------------------------------------------------------------- #
 
-LEDGER_PREFIX = ".ctx/"
-
-
 def is_ledger(path):
     """Ledger bookkeeping: changed by ctx itself, owned by no unit."""
-    return str(path).replace("\\", "/").startswith(LEDGER_PREFIX)
+    return str(path).replace("\\", "/").startswith(paths.LEDGER_PREFIX)
 
 
 def is_binary(data):
@@ -357,10 +354,6 @@ def stored_text(layout, key, relpath):
 
 def discard(layout, key):
     shutil.rmtree(snapshot_dir(layout, key), ignore_errors=True)
-
-
-def discard_all(layout):
-    shutil.rmtree(root_dir(layout), ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- #

@@ -104,7 +104,7 @@ def active(layout, current=None):
     if claimed_unit:
         plan = claimed_plan or current.get("plan")
         if plan:
-            path = layout.plans / plan / "units" / f"{claimed_unit}.md"
+            path = layout.unit_file(plan, claimed_unit)
             doc = frontmatter.read(path)
             if doc:
                 return Work(claimed_unit, path, doc, "2")
@@ -116,7 +116,7 @@ def active(layout, current=None):
         return Work(slug, path, doc, level) if doc else None
     if level == "2" and current.get("plan") and current.get("unit"):
         unit = current["unit"]
-        path = layout.plans / current["plan"] / "units" / f"{unit}.md"
+        path = layout.unit_file(current["plan"], unit)
         doc = frontmatter.read(path)
         return Work(unit, path, doc, level) if doc else None
     return None

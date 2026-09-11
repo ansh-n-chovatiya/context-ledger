@@ -12,6 +12,13 @@ from pathlib import Path
 CTX_DIRNAME = ".ctx"
 GLOBAL_DEFAULT = "~/.claude/ctx"
 
+# The repo-relative prefix every ledger path starts with, as it appears in a
+# diff or a scope pattern: forward slashes, no leading `./`. Derived from
+# `CTX_DIRNAME` rather than retyped — it lived as a `".ctx/"` literal in three
+# modules, so renaming the ledger directory would have moved one of them and
+# silently left the other two matching a directory that no longer exists.
+LEDGER_PREFIX = CTX_DIRNAME + "/"
+
 
 def global_root():
     """The store shared across projects, resolved on every call.
@@ -76,6 +83,17 @@ class Layout:
 
     def task_file(self, slug):
         return self.tasks / f"{slug}.md"
+
+    def unit_file(self, plan_slug, unit_name):
+        """`.ctx/plans/<plan_slug>/units/<unit_name>.md`.
+
+        `plan.units_dir` owns this shape; this accessor exists so the four
+        modules that only want to *read* a unit file do not each hand-build it
+        — and so a reader outside `plan.py` never has to know that the segment
+        is spelled `units`. `tests/test_shared_paths.py` asserts the two agree,
+        which is what keeps this from becoming a second definition.
+        """
+        return self.plans / plan_slug / "units" / f"{unit_name}.md"
 
     def journal_file(self, day):
         return self.journal / f"{day}.md"

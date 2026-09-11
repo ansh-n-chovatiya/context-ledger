@@ -20,3 +20,6 @@
 20:58 | spec | make-ctx-maintainable-and-documented | resolved: AUDIT.md and PRODUCTION-AUDIT.md
 20:59 | plan | make-ctx-maintainable-and-documented | opened (0 unit stubs)
 21:00 | plan | make-ctx-maintainable-and-documented | checked, graph r1
+21:01 | start | make-ctx-maintainable-and-documented | wave 1, 2 unit(s), 0 worktree(s), 2 snapshot(s), 0 already in flight
+21:11 | unit | 01-shared-paths-and-dead-code | done
+21:12 | unit | 02-caps-and-reported-spend | done

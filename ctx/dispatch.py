@@ -135,6 +135,19 @@ def prepare(layout, config, slug, level=None):
             f"wave {level} budget is {budget:,} tokens against a cap of {cap:,} "
             "— split the wave or raise plan.wave_budget_tokens in ctx.yaml"
         )
+    # Width, checked separately from cost, because they fail differently: a
+    # wave can sit well inside its token budget and still be too wide for one
+    # session to orchestrate, and the budget cap above cannot see that. Both
+    # caps count the same list — units not yet `done` — so a wide wave stays
+    # workable-off incrementally rather than refusing forever once it is
+    # authored. Same vocabulary as the budget refusal on purpose: two caps
+    # that refuse in two dialects are two things to learn.
+    unit_cap = int((config.get("plan") or {}).get("max_wave_units", 0) or 0)
+    if unit_cap and len(units) > unit_cap:
+        problems.append(
+            f"wave {level} has {len(units)} unit(s) against a cap of {unit_cap} "
+            "— split the wave or raise plan.max_wave_units in ctx.yaml"
+        )
     return level, units, problems, budget
 
 

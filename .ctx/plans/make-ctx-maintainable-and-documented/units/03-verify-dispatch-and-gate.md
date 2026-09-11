@@ -10,6 +10,7 @@ owns:
   - ctx/verify.py
   - ctx/cli.py
   - tests/test_verify_kinds_table.py
+  - tests/test_contract_digest_agreement.py
 reads:
   - path: ctx/paths.py
     symbols:
@@ -79,11 +80,25 @@ unit 05 has to absorb.
 7. `verify.py` adopts `paths.LEDGER_PREFIX` from unit 01 and its local copy at
    `verify.py:216` is gone — the last of the three.
 
+**A third dead function, handed over from unit 01.**
+8. `contract.digest_text` is unreferenced across `ctx/`, `tests/`, `commands/`,
+   `hooks/` and `bin/`. **Do not delete it** — unlike `snapshot.discard_all` it
+   is a two-line pure function that destroys nothing, so the "dead code that
+   deletes data" rule does not reach it. Make it live instead, because the
+   invariant it exists for is one the seal actually depends on: add a test
+   asserting `contract.digest(unit)` equals
+   `contract.digest_text(unit.path.read_text())` for the same unit, including a
+   unit whose frontmatter has been reordered and one carrying a multi-line
+   value. If the two ever disagree, a contract sealed from a parsed document
+   and the same contract sealed from bytes would hash differently, and the
+   tamper check would fire on a file nobody touched. `ctx/contract.py` is not
+   in your `owns` and does not need to be — this is a test, not a change.
+
 **Both.**
-8. No import cycle is created. `verify.py` must not import `cli.py`.
-9. `python3 -m unittest discover -s tests -q` passes; `ctx doctor` and `ctx ci`
-   exit 0. Do not lower `SUITE_FLOOR` or `REQUIRED_FLOOR`.
-10. No file outside `owns` is modified.
+9. No import cycle is created. `verify.py` must not import `cli.py`.
+10. `python3 -m unittest discover -s tests -q` passes; `ctx doctor` and `ctx ci`
+    exit 0. Do not lower `SUITE_FLOOR` or `REQUIRED_FLOOR`.
+11. No file outside `owns` is modified.
 
 ## Return contract
 Report: files changed · which criteria passed · verbatim verify output · the

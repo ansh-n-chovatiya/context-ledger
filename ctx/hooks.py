@@ -439,11 +439,6 @@ def _edit_targets(payload):
     return []
 
 
-def _edit_target(payload):
-    targets = _edit_targets(payload)
-    return targets[0] if targets else ""
-
-
 def _relative(layout, target):
     return layout.rel(target)
 
@@ -452,7 +447,7 @@ def _scope(layout, current):
     plan, unit = current.get("plan"), current.get("unit")
     if not plan or not unit:
         return [], []
-    doc = frontmatter.read(layout.plans / plan / "units" / f"{unit}.md")
+    doc = frontmatter.read(layout.unit_file(plan, unit))
     if doc is None:
         return [], []
     owns = [str(p) for p in (doc.meta.get("owns") or [])]

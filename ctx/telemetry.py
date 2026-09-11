@@ -25,6 +25,18 @@ The lock still fails open (that is `lock.held`'s whole bargain), so the second
 constraint is untouched: a lock that cannot be taken risks a lost record, never
 a broken hook.
 
+One kind of record here is not a measurement at all. Hook durations and
+briefing sizes are observed; *spend* is reported. A CLI cannot see what a model
+spent — the tokens are billed in a process this one never touches — so the only
+honest way to get the number is for whoever ran the wave to hand it over, which
+is what `ctx telemetry --spend` does. That makes the spend data partial by
+construction: it covers exactly the units somebody remembered to report and no
+others. Every surface that prints it therefore prints `SPEND_NOTICE` with it,
+and a unit nobody reported reads as *unreported*, never as zero. The point of
+collecting it is to check the complexity weights against something other than
+the reasoning that produced them, and an unlabelled partial number would be
+used for that as though it were complete — worse than having no number at all.
+
 Records live in `.ctx/runtime/`, which is gitignored: this is machine-local
 measurement, not project history.
 """
@@ -42,6 +54,25 @@ LOCK_NAME = "telemetry"
 MAX_BYTES = 256 * 1024
 KEEP_LINES = 400
 
+#: The `event` name a reported-spend record carries. It shares the one jsonl
+#: with the timing records — same rotation, same lock, same fail-open bargain —
+#: and is told apart by this name rather than by a second file, because a
+#: second file would need a second rotate and a second lock for no gain.
+SPEND_EVENT = "spend"
+
+#: Printed by every surface that shows a spend figure, without exception. The
+#: labelling is load-bearing, not decorative: these numbers exist to be
+#: compared against `complexity.score`, and a partial sample read as a full
+#: measurement would retune the weights towards whichever units happened to
+#: get reported. Kept here, as one constant, so "every surface" is a thing a
+#: test can check rather than a habit each call site has to remember.
+SPEND_NOTICE = (
+    "reported spend is self-reported and incomplete: it covers only units "
+    "someone ran `ctx telemetry --spend` for.",
+    "a unit with no figure is unreported, not zero — do not read these totals "
+    "as a measurement of the wave.",
+)
+
 
 def path_for(layout):
     return layout.runtime / FILENAME
@@ -57,6 +88,13 @@ def enabled(config):
 def record(layout, event, ms, **fields):
     """Append one measurement. Silent on any failure — never break a hook.
 
+    Returns True if the line reached the file and False if anything at all
+    stopped it. Callers in the hot path ignore it, which is why it is a return
+    value and not an exception: the guarantee that this never raises is the
+    whole reason the module can sit in front of every hook. `record_spend` is
+    the one caller that looks, because a person typing `ctx telemetry --spend`
+    is owed the truth about whether their number was kept.
+
     `model` and `role` are ordinary entries in `**fields`, not dedicated
     parameters — the signature was already open, so giving them a name here
     would only pin a shape callers don't need pinned. Pass them like any
@@ -71,7 +109,7 @@ def record(layout, event, ms, **fields):
         payload.update({k: v for k, v in fields.items() if v is not None})
         line = json.dumps(payload, sort_keys=True) + "\n"
     except (TypeError, ValueError):
-        return
+        return False
     try:
         layout.runtime.mkdir(parents=True, exist_ok=True)
         target = path_for(layout)
@@ -87,7 +125,70 @@ def record(layout, event, ms, **fields):
             with target.open("a", encoding="utf-8") as handle:
                 handle.write(line)
     except (OSError, TypeError, ValueError):
-        pass
+        return False
+    return True
+
+
+def record_spend(layout, unit, tokens):
+    """Record what a unit actually cost, as reported by whoever ran it.
+
+    Returns True if the number reached the file. Like every other write here
+    it never raises — a lost spend record is a lost data point, not a failed
+    command — but unlike a hook timing, somebody typed this one on purpose and
+    is owed an answer, so the outcome comes back as a bool.
+
+    Takes the `telemetry` lock, because it goes through `record`, which holds
+    it across the rotate and the append. `lock.held` is **not re-entrant**:
+    calling this from inside a span that already holds the `telemetry` lock
+    would deadlock or (given `lock.held` fails open) silently lose the very
+    record it was asked to keep. There is no caller inside such a span today
+    and there must not be one added — the CLI command is the only caller, and
+    it runs with nothing else held.
+
+    `tokens` is validated rather than coerced-and-hoped: a spend of "lots" or
+    of -1 is not a smaller measurement, it is an absent one, and writing it
+    would put a number into the complexity-weight comparison that means
+    nothing.
+    """
+    name = str(unit or "").strip()
+    if not name:
+        return False
+    try:
+        count = int(tokens)
+    except (TypeError, ValueError):
+        return False
+    if count < 0:
+        return False
+    return record(layout, SPEND_EVENT, 0, unit=name, tokens=count)
+
+
+def spend_by_unit(layout, limit=400):
+    """`{unit: {"tokens": int, "reports": int}}` over the reported spend.
+
+    `reports` is carried alongside the total because one unit can be reported
+    more than once — a second round of the same unit is a second cost, and
+    summing them into a single figure with no count would hide that a "12,000"
+    is two reports of 6,000. It is also the only way a reader can tell a unit
+    that was reported as costing zero from one that was reported twice.
+
+    A unit that was never reported is simply absent from this mapping. That
+    absence is the data — see `SPEND_NOTICE` — so callers render it as
+    "unreported" and never fill it in with a zero.
+    """
+    totals = {}
+    for entry in read(layout, limit):
+        if str(entry.get("event") or "") != SPEND_EVENT:
+            continue
+        name = entry.get("unit")
+        tokens = entry.get("tokens")
+        if not isinstance(name, str) or not name:
+            continue
+        if isinstance(tokens, bool) or not isinstance(tokens, int):
+            continue
+        bucket = totals.setdefault(name, {"tokens": 0, "reports": 0})
+        bucket["tokens"] += tokens
+        bucket["reports"] += 1
+    return totals
 
 
 def _rotate(target):
@@ -148,6 +249,12 @@ def summarise(layout, limit=400):
     grouped = {}
     for entry in read(layout, limit):
         event = str(entry.get("event") or "?")
+        # Reported spend is not a duration. Left in, it would show up as an
+        # event with a 0.0ms median in a table about how slow hooks are, which
+        # is both meaningless and the kind of row that gets misread as "spend
+        # is free". `spend_by_unit` is where it is legible instead.
+        if event == SPEND_EVENT:
+            continue
         bucket = grouped.setdefault(event, {"ms": [], "chars": [], "roles": {}})
         has_ms = isinstance(entry.get("ms"), (int, float))
         if has_ms:
