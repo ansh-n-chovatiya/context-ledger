@@ -9,3 +9,14 @@
 20:30 | unit | 08-gate-window-and-doctor | done
 20:31 | start | make-ctx-durable-under-concurrency | wave 5, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
 20:37 | unit | 09-suite-floor | done
+20:56 | spec | make-ctx-maintainable-and-documented | opened
+20:56 | spec | make-ctx-maintainable-and-documented | +1 blocking question(s)
+20:56 | spec | make-ctx-maintainable-and-documented | +1 blocking question(s)
+20:56 | spec | make-ctx-maintainable-and-documented | +1 blocking question(s)
+20:56 | spec | make-ctx-maintainable-and-documented | +1 blocking question(s)
+20:58 | spec | make-ctx-maintainable-and-documented | resolved: real spend recorded in telemetry
+20:58 | spec | make-ctx-maintainable-and-documented | resolved: How far does the README split
+20:58 | spec | make-ctx-maintainable-and-documented | resolved: Is --json a stable
+20:58 | spec | make-ctx-maintainable-and-documented | resolved: AUDIT.md and PRODUCTION-AUDIT.md
+20:59 | plan | make-ctx-maintainable-and-documented | opened (0 unit stubs)
+21:00 | plan | make-ctx-maintainable-and-documented | checked, graph r1

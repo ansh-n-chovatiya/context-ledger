@@ -1,0 +1,200 @@
+{
+  "ctx_schema": 1,
+  "plan": "make-ctx-maintainable-and-documented",
+  "spec": "make-ctx-maintainable-and-documented",
+  "revision": 1,
+  "generated": "2026-09-11",
+  "waves": [
+    [
+      "01-shared-paths-and-dead-code",
+      "02-caps-and-reported-spend"
+    ],
+    [
+      "03-verify-dispatch-and-gate"
+    ],
+    [
+      "04-detect-and-advice"
+    ],
+    [
+      "05-commands-registry-and-json"
+    ],
+    [
+      "06-docs-split-and-currency"
+    ],
+    [
+      "07-ruff-and-coverage"
+    ]
+  ],
+  "units": {
+    "01-shared-paths-and-dead-code": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/paths.py",
+        "ctx/snapshot.py",
+        "ctx/worktree.py",
+        "ctx/briefing.py",
+        "ctx/work.py",
+        "ctx/hooks.py",
+        "tests/test_shared_paths.py"
+      ],
+      "reads": [
+        "ctx/plan.py"
+      ],
+      "forbid": [
+        "ctx/cli.py",
+        "ctx/verify.py",
+        "ctx/config.py",
+        "ctx/plan.py"
+      ],
+      "budget_tokens": 55000
+    },
+    "02-caps-and-reported-spend": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/cli.py",
+        "ctx/config.py",
+        "ctx/dispatch.py",
+        "ctx/telemetry.py",
+        "tests/test_wave_cap.py",
+        "tests/test_reported_spend.py"
+      ],
+      "reads": [
+        "ctx/complexity.py"
+      ],
+      "forbid": [
+        "ctx/paths.py",
+        "ctx/verify.py",
+        "ctx/snapshot.py",
+        "ctx/worktree.py",
+        "README.md"
+      ],
+      "budget_tokens": 60000
+    },
+    "03-verify-dispatch-and-gate": {
+      "tier": "subagent",
+      "wave": 2,
+      "depends_on": [
+        "01-shared-paths-and-dead-code",
+        "02-caps-and-reported-spend"
+      ],
+      "owns": [
+        "ctx/verify.py",
+        "ctx/cli.py",
+        "tests/test_verify_kinds_table.py"
+      ],
+      "reads": [
+        "ctx/paths.py",
+        "ctx/contract.py"
+      ],
+      "forbid": [
+        "ctx/paths.py",
+        "ctx/detect.py",
+        "ctx/advice.py",
+        "README.md"
+      ],
+      "budget_tokens": 75000
+    },
+    "04-detect-and-advice": {
+      "tier": "subagent",
+      "wave": 3,
+      "depends_on": [
+        "03-verify-dispatch-and-gate"
+      ],
+      "owns": [
+        "ctx/detect.py",
+        "ctx/advice.py",
+        "ctx/cli.py",
+        "tests/test_detect.py",
+        "tests/test_advice.py"
+      ],
+      "reads": [
+        "ctx/config.py",
+        "ctx/trust.py"
+      ],
+      "forbid": [
+        "ctx/verify.py",
+        "ctx/config.py",
+        "ctx/paths.py",
+        "README.md"
+      ],
+      "budget_tokens": 75000
+    },
+    "05-commands-registry-and-json": {
+      "tier": "subagent",
+      "wave": 4,
+      "depends_on": [
+        "04-detect-and-advice"
+      ],
+      "owns": [
+        "ctx/cli.py",
+        "tests/test_commands_registry.py",
+        "tests/test_json_output.py",
+        "tests/test_no_import_cycles.py"
+      ],
+      "reads": [
+        "ctx/verify.py",
+        "ctx/advice.py",
+        "ctx/detect.py"
+      ],
+      "forbid": [
+        "ctx/verify.py",
+        "ctx/advice.py",
+        "ctx/detect.py",
+        "README.md"
+      ],
+      "budget_tokens": 85000
+    },
+    "06-docs-split-and-currency": {
+      "tier": "subagent",
+      "wave": 5,
+      "depends_on": [
+        "05-commands-registry-and-json"
+      ],
+      "owns": [
+        "README.md",
+        "docs/",
+        "AUDIT.md",
+        "PRODUCTION-AUDIT.md",
+        "GUIDE.md",
+        "commands/trust.md",
+        "tests/test_docs_currency.py"
+      ],
+      "reads": [
+        "ctx/cli.py",
+        "ctx/verify.py",
+        "ctx/config.py"
+      ],
+      "forbid": [
+        "ctx/cli.py",
+        "ctx/verify.py",
+        "ctx/config.py"
+      ],
+      "budget_tokens": 90000
+    },
+    "07-ruff-and-coverage": {
+      "tier": "subagent",
+      "wave": 6,
+      "depends_on": [
+        "06-docs-split-and-currency"
+      ],
+      "owns": [
+        "pyproject.toml",
+        ".github/workflows/ci.yml",
+        "tests/test_ci_floor.py",
+        "tests/test_lint_and_coverage.py"
+      ],
+      "reads": [
+        "ctx/cli.py"
+      ],
+      "forbid": [
+        "README.md",
+        "docs/"
+      ],
+      "budget_tokens": 55000
+    }
+  }
+}
