@@ -30,3 +30,9 @@
 21:51 | start | make-ctx-maintainable-and-documented | wave 4, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
 22:11 | plan | make-ctx-maintainable-and-documented | checked, graph r2
 22:12 | unit | 05-commands-registry-and-json | done
+22:12 | start | make-ctx-maintainable-and-documented | wave 5, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+22:20 | plan | make-ctx-maintainable-and-documented | checked, graph r3
+22:20 | plan | make-ctx-maintainable-and-documented | checked, graph r4
+22:20 | plan | make-ctx-maintainable-and-documented | checked, graph r5
+22:20 | plan | make-ctx-maintainable-and-documented | checked, graph r6
+22:28 | unit | 08-command-bodies | done

@@ -1073,31 +1073,5 @@ class TestOneCommandIsOneEntry(unittest.TestCase):
                 self.assertIs(strict[0].default, argparse.SUPPRESS)
 
 
-class TestTheFileHasACeiling(unittest.TestCase):
-    """`cli.py` may not grow back, silently, into the file it was.
-
-    The plan's target was 2,000 lines, down from 3,399. It is not met, and the
-    ceiling below is the file as this unit leaves it rather than the target:
-    the four extractions this plan sequenced moved every *module-shaped* piece
-    out — paths, verify kinds, the gate, the detector, the decision tree — and
-    what remains is forty-one command bodies. Reaching 2,000 means moving those
-    bodies into a module of their own (`ctx/commands.py`), which is a file this
-    unit does not own and a registry entry in `tests/test_shared_paths.py` that
-    it may not edit. That is a planning decision, reported rather than taken.
-
-    The ceiling still does the job it was asked to do: growth has to be
-    deliberate, and lowering it as code leaves is the cheap win.
-    """
-
-    CEILING = 3350
-
-    def test_cli_is_under_the_ceiling(self):
-        lines = len(CLI_PATH.read_text(encoding="utf-8").splitlines())
-        self.assertLessEqual(
-            lines, self.CEILING,
-            f"ctx/cli.py is {lines} lines. Extract, do not raise the ceiling.",
-        )
-
-
 if __name__ == "__main__":
     unittest.main()

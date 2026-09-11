@@ -35,8 +35,8 @@ PACKAGE = Path(__file__).resolve().parent.parent / "ctx"
 # completeness test goes red, and a glob would quietly absorb it instead.
 ALL_MODULES = (
     "__init__.py", "__main__.py", "advice.py", "atomic.py", "briefing.py",
-    "bundle.py", "cli.py", "complexity.py", "config.py", "contract.py",
-    "detect.py", "dispatch.py",
+    "bundle.py", "cli.py", "commands.py", "complexity.py", "config.py",
+    "contract.py", "detect.py", "dispatch.py",
     "findings.py", "frontmatter.py", "hooks.py", "journal.py", "lock.py",
     "migrate.py", "miniyaml.py", "paths.py", "phases.py", "plan.py",
     "redact.py", "review.py", "snapshot.py", "spec.py", "state.py",
@@ -58,14 +58,19 @@ UNITS_SEGMENT_OWNERS = ("plan.py", "paths.py")
 # exactly what a sweep does not have. They are named here one by one, and the
 # test below is a subset check, so a fourth module cannot join them quietly:
 #
-#   cli.py       `ctx check` sweeping every unit file for contract drift
+#   commands.py  `ctx check` sweeping every unit file for contract drift
 #   migrate.py   the per-kind migration sweep
 #   trust.py     collecting every declared verify command in the ledger
 #
 # A `Layout.unit_files()` iterator would fold these in. It would also mean this
 # unit writing three files it does not own, so the sweep sites are left as they
 # are and recorded here rather than silently skipped.
-UNITS_GLOB_SWEEPS = {"cli.py", "migrate.py", "trust.py"}
+#
+# The sweep used to be recorded against `cli.py`. It did not move house: the
+# forty-one command bodies did, out of `cli.py` and into `ctx/commands.py`,
+# and `ctx check` went with them unchanged. `cli.py` is the parser and the
+# registry now and builds no ledger paths at all.
+UNITS_GLOB_SWEEPS = {"commands.py", "migrate.py", "trust.py"}
 
 # `verify.py` still carries its own `LEDGER_PREFIX`. It belongs to a sibling
 # unit in this plan, which adopts `paths.LEDGER_PREFIX` there; converting it
