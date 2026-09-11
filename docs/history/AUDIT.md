@@ -1,3 +1,5 @@
+> **Historical.** This is the engineering audit of **v0.1.1**, archived. It is kept for the decisions it records, not as a description of the tool today; nothing in it has been re-checked against a later release. The current audit is [`report.md`](../../report.md).
+
 # Context Ledger — engineering audit
 
 **Scope:** full source read (4,845 lines), 193-test suite executed, six defects reproduced under controlled probes.

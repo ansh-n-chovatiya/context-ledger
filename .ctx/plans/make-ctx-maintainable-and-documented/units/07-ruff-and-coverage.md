@@ -59,17 +59,29 @@ The two checks deferred from wave 2 to wave 3 and from wave 3 to here, now that
    `test_ci_floor.py` already proves the suite floor behaviourally rather than
    by grepping YAML.
 
+**A packaging gap unit 06 found and could not fix.**
+9. `docs/` is not in `[tool.hatch.build.targets.sdist].include`. Unit 06 split
+   the README into `docs/reference.md`, `docs/walkthroughs.md` and
+   `docs/operations.md`, so **the sdist now ships a README linking to files it
+   does not contain.** `AUDIT.md` and `PRODUCTION-AUDIT.md` were never
+   allowlisted, so nothing regressed — but the split turned a harmless omission
+   into a broken artifact. Add `docs/` to the allowlist.
+10. A test asserts the built sdist actually contains the files the README links
+    to. Wave 3 recorded that the SBOM step only worked because it was executed
+    rather than trusted; the same applies here — build the artifact and look
+    inside it rather than asserting the allowlist mentions a string.
+
 **Do not disturb.**
-9. Nothing else in `ci.yml` changes — not the SHA pins, not the `permissions:`
+11. Nothing else in `ci.yml` changes — not the SHA pins, not the `permissions:`
    blocks, not the two complementary `fetch-depth` checkout steps, not
    `SUITE_FLOOR`. Those are wave 2, 3 and 4 decisions with tests behind them.
-10. `SUITE_FLOOR` and `REQUIRED_FLOOR` must still be equal when you finish. If
+12. `SUITE_FLOOR` and `REQUIRED_FLOOR` must still be equal when you finish. If
     this wave's refactors changed the test count, raising them is a deliberate
     wave-level act: report the new count and say what you did, rather than
     adjusting quietly.
-11. `python3 -m unittest discover -s tests -q` passes; `ctx doctor` and
+13. `python3 -m unittest discover -s tests -q` passes; `ctx doctor` and
     `ctx ci` exit 0.
-12. No file outside `owns` is modified.
+14. No file outside `owns` is modified.
 
 ## Return contract
 Report: files changed · which criteria passed · verbatim verify output · the

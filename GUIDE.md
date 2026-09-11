@@ -224,3 +224,7 @@ from someone else can carry instructions with it.
 5. Let the gate stop you from shipping something that isn't.
 
 Everything else is there when you need it, and out of the way when you don't.
+
+When you want the detail: [README.md](README.md) for the command tables,
+[docs/walkthroughs.md](docs/walkthroughs.md) for the same examples at full size,
+[docs/reference.md](docs/reference.md) for every setting.

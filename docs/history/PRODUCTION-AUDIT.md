@@ -1,3 +1,5 @@
+> **Historical.** This is the production audit of **v0.6.2**, resolved in v0.7.0 and archived. It is kept for the decisions it records, not as a description of the tool today — it predates `complexity.py`, `phases.py`, `models.tiers` and the `test_first` kind, and its verdict that `snapshot.py` and `findings.py` have zero tests and zero callers is no longer true: both have dedicated suites. The current audit is [`report.md`](../../report.md).
+
 # Production audit — v0.6.2
 
 Adversarial audit, 2026-09-09. Method: five independent investigations, every
