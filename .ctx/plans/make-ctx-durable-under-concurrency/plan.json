@@ -1,0 +1,255 @@
+{
+  "ctx_schema": 1,
+  "plan": "make-ctx-durable-under-concurrency",
+  "spec": "make-ctx-durable-under-concurrency",
+  "revision": 1,
+  "generated": "2026-09-11",
+  "waves": [
+    [
+      "01-atomic-writer",
+      "02-plan-scoped-lock",
+      "03-worktree-plan-scope"
+    ],
+    [
+      "04-hooks-fail-open",
+      "05-journal-durability-and-authors",
+      "06-ledger-locks"
+    ],
+    [
+      "07-migration-and-snapshot-durability"
+    ],
+    [
+      "08-gate-window-and-doctor"
+    ],
+    [
+      "09-suite-floor"
+    ]
+  ],
+  "units": {
+    "01-atomic-writer": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/atomic.py",
+        "tests/test_atomic_writes.py"
+      ],
+      "reads": [
+        "ctx/frontmatter.py"
+      ],
+      "forbid": [
+        "ctx/journal.py",
+        "ctx/migrate.py",
+        "ctx/lock.py",
+        "ctx/hooks.py",
+        "ctx/worktree.py"
+      ],
+      "budget_tokens": 40000
+    },
+    "02-plan-scoped-lock": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/lock.py",
+        "ctx/state.py",
+        "tests/test_plan_lock.py"
+      ],
+      "reads": [
+        "ctx/paths.py"
+      ],
+      "forbid": [
+        "ctx/atomic.py",
+        "ctx/findings.py",
+        "ctx/phases.py",
+        "ctx/telemetry.py",
+        "ctx/cli.py"
+      ],
+      "budget_tokens": 45000
+    },
+    "03-worktree-plan-scope": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/worktree.py",
+        "tests/test_worktree_plan_scope.py",
+        "tests/test_worktree.py",
+        "tests/test_merge_safety.py",
+        "tests/test_git_invariant.py",
+        "tests/test_audit_merge_preflight.py",
+        "tests/test_audit_override_journal.py",
+        "tests/test_audit_wave1.py",
+        "tests/test_flow_end_to_end.py"
+      ],
+      "reads": [
+        "ctx/plan.py",
+        "ctx/cli.py"
+      ],
+      "forbid": [
+        "ctx/cli.py",
+        "ctx/plan.py",
+        "ctx/atomic.py",
+        "ctx/lock.py",
+        "ctx/journal.py"
+      ],
+      "budget_tokens": 60000
+    },
+    "04-hooks-fail-open": {
+      "tier": "subagent",
+      "wave": 2,
+      "depends_on": [
+        "02-plan-scoped-lock"
+      ],
+      "owns": [
+        "ctx/hooks.py",
+        "tests/test_hooks_fail_open.py",
+        "tests/test_policy.py"
+      ],
+      "reads": [
+        "ctx/config.py",
+        "ctx/state.py"
+      ],
+      "forbid": [
+        "ctx/config.py",
+        "ctx/cli.py",
+        "ctx/journal.py",
+        "ctx/worktree.py"
+      ],
+      "budget_tokens": 45000
+    },
+    "05-journal-durability-and-authors": {
+      "tier": "subagent",
+      "wave": 2,
+      "depends_on": [
+        "01-atomic-writer"
+      ],
+      "owns": [
+        "ctx/journal.py",
+        "tests/test_journal_authors.py"
+      ],
+      "reads": [
+        "ctx/atomic.py",
+        "ctx/paths.py"
+      ],
+      "forbid": [
+        "ctx/atomic.py",
+        "ctx/cli.py",
+        "ctx/hooks.py",
+        "ctx/migrate.py",
+        ".ctx/.gitignore"
+      ],
+      "budget_tokens": 70000
+    },
+    "06-ledger-locks": {
+      "tier": "subagent",
+      "wave": 2,
+      "depends_on": [
+        "02-plan-scoped-lock"
+      ],
+      "owns": [
+        "ctx/findings.py",
+        "ctx/phases.py",
+        "ctx/telemetry.py",
+        "tests/test_ledger_locks.py"
+      ],
+      "reads": [
+        "ctx/lock.py",
+        "ctx/frontmatter.py"
+      ],
+      "forbid": [
+        "ctx/lock.py",
+        "ctx/state.py",
+        "ctx/cli.py",
+        "ctx/plan.py"
+      ],
+      "budget_tokens": 60000
+    },
+    "07-migration-and-snapshot-durability": {
+      "tier": "subagent",
+      "wave": 3,
+      "depends_on": [
+        "01-atomic-writer",
+        "06-ledger-locks"
+      ],
+      "owns": [
+        "ctx/migrate.py",
+        "ctx/snapshot.py",
+        "ctx/bundle.py",
+        "ctx/contract.py",
+        "tests/test_migration_durability.py"
+      ],
+      "reads": [
+        "ctx/atomic.py",
+        "ctx/findings.py",
+        "ctx/phases.py",
+        "ctx/config.py"
+      ],
+      "forbid": [
+        "ctx/atomic.py",
+        "ctx/findings.py",
+        "ctx/phases.py",
+        "ctx/journal.py",
+        "ctx/plan.py",
+        "ctx/cli.py"
+      ],
+      "budget_tokens": 60000
+    },
+    "08-gate-window-and-doctor": {
+      "tier": "subagent",
+      "wave": 4,
+      "depends_on": [
+        "01-atomic-writer",
+        "02-plan-scoped-lock",
+        "03-worktree-plan-scope",
+        "05-journal-durability-and-authors",
+        "07-migration-and-snapshot-durability"
+      ],
+      "owns": [
+        "ctx/cli.py",
+        "ctx/plan.py",
+        ".ctx/.gitignore",
+        "tests/test_gate_window.py",
+        "tests/test_doctor_collisions.py",
+        "tests/test_durable_writes.py"
+      ],
+      "reads": [
+        "ctx/atomic.py",
+        "ctx/lock.py",
+        "ctx/journal.py",
+        "ctx/worktree.py",
+        "ctx/spec.py",
+        "ctx/contract.py"
+      ],
+      "forbid": [
+        "ctx/journal.py",
+        "ctx/worktree.py",
+        "ctx/atomic.py",
+        "ctx/lock.py",
+        "ctx/migrate.py",
+        "ctx/spec.py"
+      ],
+      "budget_tokens": 90000
+    },
+    "09-suite-floor": {
+      "tier": "subagent",
+      "wave": 5,
+      "depends_on": [
+        "08-gate-window-and-doctor"
+      ],
+      "owns": [
+        ".github/workflows/ci.yml",
+        "tests/test_ci_floor.py"
+      ],
+      "reads": [
+        "ctx/__init__.py"
+      ],
+      "forbid": [
+        "ctx/cli.py",
+        "ctx/journal.py",
+        ".ctx/.gitignore"
+      ],
+      "budget_tokens": 35000
+    }
+  }
+}
