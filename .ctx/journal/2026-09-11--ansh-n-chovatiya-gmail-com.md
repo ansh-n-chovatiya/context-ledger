@@ -40,3 +40,6 @@
 22:50 | unit | 06-docs-split-and-currency | done
 22:50 | start | make-ctx-maintainable-and-documented | wave 7, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
 23:19 | unit | 07-ruff-and-coverage | done
+23:24 | spec | make-ctx-tell-you-the-plan-is-slow | opened
+23:25 | plan | make-ctx-tell-you-the-plan-is-slow | opened (0 unit stubs)
+23:25 | plan | make-ctx-tell-you-the-plan-is-slow | checked, graph r1

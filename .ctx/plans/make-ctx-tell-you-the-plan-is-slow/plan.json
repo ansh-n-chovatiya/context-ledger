@@ -1,0 +1,55 @@
+{
+  "ctx_schema": 1,
+  "plan": "make-ctx-tell-you-the-plan-is-slow",
+  "spec": "make-ctx-tell-you-the-plan-is-slow",
+  "revision": 1,
+  "generated": "2026-09-11",
+  "waves": [
+    [
+      "01-plan-time-intelligence",
+      "02-gate-warns-on-untracked"
+    ]
+  ],
+  "units": {
+    "01-plan-time-intelligence": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/plan.py",
+        "ctx/complexity.py",
+        "ctx/dispatch.py",
+        "ctx/commands.py",
+        "tests/test_plan_intelligence.py",
+        "tests/test_tier_from_the_graph.py"
+      ],
+      "reads": [
+        "ctx/config.py"
+      ],
+      "forbid": [
+        "ctx/verify.py",
+        "ctx/config.py"
+      ],
+      "budget_tokens": 85000
+    },
+    "02-gate-warns-on-untracked": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/verify.py",
+        "tests/test_gate_untracked_warning.py"
+      ],
+      "reads": [
+        "ctx/paths.py"
+      ],
+      "forbid": [
+        "ctx/commands.py",
+        "ctx/plan.py",
+        "ctx/complexity.py",
+        "ctx/dispatch.py"
+      ],
+      "budget_tokens": 35000
+    }
+  }
+}
