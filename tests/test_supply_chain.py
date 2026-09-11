@@ -355,9 +355,17 @@ class WhatCiStillProvesTests(unittest.TestCase):
     def setUp(self):
         self.workflow = load_workflow()
 
-    def test_the_three_jobs_are_all_still_present(self):
-        self.assertEqual(sorted(self.workflow["jobs"]),
-                         ["ledger", "test", "windows-wrapper"])
+    def test_the_original_three_jobs_are_all_still_present(self):
+        """Subset, not equality.
+
+        This asserted `sorted(jobs) == [...]`, which fails when a job is
+        *added* — the opposite of what the class exists to catch. It went red
+        the first time CI gained a job (lint and coverage), and the claim it
+        is making is "nothing was traded away", which is a subset claim. A
+        removal still fails; an addition no longer does.
+        """
+        for name in ("ledger", "test", "windows-wrapper"):
+            self.assertIn(name, self.workflow["jobs"])
 
     def test_the_windows_wrapper_job_still_runs_on_windows(self):
         job = self.workflow["jobs"]["windows-wrapper"]

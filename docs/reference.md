@@ -10,7 +10,7 @@ Configuration, verification and the machine-readable surfaces.
 [Verification](#verification) · [Phase gates](#phase-gates-and-kind-bug) ·
 [Profiles](#profiles) · [Command trust](#command-trust) ·
 [Failure policy](#failure-policy) · [Ungated is not done](#ungated-is-not-done) ·
-[Exit codes](#exit-codes) · [`--json`](#json)
+[Exit codes](#exit-codes) · [`--json`](#--json)
 
 ## Configuration
 

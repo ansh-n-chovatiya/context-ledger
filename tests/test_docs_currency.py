@@ -91,7 +91,11 @@ def slugs(text):
     for _level, title in _HEADING.findall(text):
         slug = title.replace("`", "").lower()
         slug = re.sub(r"[^\w\s-]", "", slug)
-        found.add(re.sub(r"\s+", "-", slug.strip()))
+        # One dash per space, not one per run. GitHub strips the punctuation and
+        # leaves the spaces that surrounded it, so `Step 2 — Decompose` anchors as
+        # `step-2--decompose`, with two. Collapsing the run here reported a
+        # correct link as broken.
+        found.add(re.sub(r"\s", "-", slug.strip()))
     return found
 
 
@@ -238,8 +242,23 @@ def _flatten(mapping, prefix=""):
 
 class LinkTests(unittest.TestCase):
     def markdown(self):
-        return [path for path in tracked_files()
-                if path.suffix == ".md" and ".ctx" not in path.parts]
+        """Every markdown file in the working tree, tracked or not.
+
+        Deliberately not `tracked_files()`. The done-gate runs *before* the
+        commit, so a check scoped to `git ls-files` cannot see the files the
+        unit under test has just written — it passes vacuously during the unit
+        and goes red on the next commit, which is exactly what happened to the
+        three broken anchors this test now catches.
+        """
+        seen = {path for path in tracked_files()
+                if path.suffix == ".md" and ".ctx" not in path.parts}
+        for path in ROOT.rglob("*.md"):
+            relative = path.relative_to(ROOT)
+            parts = relative.parts
+            if ".ctx" in parts or ".git" in parts or "node_modules" in parts:
+                continue
+            seen.add(relative)
+        return sorted(seen)
 
     def test_every_internal_link_resolves(self):
         broken = []

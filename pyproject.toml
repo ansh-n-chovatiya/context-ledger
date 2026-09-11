@@ -93,6 +93,141 @@ include = [
     "/.claude-plugin",
     "/LICENSE",
     "/README.md",
+    # The README is now a hub: it links to docs/reference.md,
+    # docs/walkthroughs.md, docs/operations.md, and to GUIDE.md, SECURITY.md
+    # and report.md beside them. Shipping the README without those puts an
+    # artefact on an index whose front page points at files it does not
+    # contain. The rule this list now follows is simply "if the shipped README
+    # links to it, it ships", and
+    # tests/test_lint_and_coverage.py::SdistContainsWhatTheReadmeLinksTo
+    # *builds the sdist and reads the archive* to hold it to that, rather than
+    # asserting that this list mentions a string.
+    "/docs",
+    "/GUIDE.md",
+    "/SECURITY.md",
+    "/report.md",
     "/CHANGELOG.md",
     "/pyproject.toml",
 ]
+
+# ---------------------------------------------------------------------------
+# ruff
+# ---------------------------------------------------------------------------
+# A narrow rule set, chosen by measurement rather than by taste: every rule
+# selected here is one the tree passes *today*, so the check starts green and
+# any red is a regression someone introduced. The `ignore` list below is the
+# honest half of that -- codes whose current violations live in `ctx/*.py` or
+# in test files this unit does not own, recorded as follow-up work instead of
+# being made to disappear by widening an exclude list. A configuration that
+# excludes every file that would fail is a check that cannot fail.
+#
+# No `target-version`: ruff reads it from `requires-python` above, and the
+# supported-Python floor belongs in exactly one place.
+[tool.ruff]
+# `tests/fixtures/` holds a byte-exact vendored copy of an old `ctx/findings.py`
+# that tests/test_findings_rounds.py corroborates against `git show`. It is not
+# excluded -- it passes the rules below -- but if a future rule fails there,
+# exclude it rather than editing it: editing it breaks the corroboration.
+extend-exclude = [".ctx"]
+
+[tool.ruff.lint]
+# The pyflakes/pycodestyle core plus the small, high-signal plugins whose
+# failures are bugs rather than opinions:
+#
+#   F        pyflakes -- undefined names, redefinitions, `is` on a literal.
+#   E4, E9   import placement, and syntax/IO errors ruff itself hits.
+#   E7       `== None`, bare `except`, `type(x) == y`, lambda assignment.
+#   W        trailing whitespace and, more usefully, W605 invalid escapes in
+#            a non-raw string -- a SyntaxWarning today and an error later.
+#   B        bugbear: mutable default arguments, `assert` on a tuple, and
+#            the rest of the "this is a bug, not a style" family.
+#   PLE      pylint's error class only, never its refactor/convention noise.
+#   YTT      `sys.version` comparisons. This package claims 3.8 through 3.13,
+#            so version sniffing done wrong is a real portability failure.
+#   EXE      shebang and executable-bit agreement, for `bin/` and the hooks.
+#   T10      a forgotten `breakpoint()` must never reach a release.
+#   PGH      no blanket `# noqa` and no blanket `# type: ignore`: a suppression
+#            has to name what it suppresses, or it silently grows.
+#   TID      no relative imports beyond the top level; tests/test_no_import_cycles.py
+#            polices the import graph and this keeps it readable.
+#   G, LOG   logging call shapes.
+#   INT, ICN, FLY, SLOT, RSE, ASYNC, RUF200
+#            small, unambiguous, and currently clean -- RUF200 in particular
+#            validates this very file.
+#
+# Deliberately NOT enabled, each for a stated reason:
+#   E501  line-too-long -- 157 violations, all in files this unit does not own.
+#         It would also make `tests/test_commands_registry.py`, which is
+#         generated output, break on a regeneration that happens to emit a
+#         long line: a formatting rule that fails on a machine-written file is
+#         a rule that will be turned off in a hurry.
+#   UP    pyupgrade -- 72 of its hits are UP031 printf-formatting, which this
+#         codebase uses on purpose to stay readable on 3.8.
+#   Q, COM  quote style and trailing commas -- 1234 hits, pure formatting, and
+#         none of it is a defect. If this repository ever wants them, it wants
+#         `ruff format`, not a lint gate.
+#   PT    2.700+ hits: it wants pytest idioms from a stdlib-`unittest` suite.
+#   SLF, FBT, EM, TRY, DTZ, PERF, ISC, SIM, RET, ARG, PLR
+#         opinions, or large mechanical diffs across `ctx/*.py`, which five
+#         other units of this wave just finished moving.
+select = [
+    "F",
+    "E4",
+    "E7",
+    "E9",
+    "W",
+    "B",
+    "PLE",
+    "YTT",
+    "EXE",
+    "T10",
+    "PGH",
+    "TID",
+    "G",
+    "LOG",
+    "INT",
+    "ICN",
+    "FLY",
+    "SLOT",
+    "RSE",
+    "ASYNC",
+    "RUF200",
+]
+# Follow-up work, not absolution. Each of these has live violations in files
+# outside this unit's `owns`, and the unit contract forbids reaching into
+# `ctx/*.py` to make a rule pass. Delete an entry once its violations are gone.
+ignore = [
+    "F401",  # 9 unused imports: ctx/commands.py, ctx/hooks.py, 6 test modules.
+    "F541",  # 1 f-string with no placeholder: ctx/verify.py:1295.
+    "F841",  # 2 assigned-and-unused locals: ctx/commands.py:507, a test.
+    "E741",  # 13 `l` loop variables, all in tests, all style.
+    "B007",  # 3 unused loop variables: ctx/commands.py:1543 and two tests.
+    "B904",  # 1 `raise` inside `except` without `from`: ctx/config.py:400.
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Two single-file exemptions, kept per-file rather than global so the rule
+# stays live everywhere else -- including on `ctx/cli.py`, whose one
+# `# noqa: E731` on the REST lambda is load-bearing precisely because E731 is
+# still selected here.
+"tests/support.py" = ["E731"]          # one lambda helper, line 121.
+"tests/test_json_output.py" = ["W291"]  # 7 trailing spaces in a table literal.
+
+# ---------------------------------------------------------------------------
+# coverage
+# ---------------------------------------------------------------------------
+# Branch coverage, over the runtime package only. The floor CI enforces is not
+# written here: it lives in the `coverage` job's gate script in
+# .github/workflows/ci.yml, pinned to REQUIRED_LINE_FLOOR / REQUIRED_BRANCH_FLOOR
+# in tests/test_lint_and_coverage.py by a test that fails if either moves alone
+# -- the same shape as SUITE_FLOOR, whose missing agreement test let it drift
+# 459 tests below the suite it guarded.
+[tool.coverage.run]
+branch = true
+source = ["ctx"]
+
+[tool.coverage.report]
+# Measured honestly: no `exclude_lines` beyond coverage's own default
+# `# pragma: no cover`, so the number cannot be improved by annotating.
+show_missing = false
+skip_covered = false

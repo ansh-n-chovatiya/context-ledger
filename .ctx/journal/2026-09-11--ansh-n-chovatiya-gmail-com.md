@@ -38,3 +38,5 @@
 22:28 | unit | 08-command-bodies | done
 22:30 | start | make-ctx-maintainable-and-documented | wave 6, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
 22:50 | unit | 06-docs-split-and-currency | done
+22:50 | start | make-ctx-maintainable-and-documented | wave 7, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+23:19 | unit | 07-ruff-and-coverage | done

@@ -40,8 +40,9 @@ WORKFLOW = ROOT / ".github/workflows/ci.yml"
 #
 # Raise this with the suite. It sits just under the real count on purpose --
 # what a floor exists to catch is a silent DROP, and a floor far below the
-# real count cannot see one.
-REQUIRED_FLOOR = 1190
+# real count cannot see one. 1190 against a suite of 1433 was 243 tests of
+# slack, so it moved with the suite that this wave grew.
+REQUIRED_FLOOR = 1420
 
 
 # --------------------------------------------------------------------------
@@ -330,7 +331,8 @@ class ParserRefusesCommentsTests(unittest.TestCase):
         workflow = load_workflow()
         self.assertEqual(workflow["name"], "ci")
         self.assertEqual(
-            sorted(workflow["jobs"]), ["ledger", "test", "windows-wrapper"])
+            sorted(workflow["jobs"]),
+            ["coverage", "ledger", "lint", "test", "windows-wrapper"])
         self.assertIn(
             "unittest discover",
             strip_comments(WORKFLOW.read_text(encoding="utf-8")),

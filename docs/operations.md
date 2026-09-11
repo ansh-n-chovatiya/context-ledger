@@ -145,7 +145,7 @@ ownership collisions, or a briefing that had to truncate.
 Add `ctx verify --plan <slug>` to run every unit's mechanical checks; judged ones
 are reported as awaiting sign-off rather than pretending an unattended run can
 decide them. `ctx ci --json` gives a pipeline the same result as a document — see
-[`--json`](reference.md#json).
+[`--json`](reference.md#--json).
 
 **The plugin's own CI** is `.github/workflows/ci.yml`. Linux runs the full
 spread, Python 3.8 through 3.13; macOS and Windows run 3.9 and 3.13, which is
