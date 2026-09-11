@@ -2,7 +2,7 @@
   "ctx_schema": 1,
   "plan": "make-ctx-maintainable-and-documented",
   "spec": "make-ctx-maintainable-and-documented",
-  "revision": 2,
+  "revision": 1,
   "generated": "2026-09-11",
   "waves": [
     [
@@ -17,9 +17,6 @@
     ],
     [
       "05-commands-registry-and-json"
-    ],
-    [
-      "08-command-bodies"
     ],
     [
       "06-docs-split-and-currency"
@@ -87,8 +84,7 @@
       "owns": [
         "ctx/verify.py",
         "ctx/cli.py",
-        "tests/test_verify_kinds_table.py",
-        "tests/test_contract_digest_agreement.py"
+        "tests/test_verify_kinds_table.py"
       ],
       "reads": [
         "ctx/paths.py",
@@ -110,12 +106,10 @@
       ],
       "owns": [
         "ctx/detect.py",
-        "ctx/complexity.py",
         "ctx/advice.py",
         "ctx/cli.py",
         "tests/test_detect.py",
-        "tests/test_advice.py",
-        "tests/test_kind_table_reaches_complexity.py"
+        "tests/test_advice.py"
       ],
       "reads": [
         "ctx/config.py",
@@ -154,37 +148,11 @@
       ],
       "budget_tokens": 85000
     },
-    "08-command-bodies": {
+    "06-docs-split-and-currency": {
       "tier": "subagent",
       "wave": 5,
       "depends_on": [
         "05-commands-registry-and-json"
-      ],
-      "owns": [
-        "ctx/cli.py",
-        "ctx/commands.py",
-        "tests/test_shared_paths.py",
-        "tests/test_command_bodies.py"
-      ],
-      "reads": [
-        "ctx/verify.py",
-        "ctx/advice.py",
-        "ctx/detect.py"
-      ],
-      "forbid": [
-        "ctx/verify.py",
-        "ctx/advice.py",
-        "ctx/detect.py",
-        "README.md",
-        ".github/workflows/ci.yml"
-      ],
-      "budget_tokens": 90000
-    },
-    "06-docs-split-and-currency": {
-      "tier": "subagent",
-      "wave": 6,
-      "depends_on": [
-        "08-command-bodies"
       ],
       "owns": [
         "README.md",
@@ -209,7 +177,7 @@
     },
     "07-ruff-and-coverage": {
       "tier": "subagent",
-      "wave": 7,
+      "wave": 6,
       "depends_on": [
         "06-docs-split-and-currency"
       ],

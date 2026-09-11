@@ -4,7 +4,7 @@ unit: 06-docs-split-and-currency
 plan: make-ctx-maintainable-and-documented
 tier: subagent
 depends_on:
-  - 05-commands-registry-and-json
+  - 08-command-bodies
 owns:
   - README.md
   - docs/
@@ -33,7 +33,7 @@ status: pending
 verify:
   - kind: cmd
     run: python3 -m unittest discover -s tests -q
-wave: 5
+wave: 6
 ---
 
 ## Objective

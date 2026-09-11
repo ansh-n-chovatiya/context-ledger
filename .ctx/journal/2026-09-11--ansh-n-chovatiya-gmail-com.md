@@ -27,3 +27,6 @@
 21:32 | unit | 03-verify-dispatch-and-gate | done
 21:32 | start | make-ctx-maintainable-and-documented | wave 3, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
 21:50 | unit | 04-detect-and-advice | done
+21:51 | start | make-ctx-maintainable-and-documented | wave 4, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+22:11 | plan | make-ctx-maintainable-and-documented | checked, graph r2
+22:12 | unit | 05-commands-registry-and-json | done

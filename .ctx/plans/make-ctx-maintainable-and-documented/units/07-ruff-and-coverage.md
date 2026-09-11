@@ -20,7 +20,7 @@ status: pending
 verify:
   - kind: cmd
     run: python3 -m unittest discover -s tests -q
-wave: 6
+wave: 7
 ---
 
 ## Objective

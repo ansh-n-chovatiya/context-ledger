@@ -6,8 +6,12 @@ measurement all cost zero tokens when they run as code.
 """
 
 import argparse
+import collections
+import contextlib
 import copy
 import datetime
+import io
+import json
 import os
 import re
 import subprocess
@@ -211,6 +215,77 @@ def _needs(what, *hints):
     return _advise("missing-argument")
 
 
+# --------------------------------------------------------------------------- #
+# --json: one document, written in one place
+# --------------------------------------------------------------------------- #
+
+# The schema version of the envelope every `--json` run prints. It is a
+# *contract*: `tests/test_json_output.py` pins the envelope and each of the
+# seven command shapes inside it, and changing a field is a breaking change
+# that belongs with a bump of this number.
+JSON_SCHEMA = 1
+
+# Set by `main` for the duration of one run: whether this run was asked for
+# JSON, and the document the command produced. A module-level holder rather
+# than an argument threaded through because `_emit` is the only reader and
+# `main` the only writer — and because a command may reach `_emit` from a
+# helper several frames down.
+_RENDER = {"json": False, "document": None}
+
+
+def _emit(data, human_fn):
+    """Render one command's result: as JSON, or as the prose it always printed.
+
+    `data` is the command's JSON shape. `human_fn` is either the lines to print
+    or a function that prints them. It runs either way — what `--json` changes
+    is where it prints: `main` has stdout redirected into a buffer for the
+    whole call, so the prose becomes the document's `lines` instead of the
+    answer. One code path renders the prose, with or without the flag, which is
+    what makes "byte-identical without the flag" a property of the code rather
+    than a promise about two of them.
+
+    Nothing reaches stdout from here. `main` prints the one document, after the
+    exit code is known, so a caller parsing stdout cannot receive half of one —
+    see `_finish`.
+    """
+    if _RENDER["json"]:
+        _RENDER["document"] = data
+    if callable(human_fn):
+        human_fn()
+        return
+    for line in human_fn:
+        _echo(line)
+
+
+def _finish(args, code, captured, error=None):
+    """Write the JSON document for a `--json` run, and hand back `code`.
+
+    Called from every exit path in `main`, and only from there: one writer, so
+    the document is written once, whole, after the exit code is settled.
+    Anything the command printed on the way is in `lines` — it was captured
+    rather than printed, so prose can never be interleaved with the document.
+
+    `print` rather than `_echo`, and deliberately: `json.dumps` escapes every
+    non-ASCII character by default, so the document is pure ASCII and there is
+    no glyph for a console to fail to spell. The prose inside `lines` is
+    escaped with it, which is the only way a `→` survives a Windows pipe.
+    """
+    if captured is None:
+        return code
+    document = {
+        "schema": JSON_SCHEMA,
+        "command": args.command,
+        "ok": error is None and code in (0, None),
+        "exit_code": 0 if code is None else code,
+        "advisory": sorted(set(_ADVISED)),
+        "error": error,
+        "data": _RENDER["document"],
+        "lines": captured.getvalue().splitlines(),
+    }
+    print(json.dumps(document, indent=2, default=str))
+    return code
+
+
 # Which argument of `args` holds the *plan* name, per command.
 #
 # Six commands opened with the same four lines — resolve the plan, and if there
@@ -402,68 +477,109 @@ def cmd_status(args):
     level = config_mod.normalise_level(current.get("level"))
     measured = briefing.measure(layout, config, current)
 
-    _echo(f"level    L{level} ({config_mod.LEVEL_NAMES[level]})   profile {config.get('profile')}")
-    _echo(f"task     {current.get('task') or '—'}")
-    _echo(f"plan     {current.get('plan') or '—'}   unit {current.get('unit') or '—'}")
-    _echo(f"briefing {measured['chars']}/{measured['cap']} chars (~{measured['approx_tokens']} tokens)")
+    # The prose is collected rather than printed as it is computed, so that
+    # `_emit` decides — once, at the end — whether it is printed at all. The
+    # lines themselves are unchanged, which is what keeps `ctx status` and
+    # `ctx status --json` the same command.
+    out = []
+    say = out.append
+    data = {
+        "level": int(level),
+        "level_name": config_mod.LEVEL_NAMES[level],
+        "profile": config.get("profile"),
+        "task": current.get("task") or None,
+        "plan": current.get("plan") or None,
+        "unit": current.get("unit") or None,
+        "briefing": {
+            "chars": measured["chars"],
+            "cap": measured["cap"],
+            "approx_tokens": measured["approx_tokens"],
+            "truncated": bool(measured["truncated"]),
+        },
+        "attempts": {},
+        "board": None,
+        "orchestrator_edits": [],
+        "journal": {"entries": [], "earlier": 0},
+    }
+
+    say(f"level    L{level} ({config_mod.LEVEL_NAMES[level]})   profile {config.get('profile')}")
+    say(f"task     {current.get('task') or '—'}")
+    say(f"plan     {current.get('plan') or '—'}   unit {current.get('unit') or '—'}")
+    say(f"briefing {measured['chars']}/{measured['cap']} chars (~{measured['approx_tokens']} tokens)")
 
     attempts = {k: v for k, v in (current.get("attempts") or {}).items() if v}
     if attempts:
-        _echo("attempts " + ", ".join(f"{k}×{v}" for k, v in sorted(attempts.items())))
+        data["attempts"] = dict(sorted(attempts.items()))
+        say("attempts " + ", ".join(f"{k}×{v}" for k, v in sorted(attempts.items())))
 
     if current.get("plan"):
         rows, problems = plan_mod.board(layout, current["plan"])
-        _echo("")
-        _echo(f"wave board — plan {current['plan']}:")
+        say("")
+        say(f"wave board — plan {current['plan']}:")
         wave = None
         unsealed = _unsealed_units(
             layout, current["plan"], plan_mod.load_units(layout, current["plan"])
         )
+        board = {
+            "plan": current["plan"], "units": [], "problems": list(problems),
+            "unsealed": sorted(unsealed), "next_wave": None, "in_flight": False,
+        }
+        data["board"] = board
         for level, name, tier, status, owns in rows:
             if level != wave:
                 wave, marker = level, ""
-                _echo(f"  wave {level}")
+                say(f"  wave {level}")
             flag = "→" if name == current.get("unit") else " "
-            _echo(f"   {flag} {name:<24} {tier:<9} "
-                  f"{_status_cell(status, name in unsealed)}")
+            say(f"   {flag} {name:<24} {tier:<9} "
+                f"{_status_cell(status, name in unsealed)}")
+            board["units"].append({
+                "wave": level, "name": name, "tier": tier, "status": status,
+                "owns": list(owns), "active": name == current.get("unit"),
+                "unsealed": name in unsealed,
+            })
         if not rows:
-            _echo("   (no units yet)")
+            say("   (no units yet)")
         if unsealed:
-            _echo(f"   ! unsealed: {', '.join(sorted(unsealed))} — dispatched "
-                  "around `ctx start`, so nothing recorded the contract, the "
-                  "review baseline or")
-            _echo("     the commit they started from. `ctx start` seals; the "
-                  "done-gate refuses a unit it cannot check.")
+            say(f"   ! unsealed: {', '.join(sorted(unsealed))} — dispatched "
+                "around `ctx start`, so nothing recorded the contract, the "
+                "review baseline or")
+            say("     the commit they started from. `ctx start` seals; the "
+                "done-gate refuses a unit it cannot check.")
         for problem in problems:
-            _echo(f"   ! {problem}")
+            say(f"   ! {problem}")
         if not problems:
             nxt = plan_mod.next_wave(layout, current["plan"])
             dispatched, waiting = advice.wave_in_flight(
                 layout, current["plan"], nxt)
+            board["next_wave"] = nxt
+            board["in_flight"] = bool(nxt and dispatched and not waiting)
             if nxt and dispatched and not waiting:
-                _echo(f"   next: wave {nxt} is in flight — {len(dispatched)} unit(s) "
-                      "dispatched, none left to start; review what comes back")
+                say(f"   next: wave {nxt} is in flight — {len(dispatched)} unit(s) "
+                    "dispatched, none left to start; review what comes back")
             else:
-                _echo(f"   next: {'wave %d — /ctx:start' % nxt if nxt else 'plan complete'}")
+                say(f"   next: {'wave %d — /ctx:start' % nxt if nxt else 'plan complete'}")
 
     if current.get("plan") and not (work.claim()[0] or current.get("unit")):
         stray = _orchestrator_edits(layout, current["plan"])
         if stray:
-            _echo("")
-            _echo("orchestrator discipline:")
-            _echo(f"  {len(stray)} file(s) edited from this session during an active")
-            _echo("  wave, owned by no unit. The orchestrator dispatches and reads")
-            _echo("  reports; editing source here is what makes its context grow.")
+            data["orchestrator_edits"] = [str(path) for path in stray]
+            say("")
+            say("orchestrator discipline:")
+            say(f"  {len(stray)} file(s) edited from this session during an active")
+            say("  wave, owned by no unit. The orchestrator dispatches and reads")
+            say("  reports; editing source here is what makes its context grow.")
             for path in stray[:5]:
-                _echo(f"    {path}")
+                say(f"    {path}")
 
     entries, earlier = journal.tail(layout, 8)
-    _echo("")
-    _echo("recent journal:")
+    data["journal"] = {"entries": list(entries), "earlier": earlier}
+    say("")
+    say("recent journal:")
     for entry in entries or ["  (none)"]:
-        _echo(f"  {entry}")
+        say(f"  {entry}")
     if earlier:
-        _echo(f"  … {earlier} earlier entries")
+        say(f"  … {earlier} earlier entries")
+    _emit(data, out)
     return 0
 
 
@@ -901,198 +1017,281 @@ def _digest_advisory(layout):
 def _doctor_policy(layout):
     """Where the active settings came from, and anything a lock refused.
 
+    Returns `(problems, lines, rows)`: the count, the prose `ctx doctor` prints
+    and the structured rows `--json` reports. Prose is returned rather than
+    printed because `cmd_doctor` decides which of the two a run gets, and a
+    section that printed as it computed would print in JSON mode too.
+
     The point of the section is to make "why is this setting what it is"
     answerable in one command instead of by opening three files in two
     directories a developer has never had reason to look in.
     """
-    _echo("## policy")
+    lines, rows = ["## policy"], []
     problems = 0
     try:
         policy = config_mod.resolve_policy(layout)
     except SystemExit as exc:
-        _echo(f"  BAD  {exc}")
-        return 1
+        lines.append(f"  BAD  {exc}")
+        rows.append({"section": "policy", "status": "bad", "detail": str(exc)})
+        return 1, lines, rows
 
     for source, path, present in policy.layers:
         state_word = "ok  " if present else "none"
-        _echo(f"  {state_word} {source:<10} {_home_relative(path)}"
-              + ("" if present else "  (absent)"))
+        lines.append(f"  {state_word} {source:<10} {_home_relative(path)}"
+                     + ("" if present else "  (absent)"))
+        rows.append({"section": "policy", "status": "ok" if present else "none",
+                     "detail": None, "layer": source, "path": str(path),
+                     "present": present})
 
     above = sorted(key for key, src in policy.origin.items() if src != "repo")
     for key in above[:12]:
         holder = policy.locked_by(key)
-        _echo(f"       {key} = {policy.value_of(key)!r} "
-              f"(from {policy.origin[key]}{', locked' if holder else ''})")
+        lines.append(f"       {key} = {policy.value_of(key)!r} "
+                     f"(from {policy.origin[key]}{', locked' if holder else ''})")
+        rows.append({"section": "policy", "status": "note", "detail": None,
+                     "setting": key, "value": policy.value_of(key),
+                     "origin": policy.origin[key], "locked_by": holder})
     if len(above) > 12:
-        _echo(f"       … and {len(above) - 12} more setting(s) from policy")
+        lines.append(f"       … and {len(above) - 12} more setting(s) from policy")
     for key in sorted(policy.locks):
         if key not in policy.origin:
-            _echo(f"       {key} locked by {policy.locks[key]} (no value set)")
+            lines.append(f"       {key} locked by {policy.locks[key]} (no value set)")
+            rows.append({"section": "policy", "status": "note", "detail": None,
+                         "setting": key, "value": None, "origin": None,
+                         "locked_by": policy.locks[key]})
     if not above and not policy.locks:
-        _echo("       no policy above the repository — ctx.yaml decides everything")
+        lines.append("       no policy above the repository — ctx.yaml decides everything")
 
     for source, key, attempted, held, holder in policy.refusals:
-        _echo(f"  BAD  {source} sets {key}={attempted!r}; {holder} policy locks it "
-              f"to {held!r} — the locked value holds")
+        lines.append(f"  BAD  {source} sets {key}={attempted!r}; {holder} policy locks it "
+                     f"to {held!r} — the locked value holds")
+        rows.append({"section": "policy", "status": "bad",
+                     "detail": f"{source} sets {key}={attempted!r}; locked to "
+                               f"{held!r} by {holder}",
+                     "setting": key, "source": source, "attempted": attempted,
+                     "held": held, "locked_by": holder})
         problems += 1
     for note in policy.notes:
-        _echo(f"  warn {note}")
-    return problems
+        lines.append(f"  warn {note}")
+        rows.append({"section": "policy", "status": "warn", "detail": note})
+    return problems, lines, rows
 
 
 def cmd_doctor(args):
     layout, config = _loaded(args)
     problems = 0
+    # Collected, not printed: `_emit` prints the prose or the JSON document,
+    # and a section that printed as it went would do both. The strings are the
+    # ones `ctx doctor` has always printed, in the same order.
+    out, rows = [], []
+    say = out.append
 
+    def check(status, detail=None, **fields):
+        rows.append(dict(fields, section=section, status=status, detail=detail))
+
+    section = "clear"
     if args.clear:
         if layout.errors.is_file():
             layout.errors.unlink()
-            _echo(f"cleared {layout.rel(layout.errors)}")
+            say(f"cleared {layout.rel(layout.errors)}")
+            check("ok", f"cleared {layout.rel(layout.errors)}")
         else:
-            _echo("no hook errors to clear")
-        _echo("")
+            say("no hook errors to clear")
+            check("ok", "no hook errors to clear")
+        say("")
 
-    _echo("## layout")
+    section = "layout"
+    say("## layout")
     for directory in layout.dirs():
         ok = directory.is_dir()
         problems += 0 if ok else 1
-        _echo(f"  {'ok  ' if ok else 'MISS'} {layout.rel(directory)}")
+        say(f"  {'ok  ' if ok else 'MISS'} {layout.rel(directory)}")
+        check("ok" if ok else "miss", path=layout.rel(directory))
 
-    _echo("## briefing budget")
+    section = "briefing"
+    say("## briefing budget")
     current = state.load(layout)
     for level in config_mod.LEVELS:
         probe = dict(current, level=level)
         measured = briefing.measure(layout, config, probe)
         problems += 1 if measured["truncated"] else 0
-        _echo(
+        say(
             f"  {'CUT ' if measured['truncated'] else 'ok  '} L{level} "
             f"{measured['chars']}/{measured['cap']} chars "
             f"(~{measured['approx_tokens']} tokens)"
             + (" — content dropped to fit" if measured["truncated"] else "")
         )
+        check("cut" if measured["truncated"] else "ok", level=int(level),
+              chars=measured["chars"], cap=measured["cap"],
+              approx_tokens=measured["approx_tokens"],
+              truncated=bool(measured["truncated"]))
 
-    _echo("## verify commands")
+    section = "verify"
+    say("## verify commands")
     doctor_accepted = trust_mod.load(layout)
     entries = config.get("verify") or []
     if not entries:
-        _echo("  none configured (fine at L0; required for L1/L2 gates)")
+        say("  none configured (fine at L0; required for L1/L2 gates)")
     for entry in entries:
         if not isinstance(entry, dict):
-            _echo(f"  BAD  {entry!r} is not a mapping")
+            say(f"  BAD  {entry!r} is not a mapping")
+            check("bad", f"{entry!r} is not a mapping")
             problems += 1
             continue
         kind = entry.get("kind")
         if kind != "cmd":
-            _echo(f"  ok   {kind} (no command to probe)")
+            say(f"  ok   {kind} (no command to probe)")
+            check("ok", "no command to probe", kind=kind)
             continue
         command = str(entry.get("run") or "")
         available, why = detect.availability(command)
         if not available:
-            _echo(f"  MISS {command} — {why}")
+            say(f"  MISS {command} — {why}")
+            check("miss", why, kind=kind, command=command)
             problems += 1
         elif args.verify and not trust_mod.is_accepted(entry, doctor_accepted):
             # `--verify` used to shell out here with no trust check, so `doctor`
             # executed a command and then, four lines later, reported that the
             # same command "will not run until you review it". Running is the
             # thing trust gates; reporting is not a substitute for asking.
-            _echo(f"  SKIP {command} — not accepted on this machine; run `ctx trust`")
+            say(f"  SKIP {command} — not accepted on this machine; run `ctx trust`")
+            check("skip", "not accepted on this machine", kind=kind, command=command)
             problems += 1
         elif args.verify:
             code, output = _run(command, layout.root.parent, args.timeout)
             tail = output.strip().splitlines()[-1:] or [""]
-            _echo(f"  {'ok  ' if code == 0 else 'FAIL'} {command} (exit {code}) {tail[0][:80]}")
+            say(f"  {'ok  ' if code == 0 else 'FAIL'} {command} (exit {code}) {tail[0][:80]}")
+            check("ok" if code == 0 else "fail", tail[0][:80], kind=kind,
+                  command=command, exit_code=code)
             problems += 0 if code == 0 else 1
         else:
-            _echo(f"  ok   {command} (available; pass --verify to run it)")
+            say(f"  ok   {command} (available; pass --verify to run it)")
+            check("ok", "available; pass --verify to run it", kind=kind,
+                  command=command)
 
-    _echo("## command trust")
+    section = "trust"
+    say("## command trust")
     declared = trust_mod.declared(layout, config)
     accepted = trust_mod.load(layout)
     pending = [c for c, _s in declared if not trust_mod.is_accepted(c, accepted)]
     if not declared:
-        _echo("  no shell commands declared — nothing to accept")
+        say("  no shell commands declared — nothing to accept")
+        check("ok", "no shell commands declared", declared=0, pending=0)
     elif pending:
-        _echo(f"  MISS {len(pending)} of {len(declared)} command(s) not accepted "
-              "on this machine")
-        for check in pending[:4]:
-            _echo(f"       {check.get('run')}")
-        _echo("       these will not run until you review them: ctx trust")
+        say(f"  MISS {len(pending)} of {len(declared)} command(s) not accepted "
+            "on this machine")
+        for check_entry in pending[:4]:
+            say(f"       {check_entry.get('run')}")
+        say("       these will not run until you review them: ctx trust")
+        check("miss", f"{len(pending)} of {len(declared)} not accepted",
+              declared=len(declared), pending=len(pending),
+              commands=[c.get("run") for c in pending])
         problems += 1
     else:
-        _echo(f"  ok   {len(declared)} command(s) accepted on this machine")
+        say(f"  ok   {len(declared)} command(s) accepted on this machine")
+        check("ok", f"{len(declared)} accepted", declared=len(declared), pending=0)
     legacy = trust_mod.legacy_path_for(layout)
     if legacy.is_file():
         # Explain the silence rather than leaving it mysterious: acceptances
         # recorded before 0.7 lived in the repo and are deliberately ignored.
-        _echo(f"  note {layout.rel(legacy)} is a pre-0.7 in-repo trust store and is")
-        _echo("       ignored — acceptances now live outside the repository. Delete it.")
+        say(f"  note {layout.rel(legacy)} is a pre-0.7 in-repo trust store and is")
+        say("       ignored — acceptances now live outside the repository. Delete it.")
+        check("note", "pre-0.7 in-repo trust store, ignored",
+              path=layout.rel(legacy))
 
+    section = "drift"
     drifted = _verify_drift(layout, config)
     if drifted:
-        _echo("## verify drift")
-        _echo(f"  warn {len(drifted)} work file(s) carry a `verify` block that no "
-              "longer matches ctx.yaml")
+        say("## verify drift")
+        say(f"  warn {len(drifted)} work file(s) carry a `verify` block that no "
+            "longer matches ctx.yaml")
         for path in drifted[:4]:
-            _echo(f"       {layout.rel(path)}")
-        _echo("       that is expected for finished work; re-scaffold if it is not")
+            say(f"       {layout.rel(path)}")
+        say("       that is expected for finished work; re-scaffold if it is not")
+        check("warn", f"{len(drifted)} work file(s) drifted from ctx.yaml",
+              paths=[layout.rel(p) for p in drifted])
 
-    _echo("## decisions")
+    section = "decisions"
+    say("## decisions")
     duplicates = duplicate_adrs(layout)
     if duplicates:
         for number, names in duplicates:
-            _echo(f"  BAD  {len(names)} files claim ADR {number:04d}: "
-                  + ", ".join(names))
+            say(f"  BAD  {len(names)} files claim ADR {number:04d}: "
+                + ", ".join(names))
+            check("bad", f"{len(names)} files claim ADR {number:04d}",
+                  adr=number, files=list(names))
             problems += 1
-        _echo("       Two branches each allocated the next free number and "
-              "merged without a")
-        _echo("       conflict. Renumber all but one — the id is what every "
-              "reference cites.")
+        say("       Two branches each allocated the next free number and "
+            "merged without a")
+        say("       conflict. Renumber all but one — the id is what every "
+            "reference cites.")
     else:
-        _echo("  ok   every ADR id is claimed by exactly one file")
+        say("  ok   every ADR id is claimed by exactly one file")
+        check("ok", "every ADR id is claimed by exactly one file")
 
+    section = "digest"
     advisory = _digest_advisory(layout)
     if advisory:
-        _echo("## journal digest")
+        say("## journal digest")
         for line in advisory:
-            _echo(line)
+            say(line)
+        check("warn", "journal/DIGEST.md is tracked by git")
 
-    _echo("## plugin footprint")
-    _echo("  the briefing above is the hook cost only; the plugin's own always-on")
-    _echo("  context is separate — measure it with: claude plugin details ctx")
+    section = "footprint"
+    say("## plugin footprint")
+    say("  the briefing above is the hook cost only; the plugin's own always-on")
+    say("  context is separate — measure it with: claude plugin details ctx")
 
-    problems += _doctor_policy(layout)
+    policy_problems, policy_lines, policy_rows = _doctor_policy(layout)
+    problems += policy_problems
+    out.extend(policy_lines)
+    rows.extend(policy_rows)
 
-    _echo("## gate")
+    section = "gate"
+    say("## gate")
     override = config_mod.gate_override(layout, config, "doctor")
-    _echo(f"  enabled={bool((config.get('gate') or {}).get('enabled')) and not override.disabled}"
-          f"  max_attempts={(config.get('gate') or {}).get('max_attempts')}"
-          + (f"  (CTX_GATE={override.value} in this environment)" if override.disabled else "")
-          + (f"  (CTX_GATE={override.value} refused by {override.lock} policy — "
-             "the gate ran)" if override.refused else ""))
+    enabled = bool((config.get('gate') or {}).get('enabled')) and not override.disabled
+    say(f"  enabled={enabled}"
+        f"  max_attempts={(config.get('gate') or {}).get('max_attempts')}"
+        + (f"  (CTX_GATE={override.value} in this environment)" if override.disabled else "")
+        + (f"  (CTX_GATE={override.value} refused by {override.lock} policy — "
+           "the gate ran)" if override.refused else ""))
+    check("ok", None, enabled=enabled,
+          max_attempts=(config.get("gate") or {}).get("max_attempts"),
+          override=override.value if override.requested else None,
+          refused=bool(override.refused))
     if override.requested and not override.recorded:
         # The bypass happened; the journal did not take the line. Reported here
         # as well as on stderr because stderr scrolls away and this does not.
-        _echo("  BAD  that override could not be journalled — see "
-              f"{layout.rel(layout.errors)}")
+        say("  BAD  that override could not be journalled — see "
+            f"{layout.rel(layout.errors)}")
+        check("bad", "the gate override could not be journalled")
         problems += 1
 
+    section = "hook-errors"
     if layout.errors.is_file():
         text = layout.errors.read_text(encoding="utf-8", errors="replace")
         lines = text.splitlines()
         recent = _recent_hook_errors(text)
-        _echo(f"## hook errors ({len(lines)} lines in {layout.rel(layout.errors)})")
+        say(f"## hook errors ({len(lines)} lines in {layout.rel(layout.errors)})")
         for line in lines[-6:]:
-            _echo(f"  {line}")
+            say(f"  {line}")
         if recent:
-            _echo(f"  FAIL {len(recent)} failure(s) in the last {RECENT_ERROR_HOURS}h: "
-                  + ", ".join(sorted(set(recent))))
+            say(f"  FAIL {len(recent)} failure(s) in the last {RECENT_ERROR_HOURS}h: "
+                + ", ".join(sorted(set(recent))))
+            check("fail", f"{len(recent)} failure(s) in the last "
+                          f"{RECENT_ERROR_HOURS}h", recent=sorted(set(recent)),
+                  lines=len(lines))
             problems += 1
         else:
-            _echo(f"  ok   none in the last {RECENT_ERROR_HOURS}h — stale log; "
-                  "clear it with `ctx doctor --clear`")
+            say(f"  ok   none in the last {RECENT_ERROR_HOURS}h — stale log; "
+                "clear it with `ctx doctor --clear`")
+            check("ok", f"none in the last {RECENT_ERROR_HOURS}h", recent=[],
+                  lines=len(lines))
 
-    _echo("")
-    _echo(f"{problems} problem(s)" if problems else "all checks passed")
+    say("")
+    say(f"{problems} problem(s)" if problems else "all checks passed")
+    _emit({"problems": problems, "ok": not problems, "checks": rows}, out)
     return 1 if problems else 0
 
 
@@ -1243,7 +1442,15 @@ def cmd_verify(args):
     layout, config = _loaded(args)
 
     if args.plan:
-        return verify.verify_plan(layout, config, bundle.slugify(args.plan))
+        # `verify_plan` prints its own report, in both modes — under `--json`
+        # it lands in the envelope's `lines`, because `main` captures stdout
+        # for the whole run rather than trusting every printer to know.
+        slug = bundle.slugify(args.plan)
+        code = verify.verify_plan(layout, config, slug)
+        _emit({"mode": "plan", "plan": slug, "key": None,
+               "verdict": verify.PASS if code == 0 else verify.FAIL,
+               "checks": [], "pending": []}, [])
+        return code
 
     item = work.active(layout)
     if item is None:
@@ -1253,13 +1460,19 @@ def cmd_verify(args):
     if args.sign_off:
         item.record(args.sign_off, args.note or "")
         journal.append(layout, config, "gate", item.key, f"signed off {args.sign_off}")
-        _echo(f"recorded {args.sign_off} sign-off for {item.key}")
-        _echo("note: any subsequent edit clears this — a sign-off cannot outlive the code")
+        _emit(
+            {"mode": "sign-off", "plan": None, "key": item.key,
+             "verdict": args.sign_off, "checks": [], "pending": []},
+            [f"recorded {args.sign_off} sign-off for {item.key}",
+             "note: any subsequent edit clears this — a sign-off cannot outlive the code"],
+        )
         return 0
 
     checks = verify.ordered(item.checks)
     if not checks:
-        _echo(f"{item.key}: no verify checks configured — the gate cannot hold")
+        _emit({"mode": "gate", "plan": None, "key": item.key,
+               "verdict": None, "checks": [], "pending": []},
+              [f"{item.key}: no verify checks configured — the gate cannot hold"])
         return 1
 
     # The same two inputs the done-gate gives the `diff` kind, so running the
@@ -1271,30 +1484,37 @@ def cmd_verify(args):
         owns=item.owns, recorded=item.recorded, judged=True,
         since=since, wave=wave,
     )
-    _echo(f"{item.key} — {verdict.upper()}")
+    out = [f"{item.key} — {verdict.upper()}"]
     for result in results:
-        _echo(result.line())
+        out.append(result.line())
 
     pending = [r for r in results if r.status == verify.PENDING]
     if pending:
-        _echo("")
-        _echo("judged checks need evaluation before the gate can pass:")
+        out.append("")
+        out.append("judged checks need evaluation before the gate can pass:")
         for result in pending:
-            _echo(f"  {result.kind}: {result.message}")
+            out.append(f"  {result.kind}: {result.message}")
 
     if verdict == verify.PASS:
         state.clear_attempts(layout, item.attempt_key)
     journal.append(layout, config, "gate", item.key, f"manual {verdict}")
+    if verdict == verify.ERROR:
+        out.append("")
+        out.append("no check could run — this is a ctx.yaml problem, not a work failure")
+    _emit(
+        {"mode": "gate", "plan": None, "key": item.key, "verdict": verdict,
+         "checks": [{"kind": r.kind, "label": r.label, "status": r.status,
+                     "message": r.message} for r in results],
+         "pending": [{"kind": r.kind, "message": r.message} for r in pending]},
+        out,
+    )
     # Distinct exit codes so CI can tell "the work is wrong" from "the checks are
     # broken": 0 pass, 1 a criterion failed, 2 nothing could be run.
     if verdict == verify.PASS:
         return 0
     if verdict == verify.ERROR:
-        _echo("")
-        _echo("no check could run — this is a ctx.yaml problem, not a work failure")
         return 2
     return 1
-
 
 
 # --------------------------------------------------------------------------- #
@@ -1374,12 +1594,15 @@ def cmd_plan_check(args):
 
     grouped, problems = plan_mod.check(layout, slug)
     if problems:
-        _echo(f"plan {slug}: {len(problems)} problem(s) — nothing was written")
-        for problem in problems:
-            _echo(f"  - {problem}")
-        _echo("")
-        _echo("Collision problems name the `depends_on` line that fixes them. They are")
-        _echo("not auto-repaired: rewriting a dependency graph is a planning decision.")
+        _emit(
+            {"plan": slug, "problems": list(problems), "waves": [], "units": 0,
+             "revision": None, "graph": None, "session_units": []},
+            [f"plan {slug}: {len(problems)} problem(s) — nothing was written"]
+            + [f"  - {problem}" for problem in problems]
+            + ["",
+               "Collision problems name the `depends_on` line that fixes them. They are",
+               "not auto-repaired: rewriting a dependency graph is a planning decision."],
+        )
         return 1
 
     plan_mod.apply_waves(grouped)
@@ -1387,25 +1610,36 @@ def cmd_plan_check(args):
     plan_mod.render_readme_units(layout, slug, grouped)
     journal.append(layout, config, "plan", slug, f"checked, graph r{revision}")
 
+    out = []
     total = sum(len(units) for units in grouped.values())
-    _echo(f"plan {slug}: {total} unit(s) in {len(grouped)} wave(s) · graph r{revision}")
+    out.append(f"plan {slug}: {total} unit(s) in {len(grouped)} wave(s) · graph r{revision}")
     for level in sorted(grouped):
         names = ", ".join(u.name for u in grouped[level])
-        _echo(f"  wave {level}: {names}")
+        out.append(f"  wave {level}: {names}")
     sessions = [u.name for units in grouped.values() for u in units if u.tier == "session"]
+    problem = ""
     if sessions:
         problem = worktree.check_repo(layout)
-        _echo("")
+        out.append("")
         if problem:
-            _echo(f"note: {', '.join(sessions)} use tier `session`, but {problem}")
+            out.append(f"note: {', '.join(sessions)} use tier `session`, but {problem}")
         else:
-            _echo(
+            out.append(
                 f"note: {', '.join(sessions)} "
                 + ("is tier `session` — it runs" if len(sessions) == 1
                    else "are tier `session` — they run")
                 + " in the main tree unless you dispatch with `ctx start --worktree`"
             )
-    _echo(f"wrote {layout.rel(path)}")
+    out.append(f"wrote {layout.rel(path)}")
+    _emit(
+        {"plan": slug, "problems": [], "units": total, "revision": revision,
+         "graph": layout.rel(path),
+         "waves": [{"wave": level,
+                    "units": [{"name": u.name, "tier": u.tier} for u in grouped[level]]}
+                   for level in sorted(grouped)],
+         "session_units": sessions},
+        out,
+    )
     return 0
 
 
@@ -1854,6 +2088,9 @@ def cmd_findings(args):
     if unit is None:
         return 0
     ledger = findings_mod.load(layout, slug, unit.name)
+    shape = {"mode": "list", "plan": slug, "unit": unit.name, "round": ledger.round,
+             "summary": "", "findings": [], "escalations": [], "blocking": 0,
+             "ok": True, "problem": None}
 
     if args.add:
         finding = ledger.add(args.add, args.summary or "(no summary given)",
@@ -1864,9 +2101,11 @@ def cmd_findings(args):
         contract_mod.seal_findings(
             layout, slug, unit.name, ledger, authoritative=True
         )
-        _echo(f"recorded [{finding.id}] {finding.severity}: {finding.summary}")
         journal.append(layout, config, "finding", unit.name,
                        f"{finding.severity} #{finding.id}")
+        _emit(dict(shape, mode="add", findings=[finding.as_dict()],
+                   summary=ledger.summary(), blocking=len(ledger.blocking())),
+              [f"recorded [{finding.id}] {finding.severity}: {finding.summary}"])
         return 0
 
     if args.set is not None:
@@ -1875,16 +2114,20 @@ def cmd_findings(args):
             evidence=args.evidence or "",
         )
         if not ok:
-            _echo(problem)
+            _emit(dict(shape, mode="set", ok=False, problem=problem), [problem])
             return 1
         # Also authoritative: `--set` is how a finding is *meant* to move, so a
         # legitimate close re-seals rather than tripping the gate.
         contract_mod.seal_findings(
             layout, slug, unit.name, ledger, authoritative=True
         )
-        _echo(f"[{args.set}] is now {args.status}")
         journal.append(layout, config, "finding", unit.name,
                        f"#{args.set} -> {args.status}")
+        moved = ledger.get(args.set)
+        _emit(dict(shape, mode="set", summary=ledger.summary(),
+                   findings=[moved.as_dict()] if moved else [],
+                   blocking=len(ledger.blocking())),
+              [f"[{args.set}] is now {args.status}"])
         return 0
 
     # Listing only observes: it may add a finding to the seal or strengthen one,
@@ -1892,28 +2135,35 @@ def cmd_findings(args):
     # file from laundering itself by running a read-only ctx command afterwards.
     contract_mod.seal_findings(layout, slug, unit.name, ledger)
 
+    blocking = ledger.blocking()
+    shape = dict(
+        shape, summary=ledger.summary() if ledger.findings else "",
+        findings=[f.as_dict() for f in ledger.findings],
+        escalations=[e.as_dict() for e in ledger.escalations],
+        blocking=len(blocking), ok=not blocking,
+    )
     if not ledger.findings and not ledger.escalations:
-        _echo(f"no findings recorded for {unit.name}")
+        _emit(shape, [f"no findings recorded for {unit.name}"])
         return 0
+    out = []
     if ledger.findings:
-        _echo(ledger.summary())
+        out.append(ledger.summary())
         for finding in ledger.findings:
-            _echo("  " + finding.line())
+            out.append("  " + finding.line())
     if ledger.escalations:
         # A fact about a round, never a finding's status (see `findings`'s
         # module docstring) — shown separately so "what got escalated and
-        # why" stays visible even once every finding that caused it is closed.
-        _echo("")
-        _echo("escalations:")
+        # why" stays visible once every finding that caused it is closed.
+        out.append("")
+        out.append("escalations:")
         for escalation in ledger.escalations:
-            _echo("  " + escalation.line())
-    blocking = ledger.blocking()
+            out.append("  " + escalation.line())
     if blocking:
-        _echo("")
-        _echo(f"{len(blocking)} blocking finding(s) — the `review` gate refuses "
-              "while any critical or important finding is open.")
-        return 1
-    return 0
+        out.append("")
+        out.append(f"{len(blocking)} blocking finding(s) — the `review` gate refuses "
+                   "while any critical or important finding is open.")
+    _emit(shape, out)
+    return 1 if blocking else 0
 
 
 def cmd_phase(args):
@@ -2210,8 +2460,8 @@ def cmd_next(args):
     """Name the single most useful next action, and why."""
     layout, config = _loaded(args)
     command, why = advice.next_action(layout, config)
-    _echo(f"next: {command}")
-    _echo(f"      {why}")
+    _emit({"action": command, "why": why},
+          [f"next: {command}", f"      {why}"])
     return 0
 
 
@@ -2552,17 +2802,24 @@ def cmd_ci(args):
     layout, config = _loaded(args)
     current = state.load(layout)
     failures = []
+    # Collected rather than printed: `_emit` decides at the end whether this
+    # run prints the prose or the JSON document. The lines are unchanged.
+    out, rows = [], []
+    say = out.append
 
     def report(name, ok, detail=""):
         # Detail explains a failure. Printed next to `ok` it reads as advice to
         # act on something that is fine.
+        rows.append({"section": section, "name": name, "ok": bool(ok),
+                     "detail": detail if not ok else ""})
         if ok:
-            _echo(f"  ok   {name}")
+            say(f"  ok   {name}")
         else:
-            _echo(f"  FAIL {name}" + (f" — {detail}" if detail else ""))
+            say(f"  FAIL {name}" + (f" — {detail}" if detail else ""))
             failures.append(name)
 
-    _echo("## ledger")
+    section = "ledger"
+    say("## ledger")
     missing = [d for d in layout.dirs() if not d.is_dir()]
     report("layout complete", not missing,
            ", ".join(layout.rel(d) for d in missing))
@@ -2570,7 +2827,8 @@ def cmd_ci(args):
     report("schema current", not behind and not ahead,
            f"{len(behind)} behind, {len(ahead)} ahead — run `ctx migrate`")
 
-    _echo("## budgets")
+    section = "budgets"
+    say("## budgets")
     for level in config_mod.LEVELS:
         measured = briefing.measure(layout, config, dict(current, level=level))
         report(f"L{level} briefing fits without truncation",
@@ -2578,7 +2836,8 @@ def cmd_ci(args):
                f"{measured['chars']}/{measured['cap']} chars — shorten the objective "
                "and criteria on disk rather than raising the cap")
 
-    _echo("## verify commands")
+    section = "verify"
+    say("## verify commands")
     entries = [e for e in (config.get("verify") or []) if isinstance(e, dict)]
     for entry in entries:
         if entry.get("kind") != "cmd":
@@ -2587,9 +2846,10 @@ def cmd_ci(args):
         available, why = detect.availability(command)
         report(f"available: {command}", available, why)
     if not entries:
-        _echo("  none configured")
+        say("  none configured")
 
-    _echo("## command trust")
+    section = "trust"
+    say("## command trust")
     declared = trust_mod.declared(layout, config)
     accepted = trust_mod.load(layout)
     pending = [c for c, _s in declared if not trust_mod.is_accepted(c, accepted)]
@@ -2604,333 +2864,401 @@ def cmd_ci(args):
                not missing and not problems,
                "; ".join(problems) or f"{len(missing)} not locked")
         for check, source in missing[:4]:
-            _echo(f"       {check.get('run')} — from {source}")
+            say(f"       {check.get('run')} — from {source}")
         if pending:
-            _echo(f"  note {len(pending)} of these are not accepted on this machine "
-                  "— that gates the local gate, not this pipeline")
+            say(f"  note {len(pending)} of these are not accepted on this machine "
+                "— that gates the local gate, not this pipeline")
     else:
         report("every verify command is accepted on this machine", not pending,
                f"{len(pending)} awaiting review — run `ctx trust`")
 
-    _echo("## decisions")
+    section = "decisions"
+    say("## decisions")
     duplicates = duplicate_adrs(layout)
     report("every ADR id is claimed by exactly one file", not duplicates,
            "; ".join(f"{len(names)} files claim ADR {number:04d}: "
                      + ", ".join(names) for number, names in duplicates))
 
+    section = "digest"
     advisory = _digest_advisory(layout)
     if advisory:
         # Reported, never failed. An existing project that upgrades ctx must not
         # find its pipeline red over a file that has been tracked since the day
         # it ran `ctx init`.
-        _echo("## journal digest")
+        say("## journal digest")
         for line in advisory:
-            _echo(line)
+            say(line)
 
     if current.get("spec"):
-        _echo("## spec")
+        section = "spec"
+        say("## spec")
         ready, blocking = spec_mod.ready(layout, current["spec"])
         report(f"{current['spec']} has no open blocking questions", ready,
                f"{len(blocking)} unanswered")
 
     plans = args.plan or ([current["plan"]] if current.get("plan") else [])
     for slug in plans if isinstance(plans, list) else [plans]:
-        _echo(f"## plan {slug}")
+        section = f"plan {slug}"
+        say(f"## plan {slug}")
         _grouped, problems = plan_mod.check(layout, slug)
         report("graph is valid and collision-free", not problems,
                f"{len(problems)} problem(s)")
         for problem in problems:
-            _echo(f"       {problem}")
+            say(f"       {problem}")
 
-    _echo("")
+    say("")
     if failures:
-        _echo(f"{len(failures)} check(s) failed: " + ", ".join(failures))
-        return 1
-    _echo("all checks passed")
-    return 0
+        say(f"{len(failures)} check(s) failed: " + ", ".join(failures))
+    else:
+        say("all checks passed")
+    _emit({"ok": not failures, "failures": list(failures), "checks": rows}, out)
+    return 1 if failures else 0
 
 
 # --------------------------------------------------------------------------- #
-# parser
+# the command registry
 # --------------------------------------------------------------------------- #
+#
+# `build_parser` used to be forty-one hand-written blocks, and the flags every
+# command shares — `--strict`, and now `--json` — were added by a loop over the
+# subparsers afterwards, because writing them out forty-one times was worse.
+# The registry finishes that thought: a command is *data* — a name, a help
+# line, the function it runs, its own flags — and the loop below turns every
+# row into a subparser the same way. Adding a command is one row; giving one
+# `--json` is one keyword on that row. Nothing has to be kept in step by hand,
+# which is what the two coordinated edits per command used to require.
+#
+# `tests/test_commands_registry.py` pins the whole parser surface — every flag,
+# default, choice list and help string of all forty-one — against a fixture
+# generated from the hand-written parser this replaced.
+
+Command = collections.namedtuple("Command", "name help func args emits_json")
+
+
+def command(name, help_text, func, *args, emits_json=False):
+    """One row of the registry: a subcommand, its help, its flags.
+
+    `emits_json=True` gives the command `--json`; it must also route its result
+    through `_emit`, which is what actually makes the flag mean anything.
+    """
+    return Command(name, help_text, func, args, emits_json)
+
+
+def flag(*names, **options):
+    """One `add_argument` call, held as data until `build_parser` makes it."""
+    return names, options
+
+
+NAME = flag("name", nargs="?", default=None)
+REST = lambda help_text: flag("rest", nargs="*", help=help_text)  # noqa: E731
+PLAN = flag("--plan", default=None)
+STRICT_HELP = "escalate advisory conditions to exit 1"
+
+
+def commands():
+    """The registry, built fresh on every call.
+
+    A function rather than a module-level tuple for two reasons, both of them
+    behaviours the hand-written `build_parser` had for free by virtue of
+    running its forty-one blocks at call time:
+
+      * The choice lists are read *now*. `verify.JUDGED`, `plan_mod.TIERS` and
+        `findings_mod.SEVERITIES` are derived from tables a module can extend;
+        frozen into a tuple at import, a kind registered afterwards would be
+        missing from `--sign-off` for the life of the process, and
+        `tests/test_kind_table_reaches_complexity.py` refuses exactly that.
+      * `cmd_*` is looked up in this module's globals when the row is built,
+        so replacing one — which is how `tests/test_cli_exit_codes.py` makes a
+        command raise — still reaches the parser.
+    """
+    return (
+        command(
+            "init", "scaffold .ctx/ and propose verify commands", cmd_init,
+            flag("--profile", choices=sorted(config_mod.PROFILES)),
+            flag("--verify-now", action="store_true",
+                 help="run each proposed command and keep only those that pass"),
+            flag("--timeout", type=int, default=120),
+            flag("--force", action="store_true", help="rewrite ctx.yaml"),
+        ),
+        command("status", "level, active work, budget, recent journal", cmd_status,
+                emits_json=True),
+        command("briefing", "print exactly what SessionStart would inject", cmd_briefing),
+        command("resume", "expanded state for on-demand recall", cmd_resume),
+        command("digest", "regenerate journal/DIGEST.md", cmd_digest),
+        command("drop", "return to L0 trace", cmd_drop),
+        command("list", "saved contexts, project and global", cmd_list),
+        command(
+            "level", "set the engagement level", cmd_level,
+            flag("level", choices=list(config_mod.LEVELS)),
+        ),
+        command(
+            "task", "escalate to L1 with a single task file", cmd_task,
+            NAME,
+            REST("objective, as loose words"),
+            flag("--objective", default=None),
+            flag("--force", action="store_true"),
+        ),
+        command(
+            "save", "write a portable context bundle", cmd_save,
+            NAME,
+            REST("more of the name, as loose words"),
+            flag("--stdin", action="store_true", help="read the bundle body from stdin"),
+            flag("--file", default=None),
+            flag("--tag", action="append", default=[]),
+        ),
+        command(
+            "load", "print a bundle: project, then global, then path", cmd_load,
+            NAME,
+            REST("more of the name, as loose words"),
+        ),
+        command(
+            "promote", "copy a bundle into the global store", cmd_promote,
+            NAME,
+            REST("more of the name, as loose words"),
+        ),
+        command(
+            "journal", "append one entry", cmd_journal,
+            flag("kind"),
+            flag("target"),
+            flag("--note", default=None),
+        ),
+        command(
+            "prune", "fold old journal days into monthly archives", cmd_prune,
+            flag("--before", default=None,
+                 help="YYYY-MM-DD; defaults to journal.keep_days"),
+            flag("--discard", action="store_true", help="delete rather than archive"),
+        ),
+        command(
+            "doctor", "check layout, budgets, verify commands, gate", cmd_doctor,
+            flag("--verify", action="store_true", help="actually run verify commands"),
+            flag("--clear", action="store_true",
+                 help="delete the hook error log before checking"),
+            flag("--timeout", type=int, default=300),
+            emits_json=True,
+        ),
+        command(
+            "spec", "escalate to L2 and scaffold a spec", cmd_spec,
+            NAME,
+            REST("intent, as loose words"),
+            flag("--intent", default=None),
+        ),
+        command(
+            "question", "add questions to a spec", cmd_question,
+            flag("name"),
+            flag("text", nargs="+"),
+            flag("--non-blocking", action="store_true"),
+        ),
+        command("ask", "list questions still open on a spec", cmd_ask, NAME),
+        command(
+            "resolve", "answer a question and record it", cmd_resolve,
+            NAME,
+            flag("--question", required=True, help="substring of the question"),
+            flag("--answer", required=True),
+        ),
+        command("spec-ready", "Gate 1 as an exit code (0 = ready)", cmd_spec_ready, NAME),
+        command(
+            "decide", "record an ADR", cmd_decide,
+            flag("title", nargs="*", help="the decision, as loose words"),
+            flag("--context", default=None),
+            flag("--decision", default=None),
+            flag("--consequences", default=None),
+        ),
+        command(
+            "verify", "run the done-gate for the active work", cmd_verify,
+            flag("--sign-off", choices=list(verify.JUDGED), default=None,
+                 help="record a judged check as passed"),
+            flag("--note", default=None),
+            flag("--plan", default=None,
+                 help="verify every unit in a plan headlessly (for CI)"),
+            emits_json=True,
+        ),
+        command(
+            "plan", "scaffold a plan (refuses if the spec is ambiguous)", cmd_plan,
+            NAME,
+            flag("--spec", default=None),
+            flag("--unit", action="append", default=[]),
+            flag("--no-spec", action="store_true", help="plan without a spec"),
+        ),
+        command(
+            "plan-unit", "scaffold one unit file", cmd_plan_unit,
+            flag("name"),
+            PLAN,
+            flag("--objective", default=None),
+            flag("--tier", choices=list(plan_mod.TIERS), default="subagent"),
+            flag("--owns", action="append", default=[]),
+        ),
+        command("plan-check", "compute waves and check for collisions", cmd_plan_check,
+                NAME, emits_json=True),
+        command(
+            "start", "dispatch brief for the next (or given) wave", cmd_start,
+            NAME,
+            flag("--wave", type=int, default=None),
+            flag("--worktree", action="store_true",
+                 help="isolate each session-tier unit in its own temporary "
+                      "worktree; off by default, because a worktree holds its "
+                      "branch exclusively and the main tree can no longer "
+                      "check it out"),
+            flag("--rebaseline", action="append", default=[], metavar="UNIT",
+                 help="re-capture this unit's review baseline over the current "
+                      "tree, replacing what dispatch recorded. Repeatable. "
+                      "Refuses if the contract itself changed — that is what "
+                      "--reseal is for. For the real crash case; everything "
+                      "else keeps the baseline it was dispatched with"),
+            flag("--reseal", action="append", default=[], metavar="UNIT",
+                 help="accept this unit's contract as it now stands: re-record "
+                      "the promise the done-gate holds it to, and retake the "
+                      "baseline with it. Repeatable, journalled by name and by "
+                      "changed field. A planning decision, never implied by "
+                      "--rebaseline"),
+            # Accepted and ignored: this was the opt-out before worktrees became
+            # opt-in, and it still reads correctly in older docs and scripts.
+            flag("--no-worktree", action="store_true", help=argparse.SUPPRESS),
+        ),
+        command(
+            "snapshot", "capture a content snapshot for a unit", cmd_snapshot,
+            NAME,
+            PLAN,
+            flag("--phase", choices=["before", "after"], default="before"),
+            flag("--round", type=int, default=1),
+        ),
+        command(
+            "review", "build the review package for a unit", cmd_review,
+            NAME,
+            PLAN,
+            flag("--round", type=int, default=None),
+        ),
+        command(
+            "findings", "list or update a unit's review findings", cmd_findings,
+            NAME,
+            PLAN,
+            flag("--add", choices=list(findings_mod.SEVERITIES), default=None),
+            flag("--summary", default=None),
+            flag("--where", default=None),
+            flag("--evidence", default=None),
+            flag("--set", type=int, default=None, metavar="ID"),
+            flag("--status", choices=list(findings_mod.STATUSES), default=None),
+            flag("--ruling", default=None),
+            emits_json=True,
+        ),
+        command(
+            "phase",
+            "advance or inspect a unit's phase gate (kind: bug, or a declared "
+            "`phases:` list)",
+            cmd_phase,
+            flag("name", nargs="?", default=None, help="unit name"),
+            flag("phase", nargs="?", default=None,
+                 help="phase to record; omit to list status instead"),
+            PLAN,
+            flag("--command", default=None),
+            flag("--exit-code", type=int, default=None),
+            flag("--evidence", default=None),
+            flag("--note", default=None),
+        ),
+        command(
+            "merge", "land a unit's worktree branch after its gate passes", cmd_merge,
+            NAME,
+            PLAN,
+            flag("--skip-gate", action="store_true",
+                 help="merge without running the unit's verify checks"),
+        ),
+        command(
+            "worktree", "list or discard ctx worktrees", cmd_worktree,
+            flag("action", choices=["list", "remove"]),
+            NAME,
+            # Spelled as `ctx merge --plan` is. Without it the ambiguity refusal
+            # that `worktree.remove` raises — "pass --plan to say which one to
+            # discard" — named a flag the subparser did not define, so the one
+            # message that told the user what to do could not be acted on.
+            flag("--plan", default=None,
+                 help="which plan's worktree to discard, when two share a name"),
+            flag("--force", action="store_true",
+                 help="discard uncommitted work in the worktree"),
+        ),
+        command("next", "the single most useful next action, from state", cmd_next,
+                emits_json=True),
+        command(
+            "escalate", "L1 to L2, carrying the task into a spec", cmd_escalate,
+            NAME,
+            flag("--spec", default=None, help="name the spec differently"),
+        ),
+        command(
+            "trust", "review and accept the verify commands to run", cmd_trust,
+            flag("--yes", action="store_true", help="accept the listed commands"),
+            flag("--lock", action="store_true",
+                 help="write .ctx/trust.lock from the declared commands, to commit"),
+            flag("--verify-lock", dest="verify_lock", action="store_true",
+                 help="check the ledger against .ctx/trust.lock; accepts nothing"),
+        ),
+        command(
+            "migrate", "upgrade ledger files to this plugin's schema", cmd_migrate,
+            flag("--check", action="store_true",
+                 help="report what needs migrating and exit 1; writes nothing"),
+        ),
+        command("budget", "predicted and measured context cost", cmd_budget, PLAN),
+        command(
+            "telemetry", "hook durations, briefing sizes, reported spend", cmd_telemetry,
+            # Spend is reported, never observed: this process cannot see a model's
+            # token usage, so the orchestrator that ran the wave hands the number
+            # over afterwards. Kept as a flag on `telemetry` rather than its own
+            # command because it writes to, and is read back out of, exactly the
+            # same file.
+            flag("--spend", default=None, metavar="TOKENS",
+                 help="record what --unit actually cost, as reported by its "
+                      "runner (partial data by construction)"),
+            flag("--unit", default=None, metavar="NAME",
+                 help="the unit --spend refers to"),
+            flag("--plan", default=None,
+                 help="pair reported spend with this plan's predicted scores"),
+        ),
+        command(
+            "ci", "every headless check in one exit code", cmd_ci,
+            flag("--plan", action="append", default=[]),
+            emits_json=True,
+        ),
+        command(
+            "unit", "focus a unit, or record its outcome", cmd_unit,
+            NAME,
+            PLAN,
+            flag("--status", choices=list(plan_mod.STATUSES), default="running"),
+            flag("--force", action="store_true",
+                 help="mark done even though the unit's gate did not pass"),
+        ),
+        command("handoff", "write a resume packet for a session or person", cmd_handoff,
+                NAME),
+    )
+
+
+# The commands that answer in JSON. Derived, never maintained: a command gets
+# on this list by carrying `emits_json=True` in the registry above, which is
+# the same edit that gives it the flag.
+JSON_COMMANDS = frozenset(entry.name for entry in commands() if entry.emits_json)
+
 
 def build_parser():
     parser = argparse.ArgumentParser(prog="ctx", description=__doc__)
     parser.add_argument("--version", action="version", version=f"ctx {__version__}")
     parser.add_argument("--cwd", default=None, help="resolve the ledger from here")
-    parser.add_argument("--strict", action="store_true",
-                        help="escalate advisory conditions to exit 1")
+    parser.add_argument("--strict", action="store_true", help=STRICT_HELP)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("init", help="scaffold .ctx/ and propose verify commands")
-    p.add_argument("--profile", choices=sorted(config_mod.PROFILES))
-    p.add_argument("--verify-now", action="store_true",
-                   help="run each proposed command and keep only those that pass")
-    p.add_argument("--timeout", type=int, default=120)
-    p.add_argument("--force", action="store_true", help="rewrite ctx.yaml")
-    p.set_defaults(func=cmd_init)
-
-    sub.add_parser("status", help="level, active work, budget, recent journal").set_defaults(func=cmd_status)
-    sub.add_parser("briefing", help="print exactly what SessionStart would inject").set_defaults(func=cmd_briefing)
-    sub.add_parser("resume", help="expanded state for on-demand recall").set_defaults(func=cmd_resume)
-    sub.add_parser("digest", help="regenerate journal/DIGEST.md").set_defaults(func=cmd_digest)
-    sub.add_parser("drop", help="return to L0 trace").set_defaults(func=cmd_drop)
-    sub.add_parser("list", help="saved contexts, project and global").set_defaults(func=cmd_list)
-
-    p = sub.add_parser("level", help="set the engagement level")
-    p.add_argument("level", choices=list(config_mod.LEVELS))
-    p.set_defaults(func=cmd_level)
-
-    p = sub.add_parser("task", help="escalate to L1 with a single task file")
-    p.add_argument("name", nargs="?", default=None)
-    p.add_argument("rest", nargs="*", help="objective, as loose words")
-    p.add_argument("--objective", default=None)
-    p.add_argument("--force", action="store_true")
-    p.set_defaults(func=cmd_task)
-
-    p = sub.add_parser("save", help="write a portable context bundle")
-    p.add_argument("name", nargs="?", default=None)
-    p.add_argument("rest", nargs="*", help="more of the name, as loose words")
-    p.add_argument("--stdin", action="store_true", help="read the bundle body from stdin")
-    p.add_argument("--file", default=None)
-    p.add_argument("--tag", action="append", default=[])
-    p.set_defaults(func=cmd_save)
-
-    p = sub.add_parser("load", help="print a bundle: project, then global, then path")
-    p.add_argument("name", nargs="?", default=None)
-    p.add_argument("rest", nargs="*", help="more of the name, as loose words")
-    p.set_defaults(func=cmd_load)
-
-    p = sub.add_parser("promote", help="copy a bundle into the global store")
-    p.add_argument("name", nargs="?", default=None)
-    p.add_argument("rest", nargs="*", help="more of the name, as loose words")
-    p.set_defaults(func=cmd_promote)
-
-    p = sub.add_parser("journal", help="append one entry")
-    p.add_argument("kind")
-    p.add_argument("target")
-    p.add_argument("--note", default=None)
-    p.set_defaults(func=cmd_journal)
-
-    p = sub.add_parser("prune", help="fold old journal days into monthly archives")
-    p.add_argument("--before", default=None, help="YYYY-MM-DD; defaults to journal.keep_days")
-    p.add_argument("--discard", action="store_true", help="delete rather than archive")
-    p.set_defaults(func=cmd_prune)
-
-    p = sub.add_parser("doctor", help="check layout, budgets, verify commands, gate")
-    p.add_argument("--verify", action="store_true", help="actually run verify commands")
-    p.add_argument("--clear", action="store_true",
-                   help="delete the hook error log before checking")
-    p.add_argument("--timeout", type=int, default=300)
-    p.set_defaults(func=cmd_doctor)
-
-    p = sub.add_parser("spec", help="escalate to L2 and scaffold a spec")
-    p.add_argument("name", nargs="?", default=None)
-    p.add_argument("rest", nargs="*", help="intent, as loose words")
-    p.add_argument("--intent", default=None)
-    p.set_defaults(func=cmd_spec)
-
-    p = sub.add_parser("question", help="add questions to a spec")
-    p.add_argument("name")
-    p.add_argument("text", nargs="+")
-    p.add_argument("--non-blocking", action="store_true")
-    p.set_defaults(func=cmd_question)
-
-    p = sub.add_parser("ask", help="list questions still open on a spec")
-    p.add_argument("name", nargs="?", default=None)
-    p.set_defaults(func=cmd_ask)
-
-    p = sub.add_parser("resolve", help="answer a question and record it")
-    p.add_argument("name", nargs="?", default=None)
-    p.add_argument("--question", required=True, help="substring of the question")
-    p.add_argument("--answer", required=True)
-    p.set_defaults(func=cmd_resolve)
-
-    p = sub.add_parser("spec-ready", help="Gate 1 as an exit code (0 = ready)")
-    p.add_argument("name", nargs="?", default=None)
-    p.set_defaults(func=cmd_spec_ready)
-
-    p = sub.add_parser("decide", help="record an ADR")
-    p.add_argument("title", nargs="*", help="the decision, as loose words")
-    p.add_argument("--context", default=None)
-    p.add_argument("--decision", default=None)
-    p.add_argument("--consequences", default=None)
-    p.set_defaults(func=cmd_decide)
-
-    p = sub.add_parser("verify", help="run the done-gate for the active work")
-    p.add_argument("--sign-off", choices=list(verify.JUDGED), default=None,
-                   help="record a judged check as passed")
-    p.add_argument("--note", default=None)
-    p.add_argument("--plan", default=None,
-                   help="verify every unit in a plan headlessly (for CI)")
-    p.set_defaults(func=cmd_verify)
-
-    p = sub.add_parser("plan", help="scaffold a plan (refuses if the spec is ambiguous)")
-    p.add_argument("name", nargs="?", default=None)
-    p.add_argument("--spec", default=None)
-    p.add_argument("--unit", action="append", default=[])
-    p.add_argument("--no-spec", action="store_true", help="plan without a spec")
-    p.set_defaults(func=cmd_plan)
-
-    p = sub.add_parser("plan-unit", help="scaffold one unit file")
-    p.add_argument("name")
-    p.add_argument("--plan", default=None)
-    p.add_argument("--objective", default=None)
-    p.add_argument("--tier", choices=list(plan_mod.TIERS), default="subagent")
-    p.add_argument("--owns", action="append", default=[])
-    p.set_defaults(func=cmd_plan_unit)
-
-    p = sub.add_parser("plan-check", help="compute waves and check for collisions")
-    p.add_argument("name", nargs="?", default=None)
-    p.set_defaults(func=cmd_plan_check)
-
-    p = sub.add_parser("start", help="dispatch brief for the next (or given) wave")
-    p.add_argument("name", nargs="?", default=None)
-    p.add_argument("--wave", type=int, default=None)
-    p.add_argument("--worktree", action="store_true",
-                   help="isolate each session-tier unit in its own temporary "
-                        "worktree; off by default, because a worktree holds its "
-                        "branch exclusively and the main tree can no longer "
-                        "check it out")
-    p.add_argument("--rebaseline", action="append", default=[], metavar="UNIT",
-                   help="re-capture this unit's review baseline over the current "
-                        "tree, replacing what dispatch recorded. Repeatable. "
-                        "Refuses if the contract itself changed — that is what "
-                        "--reseal is for. For the real crash case; everything "
-                        "else keeps the baseline it was dispatched with")
-    p.add_argument("--reseal", action="append", default=[], metavar="UNIT",
-                   help="accept this unit's contract as it now stands: re-record "
-                        "the promise the done-gate holds it to, and retake the "
-                        "baseline with it. Repeatable, journalled by name and by "
-                        "changed field. A planning decision, never implied by "
-                        "--rebaseline")
-    # Accepted and ignored: this was the opt-out before worktrees became opt-in,
-    # and it still reads correctly in older docs and scripts.
-    p.add_argument("--no-worktree", action="store_true", help=argparse.SUPPRESS)
-    p.set_defaults(func=cmd_start)
-
-    p = sub.add_parser("snapshot", help="capture a content snapshot for a unit")
-    p.add_argument("name", nargs="?", default=None)
-    p.add_argument("--plan", default=None)
-    p.add_argument("--phase", choices=["before", "after"], default="before")
-    p.add_argument("--round", type=int, default=1)
-    p.set_defaults(func=cmd_snapshot)
-
-    p = sub.add_parser("review", help="build the review package for a unit")
-    p.add_argument("name", nargs="?", default=None)
-    p.add_argument("--plan", default=None)
-    p.add_argument("--round", type=int, default=None)
-    p.set_defaults(func=cmd_review)
-
-    p = sub.add_parser("findings", help="list or update a unit's review findings")
-    p.add_argument("name", nargs="?", default=None)
-    p.add_argument("--plan", default=None)
-    p.add_argument("--add", choices=list(findings_mod.SEVERITIES), default=None)
-    p.add_argument("--summary", default=None)
-    p.add_argument("--where", default=None)
-    p.add_argument("--evidence", default=None)
-    p.add_argument("--set", type=int, default=None, metavar="ID")
-    p.add_argument("--status", choices=list(findings_mod.STATUSES), default=None)
-    p.add_argument("--ruling", default=None)
-    p.set_defaults(func=cmd_findings)
-
-    p = sub.add_parser(
-        "phase",
-        help="advance or inspect a unit's phase gate (kind: bug, or a declared `phases:` list)",
-    )
-    p.add_argument("name", nargs="?", default=None, help="unit name")
-    p.add_argument("phase", nargs="?", default=None,
-                    help="phase to record; omit to list status instead")
-    p.add_argument("--plan", default=None)
-    p.add_argument("--command", default=None)
-    p.add_argument("--exit-code", type=int, default=None)
-    p.add_argument("--evidence", default=None)
-    p.add_argument("--note", default=None)
-    p.set_defaults(func=cmd_phase)
-
-    p = sub.add_parser("merge", help="land a unit's worktree branch after its gate passes")
-    p.add_argument("name", nargs="?", default=None)
-    p.add_argument("--plan", default=None)
-    p.add_argument("--skip-gate", action="store_true",
-                   help="merge without running the unit's verify checks")
-    p.set_defaults(func=cmd_merge)
-
-    p = sub.add_parser("worktree", help="list or discard ctx worktrees")
-    p.add_argument("action", choices=["list", "remove"])
-    p.add_argument("name", nargs="?", default=None)
-    # Spelled as `ctx merge --plan` is. Without it the ambiguity refusal that
-    # `worktree.remove` raises — "pass --plan to say which one to discard" —
-    # named a flag the subparser did not define, so the one message that told
-    # the user what to do could not be acted on.
-    p.add_argument("--plan", default=None,
-                   help="which plan's worktree to discard, when two share a name")
-    p.add_argument("--force", action="store_true",
-                   help="discard uncommitted work in the worktree")
-    p.set_defaults(func=cmd_worktree)
-
-    sub.add_parser("next", help="the single most useful next action, from state").set_defaults(func=cmd_next)
-
-    p = sub.add_parser("escalate", help="L1 to L2, carrying the task into a spec")
-    p.add_argument("name", nargs="?", default=None)
-    p.add_argument("--spec", default=None, help="name the spec differently")
-    p.set_defaults(func=cmd_escalate)
-
-    p = sub.add_parser("trust", help="review and accept the verify commands to run")
-    p.add_argument("--yes", action="store_true", help="accept the listed commands")
-    p.add_argument("--lock", action="store_true",
-                   help="write .ctx/trust.lock from the declared commands, to commit")
-    p.add_argument("--verify-lock", dest="verify_lock", action="store_true",
-                   help="check the ledger against .ctx/trust.lock; accepts nothing")
-    p.set_defaults(func=cmd_trust)
-
-    p = sub.add_parser("migrate", help="upgrade ledger files to this plugin's schema")
-    p.add_argument("--check", action="store_true",
-                   help="report what needs migrating and exit 1; writes nothing")
-    p.set_defaults(func=cmd_migrate)
-
-    p = sub.add_parser("budget", help="predicted and measured context cost")
-    p.add_argument("--plan", default=None)
-    p.set_defaults(func=cmd_budget)
-
-    p = sub.add_parser("telemetry",
-                       help="hook durations, briefing sizes, reported spend")
-    # Spend is reported, never observed: this process cannot see a model's
-    # token usage, so the orchestrator that ran the wave hands the number over
-    # afterwards. Kept as a flag on `telemetry` rather than its own command
-    # because it writes to, and is read back out of, exactly the same file.
-    p.add_argument("--spend", default=None, metavar="TOKENS",
-                   help="record what --unit actually cost, as reported by its "
-                        "runner (partial data by construction)")
-    p.add_argument("--unit", default=None, metavar="NAME",
-                   help="the unit --spend refers to")
-    p.add_argument("--plan", default=None,
-                   help="pair reported spend with this plan's predicted scores")
-    p.set_defaults(func=cmd_telemetry)
-
-    p = sub.add_parser("ci", help="every headless check in one exit code")
-    p.add_argument("--plan", action="append", default=[])
-    p.set_defaults(func=cmd_ci)
-
-    p = sub.add_parser("unit", help="focus a unit, or record its outcome")
-    p.add_argument("name", nargs="?", default=None)
-    p.add_argument("--plan", default=None)
-    p.add_argument("--status", choices=list(plan_mod.STATUSES), default="running")
-    p.add_argument("--force", action="store_true",
-                   help="mark done even though the unit's gate did not pass")
-    p.set_defaults(func=cmd_unit)
-
-    p = sub.add_parser("handoff", help="write a resume packet for a session or person")
-    p.add_argument("name", nargs="?", default=None)
-    p.set_defaults(func=cmd_handoff)
-
-    # `--strict` belongs to every command, not to a list of them, because the
-    # caller who needs it is a script and it must not have to remember which
-    # subcommands accept it. SUPPRESS keeps the subparser from writing its own
-    # default over a `--strict` that was given before the subcommand name.
-    for subparser in sub.choices.values():
+    for entry in commands():
+        subparser = sub.add_parser(entry.name, help=entry.help)
+        for names, options in entry.args:
+            subparser.add_argument(*names, **options)
+        if entry.emits_json:
+            # Rendering, and nothing else: the exit code, the refusals and the
+            # work done are the same with the flag and without it.
+            subparser.add_argument(
+                "--json", action="store_true",
+                help="print one JSON document instead of prose")
+        # `--strict` belongs to every command, not to a list of them, because
+        # the caller who needs it is a script and it must not have to remember
+        # which subcommands accept it. SUPPRESS keeps the subparser from
+        # writing its own default over a `--strict` given before the
+        # subcommand name.
         subparser.add_argument("--strict", action="store_true",
-                               default=argparse.SUPPRESS,
-                               help="escalate advisory conditions to exit 1")
+                               default=argparse.SUPPRESS, help=STRICT_HELP)
+        subparser.set_defaults(func=entry.func)
 
     return parser
 
@@ -2952,8 +3280,21 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     _ADVISED.clear()
+    # `--json` changes rendering and nothing else: the same function runs, with
+    # the same arguments, and returns the same exit code. What changes is where
+    # its prose goes — into a buffer that becomes the document's `lines`, so
+    # that stdout carries one JSON document and never prose next to one. The
+    # capture is around the whole call rather than inside `_echo` because the
+    # gate, `verify_plan` and `plan.check` print through `verify.echo` too, and
+    # a caller parsing stdout must not have to know which printer ran.
+    _RENDER["json"] = bool(getattr(args, "json", False))
+    _RENDER["document"] = None
+    captured = io.StringIO() if _RENDER["json"] else None
+    held = (contextlib.redirect_stdout(captured) if captured
+            else contextlib.nullcontext())
     try:
-        code = args.func(args)
+        with held:
+            code = args.func(args)
     except SystemExit as exc:
         # How a command refuses: `raise SystemExit("why")`. It used to reach
         # the shell as exit 0 with the reason on stdout for all but seven
@@ -2961,7 +3302,7 @@ def main(argv=None):
         message = str(exc)
         if message and not message.isdigit():
             _warn(message)
-            return 2
+            return _finish(args, 2, captured, error=message)
         raise
     except KeyboardInterrupt:
         # Not ours to describe or to convert: the caller pressed ^C and expects
@@ -2975,12 +3316,13 @@ def main(argv=None):
         # name too long` reads very differently from `KeyError: 'wave'`.
         if _env_flag("CTX_DEBUG"):
             traceback.print_exc()
-        _warn(f"ctx {args.command} failed: {type(exc).__name__}: {exc}")
-        return 2
+        message = f"ctx {args.command} failed: {type(exc).__name__}: {exc}"
+        _warn(message)
+        return _finish(args, 2, captured, error=message)
     if _ADVISED and _strict(args) and code in (0, None):
         # Advisory, and the caller asked to hear about it. The notice itself is
         # already on stdout; this names the condition so a log says which one.
         _warn("strict: " + ", ".join(sorted(set(_ADVISED)))
               + " — advisory, escalated by --strict/CTX_STRICT")
-        return 1
-    return code
+        return _finish(args, 1, captured)
+    return _finish(args, code, captured)
