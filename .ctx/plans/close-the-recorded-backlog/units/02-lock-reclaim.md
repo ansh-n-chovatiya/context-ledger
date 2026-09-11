@@ -14,7 +14,7 @@ forbid:
   - ctx/journal.py
   - ctx/telemetry.py
 budget_tokens: 45000
-status: pending
+status: done
 verify:
   - kind: cmd
     run: python3 -m unittest discover -s tests -q

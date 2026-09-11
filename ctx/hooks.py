@@ -25,7 +25,7 @@ import time
 import traceback
 
 from . import (
-    briefing, bundle, config as config_mod, frontmatter, journal, paths,
+    briefing, bundle, config as config_mod, frontmatter, journal, log, paths,
     spec as spec_mod, state, telemetry, verify, work,
 )
 
@@ -106,8 +106,8 @@ def _report_unusable_config(event, refusal):
             f"(the {event} hook did nothing rather than failing your session)",
             file=sys.stderr,
         )
-    except Exception:  # pragma: no cover - a console that cannot take the line
-        pass
+    except Exception as exc:  # pragma: no cover - a console that cannot take it
+        log.failure("hooks.report_unusable_config", exc, event=event)
 
 
 def _read_payload(stream):
@@ -139,14 +139,24 @@ ERROR_LOG_KEEP_LINES = 200
 
 
 def _log_error(layout, event, detail):
+    # Two destinations for one failure, and they answer different questions.
+    # `hook-errors.log` is the durable record `ctx doctor` reads afterwards;
+    # the diagnostic log is off unless somebody turned it on, and exists for
+    # the support case where the answer is wanted *now*, on the terminal,
+    # possibly because `hook-errors.log` is itself the thing that will not
+    # write. Neither may raise: a hook that fails while reporting a failure is
+    # the one outcome this whole module is built to prevent.
+    log.error(f"hooks.{event}", detail)
     try:
         layout.runtime.mkdir(parents=True, exist_ok=True)
         _rotate_errors(layout.errors)
         stamp = datetime.datetime.now().isoformat(timespec="seconds")
         with layout.errors.open("a", encoding="utf-8") as handle:
             handle.write(f"--- {stamp} {event} ---\n{detail}\n")
-    except OSError:
-        pass
+    except OSError as exc:
+        # The durable half is gone: a read-only checkout or a full disk, and
+        # `ctx doctor` will report nothing at all about this session.
+        log.failure("hooks.log_error", exc, event=event, path=layout.errors)
 
 
 def _rotate_errors(path):
@@ -155,8 +165,8 @@ def _rotate_errors(path):
             return
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines(True)
         path.write_text("".join(lines[-ERROR_LOG_KEEP_LINES:]), encoding="utf-8")
-    except OSError:
-        pass
+    except OSError as exc:
+        log.failure("hooks.rotate_errors", exc, path=path)
 
 
 # --------------------------------------------------------------------------- #

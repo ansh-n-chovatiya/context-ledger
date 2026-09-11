@@ -2,7 +2,7 @@
   "ctx_schema": 1,
   "plan": "close-the-recorded-backlog",
   "spec": "close-the-recorded-backlog",
-  "revision": 3,
+  "revision": 2,
   "generated": "2026-09-12",
   "waves": [
     [
@@ -114,7 +114,6 @@
       ],
       "owns": [
         "pyproject.toml",
-        "ctx/lock.py",
         "ctx/paths.py",
         "ctx/migrate.py",
         "ctx/trust.py",

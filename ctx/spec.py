@@ -58,6 +58,47 @@ SLUG_FALLBACK = "spec"
 # the ASCII control range, the Windows-reserved set, and both separators.
 _UNSAFE = re.compile(r'[\x00-\x1f\x7f<>:"/\\|?*]+')
 
+# Names Windows resolves to a device rather than to a file, in *every*
+# directory and with *any* extension after them: `con.md` in a subfolder is
+# still the console, not a file called `con.md`. Opening one for writing
+# succeeds and the bytes go to the device, so `ctx task con` would report a
+# task written and leave `.ctx/tasks/` empty; `con.ctx.md` and `con/spec.md`
+# fail outright. None of that is visible from a POSIX box, which is why this
+# went unnoticed - and why the guard is unconditional rather than behind a
+# platform check. A slug that changes shape depending on the machine that
+# produced it is worse than the bug: the ledger is committed, so two
+# developers would write two different paths for one name.
+#
+# COM0/LPT0 are included: they are not devices on every Windows build, but
+# they are reserved in current documentation and cost nothing to avoid.
+RESERVED_DEVICE_NAMES = frozenset(
+    ["con", "prn", "aux", "nul", "conin$", "conout$"]
+    + [f"com{digit}" for digit in range(10)]
+    + [f"lpt{digit}" for digit in range(10)]
+)
+
+# Appended to a name that would otherwise be a device. A suffix rather than a
+# digest because the user typed a real word: `con-ctx.md` is still obviously
+# the thing they named, where `con-3f2a91b4.md` is a name nobody can match
+# back to what they asked for. It is also stable, so the path a lookup builds
+# is the path the write built.
+RESERVED_SUFFIX = "-ctx"
+
+
+def avoid_reserved_name(text):
+    """`text`, made into something that is a file on Windows as well.
+
+    Idempotent, because the result is no longer a reserved name and so falls
+    straight through a second call - `normalise_slug` and `bundle.slugify`
+    both re-run on slugs they have already produced.
+    """
+    head, dot, tail = str(text or "").partition(".")
+    # Trailing dots and spaces are ignored when Windows matches a device name,
+    # so `con ` and `con.` are the console too.
+    if head.strip(" .").lower() not in RESERVED_DEVICE_NAMES:
+        return text
+    return f"{head}{RESERVED_SUFFIX}{dot}{tail}"
+
 
 def normalise_slug(slug):
     """A slug reduced to one directory name that is safe and short everywhere.
@@ -89,6 +130,9 @@ def normalise_slug(slug):
     directory and the second would silently open the first one's spec. The
     digest is what keeps them apart, and it is taken from the whole slug, so it
     differs wherever the slugs do.
+
+    A slug that is a reserved Windows device name leaves here with a suffix;
+    `avoid_reserved_name` explains why that is not behind a platform check.
     """
     # `-` is stripped from the ends alongside dots and spaces: an input of
     # `///` substitutes to a bare `-`, which is a legal but useless directory
@@ -98,7 +142,10 @@ def normalise_slug(slug):
         return SLUG_FALLBACK
     raw = text.encode("utf-8")
     if len(raw) <= SLUG_MAX_BYTES:
-        return text
+        # `avoid_reserved_name` only ever appends, and only to a name of at
+        # most six characters, so the cap is still met - a capped slug ends in
+        # `-<digest>` and is never a device name in the first place.
+        return avoid_reserved_name(text)
     digest = hashlib.sha256(raw).hexdigest()[:SLUG_HASH_CHARS]
     # `errors="ignore"` drops a UTF-8 sequence the cut landed in the middle of,
     # so a non-ASCII intent is shortened to a character boundary rather than to

@@ -144,6 +144,52 @@ def covers(relpath, patterns):
 
 
 # --------------------------------------------------------------------------- #
+# tree state, as one value
+# --------------------------------------------------------------------------- #
+
+# What `tree_token` ignores on top of `DEFAULT_IGNORE`: the ledger itself. Every
+# ctx command writes to `.ctx/` — a journal line, `state.json`, a plan's status
+# — so a token that counted it would differ between two commands that did
+# nothing to the project, which is precisely the case the token exists to
+# recognise as *unchanged*.
+TOKEN_IGNORE = DEFAULT_IGNORE + (".ctx",)
+
+
+def tree_token(root, ignore=TOKEN_IGNORE, max_files=MAX_FILES):
+    """One digest of every file's path, contents and executable bit under `root`.
+
+    "Is this tree bit-for-bit what it was when that command ran?" asked as a
+    single comparable value. `capture` already answers a richer version of the
+    question, but it writes a manifest and stores blobs; this reads and hashes,
+    and is the only thing a result cache needs.
+
+    `None` — never a token — when the tree cannot be described in full: the file
+    cap was reached, or a file could not be read. A caller compares tokens for
+    equality, and `None` is equal to nothing, so an unanswerable question fails
+    closed into "assume it changed".
+    """
+    root = Path(root)
+    found, truncated = walk(root, ignore=ignore, max_files=max_files)
+    if truncated:
+        return None
+    digest = hashlib.sha256()
+    for relpath in found:
+        path = root / relpath
+        try:
+            data = path.read_bytes()
+            # The mode matters and the bytes do not carry it: `chmod +x` on a
+            # script changes what a `cmd` check does without changing a byte of
+            # the file it runs.
+            executable = bool(path.stat().st_mode & 0o111)
+        except OSError:
+            return None
+        digest.update(relpath.encode("utf-8", "replace"))
+        digest.update(b"\x00x" if executable else b"\x00-")
+        digest.update(hashlib.sha256(data).digest())
+    return digest.hexdigest()
+
+
+# --------------------------------------------------------------------------- #
 # capture
 # --------------------------------------------------------------------------- #
 

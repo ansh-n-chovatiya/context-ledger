@@ -15,7 +15,7 @@ import datetime
 import re
 from pathlib import Path
 
-from . import atomic, config as config_mod, frontmatter, paths, redact
+from . import atomic, config as config_mod, frontmatter, paths, redact, spec as spec_mod
 
 SUFFIX = ".ctx.md"
 
@@ -33,8 +33,16 @@ _SLUG = re.compile(r"[^a-z0-9]+")
 
 
 def slugify(name):
+    """A name reduced to one filename component.
+
+    Every bundle, task, plan and unit filename in the ledger comes through
+    here, so the reserved-device guard belongs here rather than at each call
+    site: `ctx task con` wrote `.ctx/tasks/con.md`, which on Windows is the
+    console. `spec.avoid_reserved_name` holds the list and the reasoning, and
+    is shared so that a spec directory and a bundle of the same name agree.
+    """
     slug = _SLUG.sub("-", str(name).strip().lower()).strip("-")
-    return slug or "context"
+    return spec_mod.avoid_reserved_name(slug or "context")
 
 
 def template(name, project=None):

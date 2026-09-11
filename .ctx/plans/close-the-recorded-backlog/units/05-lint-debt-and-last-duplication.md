@@ -10,6 +10,7 @@ depends_on:
   - 04-command-surface-and-wave-gating
 owns:
   - pyproject.toml
+  - ctx/lock.py
   - ctx/paths.py
   - ctx/migrate.py
   - ctx/trust.py
@@ -84,12 +85,24 @@ false claim arrives.
     every `commands/*.md` in the slash table, every `config.DEFAULTS` leaf
     documented, the verify-kind count matching `len(verify.KINDS)`.
 
+**A third instance of the device-name hole, handed over by unit 01.**
+13. `ctx/lock.py` has its **own** `slugify` and builds
+    `.ctx/runtime/locks/<slug>.lock`, so a plan or unit named `con` still
+    produces a Windows device path. Unit 01 fixed `bundle.slugify` and
+    `spec.normalise_slug` and could not touch this one — `lock.py` belonged to
+    a concurrent sibling. Route it through `spec.avoid_reserved_name` (unit 01
+    exported `RESERVED_DEVICE_NAMES`, `RESERVED_SUFFIX` and that function), or
+    say why a lock path is exempt. A test covers a lock named `con`.
+    Check whether `lock.slugify` duplicates `spec`'s logic closely enough to be
+    folded in entirely rather than merely called — that is the same
+    one-definition rule this unit's criterion 6 applies to unit paths.
+
 **All.**
-13. `python3 -m unittest discover -s tests -q` passes; `ctx doctor`, `ctx ci`
+14. `python3 -m unittest discover -s tests -q` passes; `ctx doctor`, `ctx ci`
     and `ruff` all exit 0. `SUITE_FLOOR`/`REQUIRED_FLOOR` and the coverage
     floors stay equal to their copies — raising one is a deliberate act to
     report, not a silent adjustment.
-14. No file outside `owns` is modified.
+15. No file outside `owns` is modified.
 
 ## Return contract
 Files changed · criteria passed · verbatim verify output · the rules you

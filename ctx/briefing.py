@@ -20,27 +20,39 @@ TRUNCATED = "…[briefing truncated]"
 
 
 def build(layout, config, state):
-    level = config_mod.normalise_level(state.get("level"))
-    cap = config_mod.briefing_cap(config, level)
-    blocks = _blocks(layout, config, state, level)
-    return _fit(blocks, cap)
+    return _render(layout, config, state)[2]
 
 
 def measure(layout, config, state):
     """Used by `ctx doctor` so the budget is observable, not aspirational."""
-    level = config_mod.normalise_level(state.get("level"))
-    text = build(layout, config, state)
+    level, cap, text, dropped = _render(layout, config, state)
     return {
         "level": level,
         "chars": len(text),
-        "cap": config_mod.briefing_cap(config, level),
+        "cap": cap,
         "approx_tokens": round(len(text) / 3.6),
         # `_fit` clamps to the cap, so overflow is impossible and reporting it
         # would be a tautology. Truncation is the signal worth acting on: it
         # means state a session needed was dropped to fit.
-        "truncated": TRUNCATED in text,
+        #
+        # Reported by `_fit` rather than by looking for the marker in the
+        # text. The marker needs room to be printed, so a cap too small for
+        # even one block used to produce an empty briefing that claimed
+        # nothing had been dropped - the one case where a caller most needs to
+        # know. A block whose own content happened to contain the marker would
+        # have been read the other way round.
+        "truncated": dropped,
         "text": text,
     }
+
+
+def _render(layout, config, state):
+    """`(level, cap, text, dropped)` — everything both callers above need."""
+    level = config_mod.normalise_level(state.get("level"))
+    cap = config_mod.briefing_cap(config, level)
+    blocks = _blocks(layout, config, state, level)
+    text, dropped = _fit(blocks, cap)
+    return level, cap, text, dropped
 
 
 def _blocks(layout, config, state, level):
@@ -197,18 +209,40 @@ def _first_paragraph(text):
 
 
 def _fit(blocks, cap):
+    """`(text, dropped)` for `blocks` inside `cap` characters.
+
+    `dropped` is the answer to "did a session lose something it was meant to
+    have", and it is returned rather than inferred because the marker is not
+    always affordable: at a cap under its own 21 characters there is no room
+    to say anything at all, and an empty string is exactly what a project with
+    nothing to report produces.
+
+    `cap <= 0` is that other case and is never a truncation. It is L0's
+    documented "no briefing" setting, reached by putting `briefing_chars.l0:
+    0` in `ctx.yaml`; treating it as a truncation would make `ctx doctor` and
+    `ctx ci` fail every project that had deliberately turned the briefing off.
+    """
     if cap <= 0:
-        return ""
-    out, used = [], 0
+        return "", False
+    out, used, dropped = [], 0, False
     for block in blocks:
         cost = len(block) + (1 if out else 0)
         if used + cost > cap:
-            room = cap - used - len(TRUNCATED) - 1
+            dropped = True
+            room = cap - used - len(TRUNCATED) - (1 if out else 0)
             if room > 24:
                 out.append(block[:room].rstrip() + TRUNCATED)
-            elif out:
+            elif room >= 0:
+                # Too little of the block to be worth keeping, but enough
+                # space to say so. Previously this needed `out` to be
+                # non-empty, so a cap that fitted neither the first block nor
+                # a trimmed head of it returned an empty briefing.
                 out.append(TRUNCATED)
+            # `room < 0` leaves no room for the marker either, and no block is
+            # given back to make some: the blocks are in priority order, so
+            # dropping the headline to print "truncated" would cost the reader
+            # more than it told them. `dropped` carries it instead.
             break
         out.append(block)
         used += cost
-    return "\n".join(out)
+    return "\n".join(out), dropped
