@@ -1550,7 +1550,7 @@ def gate_check(layout, config, slug, unit):
             "",
             "`ctx start` is what records a seal. Dispatch the wave through it "
             "(other units in",
-            f"this plan have one, so this unit was sent out around it), or pass "
+            "this plan have one, so this unit was sent out around it), or pass "
             "--force to accept",
             "a unit nothing can be checked against.",
         ]

@@ -30,6 +30,13 @@ import os
 import time
 import uuid
 
+# The one import this module makes from the package, for the one rule it must
+# not re-invent: `spec.avoid_reserved_name`. Top-level and not deferred —
+# `spec` reaches only `config`, `frontmatter`, `log`, `miniyaml` and `paths`,
+# none of which import `lock`, so there is no cycle to break here and
+# `tests/test_no_import_cycles.py` keeps it that way.
+from . import spec
+
 # Five seconds is the general default: long enough to outlast any single
 # read-modify-write in this codebase, short enough that a session never appears
 # to hang on a lock a dead process left behind.
@@ -61,7 +68,7 @@ def limits(name):
 
 
 def slugify(name):
-    """A filename that cannot leave the locks directory.
+    """A filename that cannot leave the locks directory, on any platform.
 
     Callers pass logical keys — `f"plan-{slug}"` — and a plan slug reaches the
     ledger from a filename, a CLI argument or a frontmatter field. Anything
@@ -69,11 +76,31 @@ def slugify(name):
     and a NUL all collapse into something that is only ever a name. Two distinct
     keys can collide into one slug; the cost of that is serialising a little more
     than strictly necessary, which is the safe direction.
+
+    That left one name it could not make into a file. A plan or unit called
+    `con`, `nul`, `aux`, `com1` … is a *device* on Windows, and the `.lock`
+    extension does not help: `con.lock` is still the console. `open(…, O_EXCL)`
+    against it does not fail cleanly either — it either succeeds against a
+    device that is not a file, or raises somewhere the fail-open path reads as
+    "no lock available", which turns a serialised write back into a racing one
+    on exactly the platform whose filesystem made the race worth closing.
+
+    `spec.avoid_reserved_name` holds the list and the reasoning, and is called
+    rather than copied. It is *not* folded in wholesale: `spec.normalise_slug`
+    and `bundle.slugify` both lower-case and both hash a long slug to keep two
+    intents apart, and neither is right here. A lock name is not a name anyone
+    reads back, collisions are harmless (they only over-serialise), and
+    lower-casing would make `plan-Auth` and `plan-auth` one lock — a *silent*
+    behaviour change in the other direction. The character policy stays local;
+    the one rule with a platform in it is shared.
     """
     text = str(name)
     cleaned = "".join(char if char in _SAFE else "-" for char in text)
     cleaned = cleaned.strip("-")[:_MAX_SLUG].strip("-")
-    return cleaned or "unnamed"
+    # After `avoid_reserved_name`, not before: it appends a suffix, and a name
+    # capped at `_MAX_SLUG` first is never a device name anyway (the longest is
+    # seven characters), so the cap still holds.
+    return spec.avoid_reserved_name(cleaned or "unnamed")
 
 
 def path_for(layout, name):

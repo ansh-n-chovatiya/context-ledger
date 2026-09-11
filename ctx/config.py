@@ -412,7 +412,11 @@ def _read_policy(path, source):
     try:
         parsed = miniyaml.loads(text) or {}
     except miniyaml.MiniYamlError as exc:
-        raise SystemExit(f"{path}: {source} policy is unreadable — {exc}")
+        # `from exc` rather than a bare re-raise: the parse error is the whole
+        # explanation of why the policy could not be applied, and losing its
+        # traceback would leave `CTX_LOG=debug` with nothing to print beyond
+        # the one line already in the message.
+        raise SystemExit(f"{path}: {source} policy is unreadable — {exc}") from exc
     if not isinstance(parsed, dict):
         raise SystemExit(f"{path}: {source} policy must be a mapping")
     return parsed

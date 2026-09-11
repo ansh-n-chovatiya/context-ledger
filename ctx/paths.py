@@ -95,6 +95,27 @@ class Layout:
         """
         return self.plans / plan_slug / "units" / f"{unit_name}.md"
 
+    def unit_files(self):
+        """Every unit file in the ledger, sorted, `[]` when there are no plans.
+
+        The sweep half of `unit_file`. Three modules used to spell
+        `layout.plans.glob("*/units/*.md")` out by hand — `commands.py` for
+        `ctx check`'s contract-drift pass, `migrate.py` for the per-kind
+        migration, `trust.py` for collecting declared commands — and each also
+        carried its own `is_dir()` guard, because `Path.glob` on a directory
+        that does not exist is an empty iterator on some platforms and an
+        `OSError` waiting to happen on others. Three copies of a search is the
+        same defect as three copies of a path: change where units live and two
+        of them keep looking in the old place.
+
+        Sorted here rather than at the call sites: all three sorted anyway, and
+        a sweep whose order depends on `readdir` gives `ctx migrate` a
+        different report on two machines with the same ledger.
+        """
+        if not self.plans.is_dir():
+            return []
+        return sorted(self.plans.glob("*/units/*.md"))
+
     def journal_file(self, day):
         return self.journal / f"{day}.md"
 

@@ -23,7 +23,6 @@ touched to make this pass.
 
 import copy
 import datetime
-import json
 import os
 import re
 import subprocess
@@ -511,7 +510,7 @@ def cmd_status(args):
         data["board"] = board
         for level, name, tier, status, owns in rows:
             if level != wave:
-                wave, marker = level, ""
+                wave = level
                 say(f"  wave {level}")
             flag = "→" if name == current.get("unit") else " "
             say(f"   {flag} {name:<24} {tier:<9} "
@@ -876,10 +875,18 @@ def cmd_prune(args):
     folded, archives = journal.prune(layout, config, before=before,
                                      archive=not args.discard)
     if not folded:
-        keep = (config.get("journal") or {}).get("keep_days", 0)
+        # `journal.keep_days`, not a second `int(... or 0)` here. The two must
+        # agree about what `keep_days: ninety` means, or this command advises
+        # one thing while `journal.prune` — which read the setting through
+        # that function and got 0 — does another.
+        keep = journal.keep_days(config)
         _echo("nothing to prune"
               + ("" if before or keep else
-                 " — set journal.keep_days in ctx.yaml, or pass --before"))
+                 " — journal.keep_days is 0, which keeps every day file for "
+                 "ever. Set it in ctx.yaml, or pass --before YYYY-MM-DD."))
+        notice = journal.overgrown(layout, config)
+        if notice:
+            _echo(f"  {notice}")
         return 0
     journal.write_digest(layout, config)
     verb = "discarded" if args.discard else "archived"
@@ -901,7 +908,7 @@ def _verify_drift(layout, config):
                if isinstance(c, dict) and c.get("kind") == "cmd"]
     drifted = []
     paths = list(layout.tasks.glob("*.md")) if layout.tasks.is_dir() else []
-    paths += list(layout.plans.glob("*/units/*.md")) if layout.plans.is_dir() else []
+    paths += layout.unit_files()
     for path in sorted(paths):
         doc = frontmatter.read(path)
         if doc is None:
@@ -1220,6 +1227,20 @@ def cmd_doctor(args):
         for line in advisory:
             say(line)
         check("warn", "journal/DIGEST.md is tracked by git")
+
+    section = "journal"
+    # The other half of `keep_days: 0`. The default keeps every day file for
+    # ever, which is the right default — `prune` rewrites committed files, and
+    # folding tracked history on a schedule nobody set is worse than a
+    # directory that grows — but a silent one would be a surprise a year
+    # later. `journal.overgrown` returns a line past `GROWTH_WARN_FILES` and
+    # None below it, so this section only appears when there is something to
+    # say. Advisory: it never prunes and never adds to `problems`.
+    notice = journal.overgrown(layout, config)
+    if notice:
+        say("## journal size")
+        say(f"  note {notice}")
+        check("note", notice, keep_days=journal.keep_days(config))
 
     section = "footprint"
     say("## plugin footprint")
@@ -1554,7 +1575,7 @@ def cmd_plan(args):
     _echo(f"L2 planned · plan {slug}")
     _echo(f"readme {layout.rel(plan_mod.readme_path(layout, slug))}")
     _echo(f"units  {layout.rel(plan_mod.units_dir(layout, slug))}/")
-    for unit_name, fresh, path in created:
+    for _unit_name, fresh, path in created:
         _echo(f"  {'created' if fresh else 'exists '} {layout.rel(path)}")
     if not created:
         _echo("  no units yet — `ctx plan-unit` or write NN-name.md files directly")

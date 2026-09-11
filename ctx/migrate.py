@@ -56,12 +56,12 @@ def discover(layout):
         ("task", layout.tasks.glob("*.md"), KEY_CTX),
         ("spec", layout.specs.glob("*/spec.md"), KEY_CTX),
         ("questions", layout.specs.glob("*/questions.md"), KEY_CTX),
-        ("unit", layout.plans.glob("*/units/*.md"), KEY_CTX),
+        ("unit", layout.unit_files(), KEY_CTX),
         ("decision", layout.decisions.glob("*.md"), KEY_CTX),
         ("bundle", layout.contexts.glob("*" + bundle.SUFFIX), KEY_BUNDLE),
         # Path shapes taken from `findings.path_for` and `phases.path_for` —
-        # both write beside the plan's units, not inside `units/`, so the
-        # `*/units/*.md` glob above never saw them.
+        # both write beside the plan's units, not inside `units/`, so
+        # `Layout.unit_files()` above never saw them.
         ("findings", layout.plans.glob("*/findings/*.md"), KEY_CTX),
         ("phases", layout.plans.glob("*/phases/*.md"), KEY_CTX),
     )

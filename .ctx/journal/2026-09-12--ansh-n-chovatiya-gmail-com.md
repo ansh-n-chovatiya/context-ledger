@@ -10,3 +10,7 @@
 01:08 | unit | 02-lock-reclaim | done
 01:09 | unit | 03-logging-and-retention | done
 01:11 | unit | 04-command-surface-and-wave-gating | done
+01:11 | start | close-the-recorded-backlog | wave 2, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+01:12 | plan | close-the-recorded-backlog | checked, graph r4
+01:29 | plan | close-the-recorded-backlog | checked, graph r5
+01:45 | unit | 05-lint-debt-and-last-duplication | done

@@ -2,7 +2,7 @@
   "ctx_schema": 1,
   "plan": "close-the-recorded-backlog",
   "spec": "close-the-recorded-backlog",
-  "revision": 5,
+  "revision": 3,
   "generated": "2026-09-12",
   "waves": [
     [
@@ -13,11 +13,6 @@
     ],
     [
       "05-lint-debt-and-last-duplication"
-    ],
-    [
-      "06-test-isolation-guard",
-      "07-wave-scope-after-done",
-      "08-test-lint-debt"
     ]
   ],
   "units": {
@@ -135,77 +130,6 @@
       "reads": [],
       "forbid": [],
       "budget_tokens": 75000
-    },
-    "06-test-isolation-guard": {
-      "tier": "subagent",
-      "wave": 3,
-      "depends_on": [
-        "05-lint-debt-and-last-duplication"
-      ],
-      "owns": [
-        "tests/support.py",
-        "tests/test_isolation_guard.py"
-      ],
-      "reads": [
-        "ctx/paths.py"
-      ],
-      "forbid": [
-        "ctx/review.py",
-        "ctx/commands.py"
-      ],
-      "budget_tokens": 50000
-    },
-    "07-wave-scope-after-done": {
-      "tier": "subagent",
-      "wave": 3,
-      "depends_on": [
-        "05-lint-debt-and-last-duplication"
-      ],
-      "owns": [
-        "ctx/review.py",
-        "tests/test_wave_scope_after_done.py"
-      ],
-      "reads": [
-        "ctx/plan.py",
-        "ctx/verify.py"
-      ],
-      "forbid": [
-        "tests/support.py",
-        "ctx/verify.py",
-        "ctx/commands.py"
-      ],
-      "budget_tokens": 55000
-    },
-    "08-test-lint-debt": {
-      "tier": "subagent",
-      "wave": 3,
-      "depends_on": [
-        "05-lint-debt-and-last-duplication"
-      ],
-      "owns": [
-        "pyproject.toml",
-        "tests/test_audit_wave1.py",
-        "tests/test_core.py",
-        "tests/test_flow_end_to_end.py",
-        "tests/test_plan.py",
-        "tests/test_plan_lock.py",
-        "tests/test_cli_wiring.py",
-        "tests/test_sibling_scope.py",
-        "tests/test_supply_chain.py",
-        "tests/test_ci_floor.py",
-        "tests/test_dispatch.py",
-        "tests/test_dispatch_selection.py",
-        "tests/test_gate_bypass.py",
-        "tests/test_journal_authors.py",
-        "tests/test_tier_from_the_graph.py"
-      ],
-      "reads": [],
-      "forbid": [
-        "tests/support.py",
-        "ctx/review.py",
-        "ctx/verify.py"
-      ],
-      "budget_tokens": 45000
     }
   }
 }

@@ -26,7 +26,7 @@ import traceback
 
 from . import (
     briefing, bundle, config as config_mod, frontmatter, journal, log, paths,
-    spec as spec_mod, state, telemetry, verify, work,
+    state, telemetry, verify, work,
 )
 
 

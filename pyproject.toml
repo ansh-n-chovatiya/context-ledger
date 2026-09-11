@@ -116,9 +116,11 @@ include = [
 # A narrow rule set, chosen by measurement rather than by taste: every rule
 # selected here is one the tree passes *today*, so the check starts green and
 # any red is a regression someone introduced. The `ignore` list below is the
-# honest half of that -- codes whose current violations live in `ctx/*.py` or
-# in test files this unit does not own, recorded as follow-up work instead of
-# being made to disappear by widening an exclude list. A configuration that
+# honest half of that -- codes whose remaining violations are all in `tests/`
+# modules nobody has owned yet, recorded as follow-up work with their exact
+# sites instead of being made to disappear by widening an exclude list or by
+# scattering `# noqa` over them. Nothing under `ctx/` is ignored any more: the
+# runtime package passes every selected rule. A configuration that
 # excludes every file that would fail is a check that cannot fail.
 #
 # No `target-version`: ruff reads it from `requires-python` above, and the
@@ -193,16 +195,42 @@ select = [
     "ASYNC",
     "RUF200",
 ]
-# Follow-up work, not absolution. Each of these has live violations in files
-# outside this unit's `owns`, and the unit contract forbids reaching into
-# `ctx/*.py` to make a rule pass. Delete an entry once its violations are gone.
+# Follow-up work, not absolution, and four entries shorter than it was.
+#
+# `F541` and `B904` are gone from this list because their violations are gone:
+# `ctx/verify.py` had one f-string with no placeholder and `ctx/config.py` one
+# `raise` inside an `except` that dropped the parse error it was reporting on.
+# Both are fixed in the code, not suppressed here, so the rules are now live
+# over the whole tree.
+#
+# The four that remain each have live violations *only* in `tests/*.py`
+# modules, and every one of those modules is outside the `owns` of the unit
+# that enabled the other two -- the same reason this list existed in the first
+# place. The counts and sites below were re-derived with
+# `ruff check --isolated --select F401,F841,B007,E741 tests/` rather than
+# carried forward from the previous comment, which had drifted: it claimed
+# `ctx/verify.py:1295` and `ctx/commands.py:507` for lines that had since
+# moved, and undercounted E741 by one.
+#
+# None of the four is load-bearing anywhere. They are 25 mechanical edits --
+# delete an import, rename `l` to `line`, prefix an unused loop variable with
+# an underscore -- waiting on a unit that owns the test tree. Delete an entry
+# the moment its sites are gone; nothing else needs to change here.
 ignore = [
-    "F401",  # 9 unused imports: ctx/commands.py, ctx/hooks.py, 6 test modules.
-    "F541",  # 1 f-string with no placeholder: ctx/verify.py:1295.
-    "F841",  # 2 assigned-and-unused locals: ctx/commands.py:507, a test.
-    "E741",  # 13 `l` loop variables, all in tests, all style.
-    "B007",  # 3 unused loop variables: ctx/commands.py:1543 and two tests.
-    "B904",  # 1 `raise` inside `except` without `from`: ctx/config.py:400.
+    # 6 unused imports, all in tests: test_audit_wave1.py (io, os),
+    # test_core.py (os, tempfile), test_flow_end_to_end.py (ctx.work),
+    # test_plan.py (ctx.spec), test_plan_lock.py (time).
+    "F401",
+    # 1 assigned-and-unused local: tests/test_cli_wiring.py:221 (`unit`).
+    "F841",
+    # 3 unused loop variables: tests/test_sibling_scope.py:168 (`built`) and
+    # tests/test_supply_chain.py:173 (`name`, `index`).
+    "B007",
+    # 14 `l` loop variables, all in tests, all style: test_ci_floor.py,
+    # test_cli_wiring.py, test_core.py, test_dispatch.py,
+    # test_dispatch_selection.py, test_gate_bypass.py, test_journal_authors.py,
+    # test_tier_from_the_graph.py.
+    "E741",
 ]
 
 [tool.ruff.lint.per-file-ignores]
