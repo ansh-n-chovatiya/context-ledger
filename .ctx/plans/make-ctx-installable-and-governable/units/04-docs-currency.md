@@ -20,7 +20,7 @@ forbid:
   - ctx/cli.py
   - .github/workflows/ci.yml
 budget_tokens: 70000
-status: pending
+status: done
 verify:
   - kind: cmd
     run: python3 -m unittest discover -s tests -q

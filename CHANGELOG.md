@@ -2,6 +2,134 @@
 
 ## Unreleased
 
+Making `ctx` installable and governable: packaging metadata and a tag-gated
+release workflow, a policy layer above `ctx.yaml` that a pull request cannot
+overrule, a committed lockfile of the shell commands the gate is allowed to run,
+and a supply-chain floor for the repository's own CI. The documented CI recipe
+that shipped before this was itself the hole: it cloned unpinned `HEAD` from a
+personal account and then ran `ctx trust --yes`, which accepts whatever the
+branch under test declares.
+
+### Breaking
+
+- **The documented CI recipe changed, and the old one should be replaced.**
+  `ctx trust --yes` is gone from it and `ctx trust --verify-lock` is in its
+  place, and the clone is pinned to a tag or a commit SHA instead of `--depth 1`
+  of the default branch. `--yes` on an ephemeral runner accepts whatever the
+  branch under test declares, and `verify.cmd.run` executes with a shell, so a
+  pull request that added one line to `ctx.yaml` ran it with the job's token.
+
+  *Migration.* Run `ctx trust --lock`, commit `.ctx/trust.lock`, and swap the
+  step. Nothing changes on a developer machine: the lockfile grants nothing
+  locally, and `ctx trust` / `--yes` still mean exactly what they meant.
+
+### Added
+
+- **Packaging metadata.** `pyproject.toml` builds an sdist and a wheel from a
+  hatchling backend. The distribution is `context-ledger`; the import package
+  and the console script are both `ctx`. Two properties are asserted
+  structurally by `tests/test_packaging.py` rather than promised in prose: the
+  runtime dependency list is empty, and the version is *derived* from
+  `ctx/__init__.py` rather than restated, so pyproject cannot drift from the
+  source. `requires-python = ">=3.8"` turns the README's "3.8+" into something
+  pip refuses an install over. The sdist `include` is an allowlist, so a new
+  top-level directory has to be added on purpose to ship — which is what keeps
+  `.ctx/runtime/` and `tests/fixtures/` out of it.
+- **A release workflow that fires on `v*` and nothing else.**
+  `.github/workflows/release.yml` compares the tag, `ctx.__version__` and
+  `.claude-plugin/plugin.json` before building, and exits non-zero if the three
+  do not describe one release. It builds, installs the built wheel into a clean
+  venv and runs `ctx --version` from it, emits a CycloneDX SBOM and asserts the
+  component list is exactly `context-ledger`, writes `SHA256SUMS`, and attaches
+  the four artefacts to the GitHub Release. **It does not publish to any package
+  index** — no `twine`, no Trusted Publishing, no `id-token: write` — and
+  `tests/test_packaging.py` asserts that absence, so a publish step cannot
+  arrive by accident.
+- **A policy layer above `ctx.yaml`.** `/etc/ctx/policy.yaml` (system) and
+  `~/.claude/ctx/policy.yaml` (user) are read before the repository's own file,
+  in that order, and a `locked:` key — as a list of dotted keys or as a mapping
+  that sets and locks in one line — names what a later layer may not change. A
+  lock covers its prefixes. `locked:` inside `.ctx/ctx.yaml` is ignored and says
+  so: a repository cannot lock its own settings. `ctx doctor` grows a `##
+  policy` section naming each layer, every live value that came from above the
+  repository, and every attempt a lower layer made to change a locked one.
+
+  Note the shape of it: because `ctx init` renders every default key into
+  `ctx.yaml`, an **unlocked** policy value is overwritten by any initialised
+  repository. `locked:` is the lever that holds.
+- **`CTX_GATE=off` is journalled, and refusable.** Every site that honours the
+  variable goes through one decision, so `off`, `0`, `false` and `disabled` mean
+  the same thing everywhere (the CLI honoured three spellings and the Stop hook
+  four), and each use appends a `gate | CTX_GATE` entry naming the site. A
+  policy with `gate.allow_override: false`, locked, refuses the bypass outright:
+  the gate runs, and the attempt is journalled either way. If the journal will
+  not take the line the bypass still happens — failing a session over a full
+  disk is worse than the thing it protects — and says so on stderr and in
+  `runtime/hook-errors.log`.
+- **`ctx trust --lock` and `ctx trust --verify-lock`.** `--lock` writes
+  `.ctx/trust.lock`, a committed, deterministic record of every `cmd` the ledger
+  declares: sorted by command id, no timestamp, no hostname, no absolute path,
+  `\n` endings, and each entry carrying `run`, `cwd` and `env` beside its id so
+  the diff is reviewable by a human. `--verify-lock` checks the ledger against
+  it and **accepts nothing**, which is what makes it safe to run on a runner.
+  Where a lockfile exists, `ctx ci` gates on it and reports machine-local
+  acceptance as a note; `ctx ci` now fails on a declared command absent from the
+  lockfile, a lockfile that will not parse, and a lockfile declaring a schema
+  newer than the plugin understands. Neither flag accepts anything locally, so
+  the developer-machine boundary is exactly what it was.
+- **Supply-chain floor for this repository.** Every `uses:` in
+  `.github/workflows/` is pinned to a full commit SHA with the version in a
+  trailing comment; `.github/dependabot.yml` moves those SHAs forward weekly so
+  the pins stay current on purpose rather than by neglect; `SECURITY.md`
+  declares GitHub private vulnerability reporting as the only disclosure
+  channel, response-window targets, and the latest released minor as the only
+  supported version; `CODEOWNERS` routes review for the paths where a bad change
+  is quiet rather than loud. `tests/test_supply_chain.py` holds all of it.
+
+### Documentation
+
+- **The CI recipe in the README no longer clones unpinned `HEAD` and no longer
+  runs `ctx trust --yes`**, and it explains why in the two sentences a reader
+  needs before simplifying it back.
+- **Install, release and security are documented**: what to install and what
+  lands on `PATH`, the Python floor and where it is enforced, the two-file
+  version bump and the tag that has to agree with both, and the disclosure
+  channel. Stated plainly rather than implied: `context-ledger` is not on PyPI,
+  and GitHub private vulnerability reporting is off by default and off on this
+  repository, so the advisory link does not accept a report until a maintainer
+  enables it.
+- **Stale behavioural claims corrected.** `CTX_GATE=off` is no longer described
+  as a consequence-free escape hatch in any of the three places it appeared.
+  `--rebaseline` no longer claims to re-seal the contract — it refuses a changed
+  one and names `--reseal`, which is now documented alongside it. A unit with no
+  dispatch seal is documented as refused, and as `unsealed` on the wave board,
+  rather than as a note the gate falls through. The `diff` check is documented
+  as comparing against the commit recorded at dispatch, and as *failing* when
+  that commit has been amended or rebased away. "There is no TDD support" is
+  gone, since `test_first` shipped.
+- **Two documentation traps closed.** The sample `ctx.yaml` put comments on the
+  parent keys of nested blocks, which `ctx`'s own YAML reader rejects — a reader
+  who pasted the "safe to hand-edit" sample got a ledger that would not load.
+  Every YAML sample in the README now parses. The README also held its net line
+  count flat while absorbing four new sections, by compressing prose rather than
+  by growing.
+
+### Known gaps
+
+- The `Stop` hook still reads `CTX_GATE` through its own inline
+  `os.environ.get` check at `ctx/hooks.py:219` instead of the shared decision,
+  so a bypass *there* is neither journalled nor refusable by policy. `ctx
+  doctor` is. Documented as a caveat rather than described as working.
+- A policy file that exists but cannot be *opened* — wrong permissions — is
+  skipped as if absent, though `config._read_policy` documents itself as fatal
+  in that case. A file that parses to something other than a mapping, or that
+  will not parse at all, does stop the command.
+
+---
+
+*Everything below is audit-remediation wave 1, shipped earlier in this same
+unreleased cycle. Its section headings repeat those above.*
+
 Wave 1 of the enterprise-readiness audit remediation. The audit found five
 independent ways to reach `status: done` with nothing verified — one of them the
 *default* configuration on a freshly cloned repo — and one path that executed
@@ -133,9 +261,10 @@ drive from a script: errors and refusals stop exiting 0.
   machines genuinely will not have. Documented with the warning it needs: the
   work's own failures can resemble an absent tool.
 - **`ctx start --rebaseline «unit»`** — retake one unit's review baseline over
-  the tree as it stands now and re-seal its contract, replacing what dispatch
-  recorded. Repeatable, journalled, and loud on the terminal. Recorded findings
-  are kept, so it cannot launder a deleted one.
+  the tree as it stands now, replacing what dispatch recorded. Repeatable,
+  journalled, and loud on the terminal. Recorded findings are kept, so it cannot
+  launder a deleted one. (A later wave stopped it re-sealing the contract:
+  it refuses a contract that moved, and `--reseal` is that door.)
 - **`status: running`** — a unit is `running` from dispatch until `--status done`
   closes it. `ctx status` renders it as `running (in flight)`, and a wave whose
   units are all `running` stops `/ctx:next` and the board from advising
