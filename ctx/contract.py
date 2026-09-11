@@ -50,7 +50,7 @@ import re
 import subprocess
 import time
 
-from . import findings as findings_mod, frontmatter, review, snapshot
+from . import atomic, findings as findings_mod, frontmatter, review, snapshot
 
 SCHEMA = 1
 STORE_SUBDIR = "contracts"
@@ -241,9 +241,7 @@ def _write_seal(layout, slug, unit_name, data):
     path = seal_path(layout, slug, unit_name)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(data, indent=2, sort_keys=True), encoding="utf-8"
-        )
+        atomic.write_text(path, json.dumps(data, indent=2, sort_keys=True))
     except OSError:
         return None  # a seal must never be the reason a dispatch fails
     return data

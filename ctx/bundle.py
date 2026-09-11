@@ -15,7 +15,7 @@ import datetime
 import re
 from pathlib import Path
 
-from . import config as config_mod, frontmatter, paths, redact
+from . import atomic, config as config_mod, frontmatter, paths, redact
 
 SUFFIX = ".ctx.md"
 
@@ -130,7 +130,7 @@ def reindex(layout):
     else:
         lines.append("_none yet — /ctx:save «name» to create one_")
     layout.contexts.mkdir(parents=True, exist_ok=True)
-    layout.context_index.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic.write_text(layout.context_index, "\n".join(lines) + "\n")
     return layout.context_index
 
 

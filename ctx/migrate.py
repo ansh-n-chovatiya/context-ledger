@@ -20,7 +20,7 @@ is not corrupt, it is old, and stamping it is the 0→1 migration.
 import json
 import re
 
-from . import bundle, config as config_mod, frontmatter
+from . import atomic, bundle, config as config_mod, frontmatter
 
 # Frontmatter key by file family. Bundles use their own key for the same reason
 # they are portable: the file should announce what kind of thing it is.
@@ -59,6 +59,11 @@ def discover(layout):
         ("unit", layout.plans.glob("*/units/*.md"), KEY_CTX),
         ("decision", layout.decisions.glob("*.md"), KEY_CTX),
         ("bundle", layout.contexts.glob("*" + bundle.SUFFIX), KEY_BUNDLE),
+        # Path shapes taken from `findings.path_for` and `phases.path_for` —
+        # both write beside the plan's units, not inside `units/`, so the
+        # `*/units/*.md` glob above never saw them.
+        ("findings", layout.plans.glob("*/findings/*.md"), KEY_CTX),
+        ("phases", layout.plans.glob("*/phases/*.md"), KEY_CTX),
     )
     for kind, paths, key in families:
         for path in sorted(paths):
@@ -144,13 +149,13 @@ def _to_v1(layout, item):
                 insert += 1
             lines.insert(insert, "schema: 1")
             text = "\n".join(lines) + ("\n" if not text.endswith("\n") else "")
-        layout.config.write_text(text, encoding="utf-8")
+        atomic.write_text(layout.config, text)
         return
 
     if item.kind == "graph":
         data = json.loads(item.path.read_text(encoding="utf-8"))
         data[KEY_CTX] = 1
-        item.path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        atomic.write_text(item.path, json.dumps(data, indent=2) + "\n")
         return
 
     doc = frontmatter.read(item.path)
@@ -162,6 +167,10 @@ def _to_v1(layout, item):
     # discover() pass cannot tell what family it belongs to.
     if item.kind == "unit" and not doc.meta.get("unit"):
         doc.meta["unit"] = item.path.stem
+    if item.kind in ("findings", "phases") and not doc.meta.get("unit"):
+        doc.meta["unit"] = item.path.stem
+    if item.kind in ("findings", "phases") and not doc.meta.get("plan"):
+        doc.meta["plan"] = item.path.parent.parent.name
     if item.kind == "bundle" and not doc.meta.get("name"):
         doc.meta["name"] = item.path.name[: -len(bundle.SUFFIX)]
     doc.write(item.path)

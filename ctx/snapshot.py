@@ -28,6 +28,8 @@ import shutil
 import time
 from pathlib import Path
 
+from . import atomic
+
 SNAPSHOT_SUBDIR = "snapshots"
 
 # Directories whose contents are never anyone's declared work: build output,
@@ -222,8 +224,8 @@ def capture(layout, config, key, root, content_paths=(), force=False):
         "stored": sorted(stored),
         "files": files,
     }
-    (directory / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+    atomic.write_text(
+        directory / "manifest.json", json.dumps(manifest, indent=2, sort_keys=True)
     )
     return manifest
 
@@ -261,8 +263,8 @@ def store_extra(layout, config, key, root, relpaths):
         (blobs / _blob_name(relpath)).write_bytes(data)
         stored.add(relpath)
     manifest["stored"] = sorted(stored)
-    (directory / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+    atomic.write_text(
+        directory / "manifest.json", json.dumps(manifest, indent=2, sort_keys=True)
     )
     return manifest
 
@@ -321,7 +323,7 @@ def record_test_run(layout, key, paths, exit_code, when=None):
         "exit_code": int(exit_code),
         "at": float(when) if when is not None else time.time(),
     })
-    path.write_text(json.dumps(runs, indent=2, sort_keys=True), encoding="utf-8")
+    atomic.write_text(path, json.dumps(runs, indent=2, sort_keys=True))
     return runs
 
 
