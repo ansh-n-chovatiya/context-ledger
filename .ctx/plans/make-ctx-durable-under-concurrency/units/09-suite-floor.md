@@ -17,7 +17,7 @@ forbid:
   - ctx/journal.py
   - .ctx/.gitignore
 budget_tokens: 35000
-status: pending
+status: done
 verify:
   - kind: cmd
     run: python3 -m unittest discover -s tests -q

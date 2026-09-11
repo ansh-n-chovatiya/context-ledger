@@ -17,8 +17,10 @@ instead:
     below proves the parser drops comments rather than reading them as data; and
   * it **executes** the Test step's own script against synthetic suites of known
     size. A comment cannot make a script exit non-zero. The floor is established
-    by behaviour: 739 tests must fail the step and 740 must pass it, which pins
-    the floor to a real number in real code no matter what the file says in prose.
+    by behaviour: 1189 tests must fail the step and 1190 must pass it, which pins
+    the floor to a real number in real code no matter what the file says in
+    prose. A further test holds the workflow's own SUITE_FLOOR equal to
+    REQUIRED_FLOOR below, so the two cannot drift apart again.
 """
 
 import re
@@ -31,10 +33,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 
-# The floor this repository requires of CI. The workflow may sit above it; it
-# may never sit below it. Kept separate from the workflow's own SUITE_FLOOR on
-# purpose, so that lowering the workflow's floor breaks a test.
-REQUIRED_FLOOR = 740
+# The floor this repository requires of CI, kept separate from the workflow's
+# own SUITE_FLOOR so that moving the workflow's floor breaks a test. The two
+# are one decision in two files and must move together: see
+# `test_the_two_floors_agree` below, which fails if either is raised alone.
+#
+# Raise this with the suite. It sits just under the real count on purpose --
+# what a floor exists to catch is a silent DROP, and a floor far below the
+# real count cannot see one.
+REQUIRED_FLOOR = 1190
 
 
 # --------------------------------------------------------------------------
@@ -206,6 +213,18 @@ def test_step():
     raise AssertionError("the `test` job has no step named Test")
 
 
+def workflow_floor():
+    """The floor the workflow really carries, parsed out of the Test step's
+    code with comments stripped, so prose can never supply the number."""
+    script = strip_comments(test_step()["run"])
+    found = re.findall(r"^SUITE_FLOOR = (\d+)$", script, re.MULTILINE)
+    if len(found) != 1:
+        raise AssertionError(
+            "expected exactly one SUITE_FLOOR assignment in the Test step, "
+            "found %d" % len(found))
+    return int(found[0])
+
+
 # --------------------------------------------------------------------------
 # Running the Test step's real script against synthetic suites.
 # --------------------------------------------------------------------------
@@ -339,6 +358,18 @@ class SuiteFloorTests(unittest.TestCase):
         self.assertEqual(len(found), 1,
                          "the floor belongs in exactly one named place")
         self.assertGreaterEqual(int(found[0]), REQUIRED_FLOOR)
+
+    def test_the_two_floors_agree(self):
+        """The workflow's SUITE_FLOOR and this file's REQUIRED_FLOOR are two
+        halves of one decision, and the absence of this check is why the pair
+        was left at 740 against a suite of 1199 -- a silent loss of 459 tests
+        would have passed CI. Equality, not `>=`: raising either constant
+        alone must fail, so whoever raises one is forced to raise the other."""
+        self.assertEqual(
+            workflow_floor(), REQUIRED_FLOOR,
+            "SUITE_FLOOR in .github/workflows/ci.yml and REQUIRED_FLOOR in "
+            "tests/test_ci_floor.py must be raised together",
+        )
 
     def test_the_floor_carries_the_instruction_to_raise_it(self):
         script = test_step()["run"]

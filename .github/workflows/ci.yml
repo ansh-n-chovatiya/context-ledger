@@ -83,7 +83,9 @@ jobs:
           # THE FLOOR. Raise it as the suite grows: it sits just under the
           # current count on purpose, because what it exists to catch is a
           # silent DROP, and a floor far below the real count cannot see one.
-          SUITE_FLOOR = 740
+          # REQUIRED_FLOOR in tests/test_ci_floor.py is the same decision and
+          # is asserted equal to this number; raise the two together.
+          SUITE_FLOOR = 1190
 
           command = [sys.executable, "-m"] + "unittest discover -s tests".split()
           proc = subprocess.run(command, capture_output=True, text=True,

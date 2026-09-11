@@ -7,3 +7,5 @@
 20:08 | unit | 07-migration-and-snapshot-durability | done
 20:08 | start | make-ctx-durable-under-concurrency | wave 4, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
 20:30 | unit | 08-gate-window-and-doctor | done
+20:31 | start | make-ctx-durable-under-concurrency | wave 5, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+20:37 | unit | 09-suite-floor | done
