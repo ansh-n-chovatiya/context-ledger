@@ -63,21 +63,14 @@ def _loaded(args=None):
 
 def _echo(*parts):
     """`print`, but a console that cannot spell a character loses the character
-    rather than the command.
+    rather than the command. See `verify.echo`, which is the implementation.
 
-    Windows resolves piped stdout to the legacy code page — cp1252 on the CI
-    runners — and this CLI's output is full of `→`, `·` and `—`. Encoding one
-    of those raises `UnicodeEncodeError` from inside `print`, which aborts the
-    whole command: `ctx status` exited 1 on Windows for no reason worse than an
-    arrow marking the active unit. Degrading the glyph is the right trade; a
-    status board that cannot be read at all is not.
+    It lives in `verify` because the two gate entry points there print too, and
+    `verify` may not import `cli` — that import direction is what lets `plan`,
+    `hooks` and `worktree` use the gate at all. One implementation, reached
+    from both sides, rather than the same Windows fallback written twice.
     """
-    try:
-        print(*parts)
-    except UnicodeEncodeError:
-        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
-        print(*[str(part).encode(encoding, "replace").decode(encoding)
-                for part in parts])
+    verify.echo(*parts)
 
 
 def _warn(*parts):
@@ -1426,7 +1419,7 @@ def cmd_verify(args):
     layout, config = _loaded(args)
 
     if args.plan:
-        return _verify_plan(layout, config, bundle.slugify(args.plan))
+        return verify.verify_plan(layout, config, bundle.slugify(args.plan))
 
     item = work.active(layout)
     if item is None:
@@ -2227,64 +2220,6 @@ def cmd_merge(args):
     return 1
 
 
-def _verify_plan(layout, config, slug):
-    """Every unit in a plan, headless. This is what CI runs.
-
-    Mechanical checks only: `rubric` and `human` need a model or a person, so an
-    unattended run reports them pending rather than pretending to judge them.
-    """
-    grouped, problems = plan_mod.check(layout, slug)
-    if problems:
-        _echo(f"plan {slug}: {len(problems)} problem(s) — not verifying units")
-        for problem in problems:
-            _echo(f"  - {problem}")
-        return 1
-
-    failed, pending, passed, warned = [], [], [], []
-    for level in sorted(grouped):
-        for unit in grouped[level]:
-            # A unit with no usable checks never gets here: plan_mod.check()
-            # rejects it as a validation problem above.
-            # Same scope the done-gate would give this unit: from where it was
-            # dispatched, and forgiving of the siblings running beside it. A CI
-            # run that judged a wave in flight by each unit's `owns` alone would
-            # report N−1 scope violations for work that is entirely in scope.
-            wave, _siblings = review_mod.wave_scope(layout, slug, unit)
-            results, verdict = verify.run(
-                layout, config, unit.checks, cwd=layout.root.parent,
-                key=f"ci-{unit.name}", owns=unit.owns, recorded=unit.recorded,
-                judged=False,
-                since=contract_mod.sealed_commit(layout, slug, unit.name),
-                wave=wave,
-            )
-            flag = {
-                verify.PASS: "ok  ", verify.FAIL: "FAIL",
-                verify.PENDING: "wait", verify.ERROR: "warn",
-            }[verdict]
-            _echo(f"  {flag} wave {level} {unit.name} ({unit.status})")
-            if verdict == verify.FAIL:
-                failed.append(unit.name)
-                _echo("       " + verify.summarise(results).replace("\n", "\n       "))
-            elif verdict == verify.PENDING:
-                pending.append(unit.name)
-            elif verdict == verify.ERROR:
-                # Not a pass: something in this unit's gate could not run at all.
-                warned.append(unit.name)
-            else:
-                passed.append(unit.name)
-
-    _echo("")
-    _echo(
-        f"{len(passed)} passed · {len(pending)} awaiting sign-off · "
-        f"{len(warned)} could not run · {len(failed)} failed"
-    )
-    journal.append(
-        layout, config, "verify", slug,
-        f"plan run: {len(passed)}p/{len(pending)}w/{len(warned)}e/{len(failed)}f",
-    )
-    return 1 if failed else 0
-
-
 def _worktree_plan(layout, args):
     """Which plan's worktree `remove` should act on, or None to let it resolve.
 
@@ -2327,191 +2262,6 @@ def cmd_worktree(args):
     return 0
 
 
-def _missing_commit_advice(results, unit):
-    """The long half of "the dispatch point is gone".
-
-    A `Result` message is shown to one terminal width, which is the right size
-    for a scope violation and too small for this: the SHA alone is 40 characters
-    of it. So the check reports the SHA and the flag, and the explanation of
-    *why* a gate can neither pass nor error here lives out here, where there is
-    room for it.
-    """
-    if not any(result.kind == "diff" and result.status == verify.FAIL
-               and str(result.message).startswith(verify.MISSING_COMMIT)
-               for result in results):
-        return []
-    return [
-        "",
-        "The commit recorded when this unit was dispatched was amended, rebased or",
-        "reset away while it ran. The gate cannot establish what the unit changed "
-        "from a",
-        "dispatch point that is no longer in the history, and it will not treat "
-        "\"cannot",
-        "tell\" as \"nothing changed\".",
-        f"  ctx start --reseal {unit.name}   re-records the dispatch point over "
-        "the current HEAD",
-        "and re-seals the contract as it now stands — a deliberate act, journalled "
-        "as one.",
-    ]
-
-
-def _gate_check(layout, config, slug, unit):
-    """(ok, reason, lines) — may this unit be marked `done`, and if not, why.
-
-    Ordered by what invalidates what, and by cost. A forged contract makes every
-    result below it meaningless, so it is answered first; it and the empty-checks
-    case are both pure file reads, and neither spawns a process.
-
-    Split out of `_gate_before_done` so that `--force` can say *what* it is
-    overriding. An escape hatch that records "forced" and nothing else leaves no
-    trace of the thing it stepped over, which is exactly the trace that matters
-    later.
-    """
-    lines = []
-
-    # 0. Was this unit ever dispatched through ctx at all?
-    #
-    # The seal exists only if `ctx start` wrote it. A runner sent out by a
-    # direct Task call has no seal, no `before` snapshot and no recorded
-    # dispatch commit — so the contract check below has nothing to compare, the
-    # `diff` check cannot see anything committed, and the review has no
-    # baseline. Three of this gate's four guarantees are absent at once, and
-    # nothing used to say so.
-    #
-    # Scoped to plans that seal at all. A plan where *no* unit has a seal
-    # predates the seal or was never run through `ctx start` in the first
-    # place; refusing there brings back the upgrade brick that `baseline`
-    # returning None exists to avoid. A plan where the siblings are sealed and
-    # this unit is not was dispatched around the ledger, and that is the case
-    # worth refusing.
-    if (contract_mod.load_seal(layout, slug, unit.name) is None
-            and contract_mod.any_seal(layout, slug)):
-        return False, "no dispatch seal", lines + [
-            f"refusing to mark {unit.name} done — it has no dispatch seal, so it "
-            "was never dispatched by ctx:",
-            "  nothing recorded its contract, its review baseline or the commit "
-            "it started from,",
-            "  which is most of what this gate compares against.",
-            "",
-            "`ctx start` is what records a seal. Dispatch the wave through it "
-            "(other units in",
-            f"this plan have one, so this unit was sent out around it), or pass "
-            "--force to accept",
-            "a unit nothing can be checked against.",
-        ]
-
-    # 1. Did the unit rewrite its own contract after it was dispatched?
-    if contract_mod.baseline(layout, slug, unit) is None:
-        # Not a violation. A plan dispatched by an older ctx, or one whose
-        # snapshot failed, has nothing to compare against; refusing there would
-        # brick every in-flight plan on upgrade.
-        lines.append(
-            f"note: no dispatch baseline for {unit.name}, so its contract was not "
-            "checked for edits — /ctx:start records one from now on"
-        )
-    else:
-        intact, changed = contract_mod.compare(layout, slug, unit)
-        if not intact:
-            return False, "contract edited after dispatch", lines + [
-                f"refusing to mark {unit.name} done — its contract changed after "
-                "it was dispatched:",
-                *[f"  changed: {item}" for item in changed],
-                "",
-                "A unit does not get to rewrite the promise it is judged against.",
-                "Restore what changed from the plan, or — if the change is a real",
-                "planning decision — say so out loud and pass --force.",
-            ]
-
-    # 2. A gate with nothing in it holds nothing.
-    if not verify.ordered(unit.checks):
-        return False, "no usable verify checks", lines + [
-            f"refusing to mark {unit.name} done — it has no usable verify checks",
-            "add a `verify` block to the unit file, or pass --force to override",
-        ]
-
-    # 3. The checks themselves.
-    #
-    # `since` is where the unit started, so the `diff` check sees what it
-    # *committed* as well as what is still in the working tree; `wave` is what
-    # its concurrent siblings own, so their in-flight writes are not counted as
-    # this unit's scope violation. Both are read here rather than inside
-    # `verify` because `plan` imports `verify`, and the reverse import would
-    # close the loop.
-    since = contract_mod.sealed_commit(layout, slug, unit.name)
-    if since is None and contract_mod.load_seal(layout, slug, unit.name):
-        lines.append(
-            f"note: no dispatch commit recorded for {unit.name}, so anything it "
-            "committed was not checked for scope — /ctx:start records one from now on"
-        )
-    wave, _siblings = review_mod.wave_scope(layout, slug, unit)
-    results, verdict = verify.run(
-        layout, config, unit.checks, cwd=layout.root.parent,
-        key=f"{slug}/{unit.name}", owns=unit.owns, recorded=unit.recorded,
-        judged=False, since=since, wave=wave,
-    )
-    if verdict in (verify.FAIL, verify.PENDING):
-        return False, verdict, lines + [
-            f"refusing to mark {unit.name} done — the gate did not pass",
-            *[result.line() for result in results],
-            *_missing_commit_advice(results, unit),
-            "",
-            "Fix the failing criterion, or pass --force if you are deliberately",
-            "overriding the gate — which is a decision worth saying out loud.",
-        ]
-    if verdict == verify.ERROR and not any(r.status == verify.PASS for r in results):
-        # Nothing ran. That is a configuration problem, not a work failure — and
-        # it is still not `done`: with `PROFILES["code"]` carrying only `cmd`
-        # checks, a freshly cloned repo that has never run `ctx trust` errors
-        # *every* check, and this branch used to print a warning and mark the
-        # unit done with zero checks executed. Name the configuration problem
-        # (the results below say `ctx trust`, or the missing binary, by name)
-        # and then refuse anyway.
-        return False, "no check could run", lines + [
-            f"refusing to mark {unit.name} done — not one check could run, so "
-            "nothing about this unit was verified:",
-            *[result.line() for result in results],
-            "",
-            "That is a configuration problem, not a work failure — often a "
-            "command this machine has never accepted (`ctx trust`), or a missing "
-            "tool. But an ungated unit is not a done unit: ungated is not done.",
-            "Fix the configuration and re-run, or pass --force to override.",
-        ]
-    if verdict == verify.ERROR:
-        # Some check did pass, so the gate is not blind — this is today's
-        # behaviour, kept deliberately. The refusal above is for *no check
-        # reached PASS*, never for *any check errored*.
-        lines += [
-            f"warning: not every check could run for {unit.name} — configuration, "
-            "not a work failure, so this is not blocking:",
-            *[result.line() for result in results],
-        ]
-    return True, "", lines
-
-
-def _gate_before_done(layout, config, slug, unit):
-    """Non-zero exit code when this unit has not earned `done`, else None.
-
-    Only the worktree `merge` path used to verify before completing a unit. For
-    `subagent` — the default tier, and the one the dispatch brief pushes hardest
-    — `done` was whatever the orchestrator typed after reading a report the unit
-    had written about itself. The strongest guarantee in the system did not cover
-    its most common path.
-    """
-    ok, reason, lines = _gate_check(layout, config, slug, unit)
-    for line in lines:
-        _echo(line)
-    if ok:
-        # A gate that ran and passed re-seals what it saw, so a finding recorded
-        # by hand between dispatch and now cannot be deleted afterwards.
-        contract_mod.seal_findings(
-            layout, slug, unit.name,
-            findings_mod.load(layout, slug, unit.name),
-        )
-        return None
-    journal.append(layout, config, "unit", unit.name, f"done refused ({reason})")
-    return 1
-
-
 def cmd_unit(args):
     """Focus a unit so the done-gate applies to it, or record its outcome."""
     layout, config = _loaded(args)
@@ -2534,7 +2284,7 @@ def cmd_unit(args):
     note = args.status
     if args.status == "done":
         if not args.force:
-            refusal = _gate_before_done(layout, config, slug, unit)
+            refusal = verify.gate_before_done(layout, config, slug, unit)
             if refusal:
                 return refusal
         else:
@@ -2542,7 +2292,7 @@ def cmd_unit(args):
             # "forced" without recording *what was overridden* throws away the
             # only fact anyone will want later, and the reason is knowable only
             # by asking. Loud, in the journal and on the terminal.
-            ok, reason, lines = _gate_check(layout, config, slug, unit)
+            ok, reason, lines = verify.gate_check(layout, config, slug, unit)
             if ok:
                 note = "done (--force; the gate passed anyway)"
             else:

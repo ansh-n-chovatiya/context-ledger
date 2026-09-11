@@ -23,3 +23,5 @@
 21:01 | start | make-ctx-maintainable-and-documented | wave 1, 2 unit(s), 0 worktree(s), 2 snapshot(s), 0 already in flight
 21:11 | unit | 01-shared-paths-and-dead-code | done
 21:12 | unit | 02-caps-and-reported-spend | done
+21:12 | start | make-ctx-maintainable-and-documented | wave 2, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+21:32 | unit | 03-verify-dispatch-and-gate | done

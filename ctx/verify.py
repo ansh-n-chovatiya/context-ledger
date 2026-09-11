@@ -1,4 +1,8 @@
-"""The done-gate: seven verify kinds, cheapest first, short-circuiting.
+"""The done-gate: eight verify kinds, cheapest first, short-circuiting.
+
+A kind is one entry in `KIND_TABLE` — its cost, its label and its runner — and
+nothing outside that dict knows which kinds exist. `KINDS`, `MECHANICAL`,
+`JUDGED` and `COST` are all read off it.
 
 Two distinctions carry the whole design.
 
@@ -41,8 +45,12 @@ walked straight past the check meant to police it. The caller passes `since=` �
 the commit recorded in the unit's dispatch seal — and the check diffs that
 commit against HEAD as well. It also takes `wave=`: the paths a *concurrent
 sibling* declared, which are that sibling's business and not this unit's scope
-violation. Both are passed in rather than looked up here, because `plan` imports
-this module and the reverse import would close the loop.
+violation. Both are passed into `run` rather than looked up by it: `plan` and
+`review` import this module, so anything that asks them a question must reach
+for them late, inside the function. `gate_check` and `verify_plan`, at the foot
+of this file, are the two places that do — they are the gate's entry points,
+and they live here so that `ctx ci` and the done-gate cannot drift apart on
+what a unit's scope is.
 """
 
 import os
@@ -52,24 +60,51 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import MappingProxyType, ModuleType
 
-from . import redact, snapshot, trust
-
-MECHANICAL = ("diff", "exists", "symbol", "review", "test_first", "cmd")
-JUDGED = ("rubric", "human")
-KINDS = MECHANICAL + JUDGED
-
-# Cheapest first: `diff` is a git call, `exists` is a stat, `review` and
-# `test_first` are each one snapshot read, `cmd` is a whole subprocess, and the
-# judged kinds cost a model call or a human's attention. `review` sits above
-# `symbol` and below `cmd` on purpose — an open Critical finding should stop
-# the gate before a test suite runs. `test_first` sits beside `review` for the
-# same reason: it is a snapshot read, not a process spawn, so it belongs
-# nowhere near `cmd`'s cost even though it is about tests.
-COST = {"diff": 0, "exists": 1, "symbol": 2, "review": 3, "test_first": 3,
-        "cmd": 4, "rubric": 5, "human": 6}
+from . import paths, redact, snapshot, trust
 
 PASS, FAIL, ERROR, PENDING = "pass", "fail", "error", "pending"
+
+
+class Kind:
+    """One verify kind, entire: what it costs, what it is called, how it runs.
+
+    Adding a kind used to cost four coordinated edits — the `MECHANICAL` or
+    `JUDGED` tuple, the `COST` map, the if-ladder in `label_of` and the
+    if-ladder in `run` — and forgetting one failed silently in both directions.
+    Miss the kinds tuple and `ordered` drops the check on the floor, so the
+    gate returns PASS having run nothing. Miss the ladder in `run` and the
+    check falls through to the judged branch and reports PENDING for ever.
+    Both of those look like an answer, which is the worst thing a gate can do.
+
+    So a kind is one object in one dict, `KIND_TABLE`. `cost`, `label` and
+    `run` are the three things the gate asks of every kind; `judged` is the one
+    distinction between the two families — a judged kind needs a model or a
+    person, so the hook only checks whether a recording exists.
+
+    `run(check, ctx)` gets the check and the `_Run` context of the gate pass it
+    belongs to: everything the old ladder could see from its enclosing scope,
+    in one argument, so a new kind reaches what it needs without anyone
+    changing a call shape. `label(check)` is one line for the terminal.
+    """
+
+    __slots__ = ("cost", "label", "run", "judged")
+
+    def __init__(self, cost, label, run, judged=False):
+        self.cost = cost
+        self.label = label
+        self.run = run
+        self.judged = judged
+
+    def __repr__(self):
+        return f"<Kind cost={self.cost} judged={self.judged}>"
+
+
+# `KINDS`, `MECHANICAL`, `JUDGED` and `COST` still exist and still read the
+# same, but they are *derived* from `KIND_TABLE` rather than maintained beside
+# it — see `__getattr__` at the foot of this module. The table itself is
+# defined below the kind implementations it names, because it names them.
 
 
 class Result:
@@ -93,29 +128,21 @@ class Result:
 
 def ordered(checks):
     """Checks sorted cheapest-first, dropping anything malformed."""
-    valid = [c for c in (checks or []) if isinstance(c, dict) and c.get("kind") in KINDS]
-    return sorted(valid, key=lambda c: COST[c["kind"]])
+    valid = [c for c in (checks or [])
+             if isinstance(c, dict) and c.get("kind") in KIND_TABLE]
+    return sorted(valid, key=lambda check: KIND_TABLE[check["kind"]].cost)
 
 
 def label_of(check):
-    kind = check.get("kind")
-    if kind == "cmd":
-        return str(check.get("run") or "<no command>")
-    if kind == "exists":
-        return str(check.get("path") or "<no path>")
-    if kind == "symbol":
-        names = check.get("contains") or []
-        return f"{check.get('path') or '?'} still provides {', '.join(map(str, names))}"
-    if kind == "diff":
-        return "changed files within owned scope"
-    if kind == "review":
-        return "no unaddressed critical or important review findings"
-    if kind == "test_first":
-        names = [str(n) for n in (check.get("tests") or []) if str(n).strip()]
-        return f"a failing run of {', '.join(names) or '<no tests>'} precedes the implementation"
-    if kind == "rubric":
-        return str(check.get("about") or "criteria judged against the diff")
-    return str(check.get("about") or "explicit sign-off")
+    """One line describing what this check asserts.
+
+    An unrecognised kind falls back to the sign-off wording rather than
+    raising: `label_of` is called on checks that never reach `ordered` (the
+    phase guard in `cli`, the skipped-checks summary in `worktree`), and a
+    label is not the place to refuse a malformed check.
+    """
+    entry = KIND_TABLE.get(check.get("kind"))
+    return (entry.label if entry is not None else _label_sign_off)(check)
 
 
 def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False,
@@ -152,41 +179,55 @@ def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False,
     # broken.
     accepted = trust.load(layout)
 
+    context = _Run(
+        layout=layout, config=config, cwd=cwd, key=key, owns=owns,
+        recorded=recorded, judged=judged, since=since, wave=wave,
+        deadline=deadline, budget=budget, head=head, tail=tail,
+        patterns=patterns, accepted=accepted,
+    )
     for check in ordered(checks):
-        kind = check["kind"]
-        if kind == "diff":
-            result = _check_diff(check, cwd, owns, since=since, wave=wave)
-        elif kind == "review":
-            result = _check_review(layout, check, key)
-        elif kind == "exists":
-            # The deadline, not just the `cmd` branch's: `matches` is a regex
-            # from a committed file and can backtrack for ever.
-            result = _check_exists(check, cwd, deadline)
-        elif kind == "symbol":
-            result = _check_symbol(check, cwd)
-        elif kind == "test_first":
-            result = _check_test_first(layout, check, key)
-        elif kind == "cmd":
-            remaining = deadline - time.monotonic()
-            if not trust.is_accepted(check, accepted):
-                result = Result("cmd", label_of(check), ERROR, trust.REASON)
-            elif remaining <= 0:
-                result = Result(
-                    "cmd", label_of(check), ERROR,
-                    f"the gate's {budget}s budget was spent before this check ran "
-                    "— split the suite or raise gate.timeout_seconds",
-                )
-            else:
-                result = _check_cmd(
-                    layout, check, cwd, key, remaining, head, tail, patterns
-                )
-        else:
-            result = _check_judged(check, kind, recorded, judged)
+        # `ordered` already dropped every kind the table does not know, so this
+        # lookup cannot miss — and there is no `else` branch left for a
+        # half-registered kind to fall into and quietly report PENDING from.
+        result = KIND_TABLE[check["kind"]].run(check, context)
         results.append(result)
         if result.status == FAIL:
             break  # short-circuit: nothing more expensive needs to run
 
     return results, verdict_of(results)
+
+
+class _Run:
+    """The state one gate pass shares with every kind it dispatches.
+
+    One argument rather than a per-kind argument list. The if-ladder this
+    replaces could reach `layout`, `deadline` and the rest from the enclosing
+    scope for free; a table of standalone functions cannot, and threading each
+    one through as a parameter would put the call shape back in the business of
+    knowing which kinds exist.
+    """
+
+    __slots__ = ("layout", "config", "cwd", "key", "owns", "recorded",
+                 "judged", "since", "wave", "deadline", "budget", "head",
+                 "tail", "patterns", "accepted")
+
+    def __init__(self, *, layout, config, cwd, key, owns, recorded, judged,
+                 since, wave, deadline, budget, head, tail, patterns, accepted):
+        self.layout = layout
+        self.config = config
+        self.cwd = cwd
+        self.key = key
+        self.owns = owns
+        self.recorded = recorded
+        self.judged = judged
+        self.since = since
+        self.wave = wave
+        self.deadline = deadline
+        self.budget = budget
+        self.head = head
+        self.tail = tail
+        self.patterns = patterns
+        self.accepted = accepted
 
 
 def verdict_of(results):
@@ -213,8 +254,6 @@ def verdict_of(results):
 # individual kinds
 # --------------------------------------------------------------------------- #
 
-LEDGER_PREFIX = ".ctx/"
-
 # How a `diff` failure says "the dispatch point is gone", in a form a caller can
 # recognise without re-deriving it. `Result.line` shows the first 120 characters
 # of a message, which is a terminal width rather than an accident, so the whole
@@ -231,8 +270,13 @@ def is_ledger(path):
     them made the scope check fail on work that was entirely in scope — and the
     merge preflight already knew this (`worktree._is_ledger`, found the hard way)
     while the gate did not.
+
+    The prefix comes from `paths`, which is the only module entitled to know
+    what the ledger directory is called. This function used to carry its own
+    `".ctx/"` — one of three copies, in three modules, of a name that has to
+    agree everywhere for the scope check to mean anything.
     """
-    return str(path).replace("\\", "/").startswith(LEDGER_PREFIX)
+    return str(path).replace("\\", "/").startswith(paths.LEDGER_PREFIX)
 
 
 def _check_diff(check, cwd, owns, since=None, wave=()):
@@ -779,6 +823,168 @@ def _check_judged(check, kind, recorded, judged):
 
 
 # --------------------------------------------------------------------------- #
+# the table
+# --------------------------------------------------------------------------- #
+#
+# Everything above implements a kind. Everything below is how the gate finds
+# it. The `_label_*` and `_run_*` functions are deliberately thin: they adapt
+# the `_check_*` functions, which take the arguments they actually need, to the
+# one shape the table dispatches through.
+
+def _label_diff(check):
+    return "changed files within owned scope"
+
+
+def _label_exists(check):
+    return str(check.get("path") or "<no path>")
+
+
+def _label_symbol(check):
+    names = check.get("contains") or []
+    return f"{check.get('path') or '?'} still provides {', '.join(map(str, names))}"
+
+
+def _label_review(check):
+    return "no unaddressed critical or important review findings"
+
+
+def _label_test_first(check):
+    names = [str(n) for n in (check.get("tests") or []) if str(n).strip()]
+    return f"a failing run of {', '.join(names) or '<no tests>'} precedes the implementation"
+
+
+def _label_cmd(check):
+    return str(check.get("run") or "<no command>")
+
+
+def _label_rubric(check):
+    return str(check.get("about") or "criteria judged against the diff")
+
+
+def _label_sign_off(check):
+    return str(check.get("about") or "explicit sign-off")
+
+
+def _run_diff(check, ctx):
+    return _check_diff(check, ctx.cwd, ctx.owns, since=ctx.since, wave=ctx.wave)
+
+
+def _run_exists(check, ctx):
+    # The deadline, not just the `cmd` kind's: `matches` is a regex from a
+    # committed file and can backtrack for ever.
+    return _check_exists(check, ctx.cwd, ctx.deadline)
+
+
+def _run_symbol(check, ctx):
+    return _check_symbol(check, ctx.cwd)
+
+
+def _run_review(check, ctx):
+    return _check_review(ctx.layout, check, ctx.key)
+
+
+def _run_test_first(check, ctx):
+    return _check_test_first(ctx.layout, check, ctx.key)
+
+
+def _run_cmd(check, ctx):
+    remaining = ctx.deadline - time.monotonic()
+    if not trust.is_accepted(check, ctx.accepted):
+        return Result("cmd", label_of(check), ERROR, trust.REASON)
+    if remaining <= 0:
+        return Result(
+            "cmd", label_of(check), ERROR,
+            f"the gate's {ctx.budget}s budget was spent before this check ran "
+            "— split the suite or raise gate.timeout_seconds",
+        )
+    return _check_cmd(
+        ctx.layout, check, ctx.cwd, ctx.key, remaining,
+        ctx.head, ctx.tail, ctx.patterns,
+    )
+
+
+def _run_judged(check, ctx):
+    return _check_judged(check, check.get("kind"), ctx.recorded, ctx.judged)
+
+
+# Cheapest first: `diff` is a git call, `exists` is a stat, `review` and
+# `test_first` are each one snapshot read, `cmd` is a whole subprocess, and the
+# judged kinds cost a model call or a human's attention. `review` sits above
+# `symbol` and below `cmd` on purpose — an open Critical finding should stop
+# the gate before a test suite runs. `test_first` sits beside `review` for the
+# same reason: it is a snapshot read, not a process spawn, so it belongs
+# nowhere near `cmd`'s cost even though it is about tests.
+#
+# The weights are an ordering, not a budget, so they are only ever meaningful
+# relative to each other — which is why changing one is changing which check
+# runs first, and why the suite pins all eight by value.
+KIND_TABLE = {
+    "diff":       Kind(0, _label_diff, _run_diff),
+    "exists":     Kind(1, _label_exists, _run_exists),
+    "symbol":     Kind(2, _label_symbol, _run_symbol),
+    "review":     Kind(3, _label_review, _run_review),
+    "test_first": Kind(3, _label_test_first, _run_test_first),
+    "cmd":        Kind(4, _label_cmd, _run_cmd),
+    "rubric":     Kind(5, _label_rubric, _run_judged, judged=True),
+    "human":      Kind(6, _label_sign_off, _run_judged, judged=True),
+}
+
+_DERIVED = ("KINDS", "MECHANICAL", "JUDGED", "COST")
+
+
+def __getattr__(name):
+    """`KINDS`, `MECHANICAL`, `JUDGED` and `COST`, read off `KIND_TABLE`.
+
+    Computed on access rather than frozen next to the table, because a value
+    frozen at import is a second place to edit — and a kind registered into the
+    table afterwards would be costed by a map that had never heard of it. PEP
+    562 module `__getattr__` runs only for names this module does not otherwise
+    define, so none of these four may be assigned anywhere above.
+    """
+    if name == "KINDS":
+        return tuple(KIND_TABLE)
+    if name == "MECHANICAL":
+        return tuple(k for k, kind in KIND_TABLE.items() if not kind.judged)
+    if name == "JUDGED":
+        return tuple(k for k, kind in KIND_TABLE.items() if kind.judged)
+    if name == "COST":
+        # A proxy, not a copy. `verify.COST["mine"] = 1` against a fresh dict
+        # would look exactly like registering a kind and do nothing whatever;
+        # this raises instead, and says where the entry belongs.
+        return MappingProxyType({k: kind.cost for k, kind in KIND_TABLE.items()})
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_DERIVED))
+
+
+class _Module(ModuleType):
+    """This module, with the four derived names made read-only.
+
+    Not decoration. `verify.KINDS = KINDS + ("mine",)` is the *old* way to add
+    a kind, and it does something far worse than fail: it plants a real module
+    global, which takes precedence over `__getattr__` for good, so `KINDS`
+    freezes at whatever was assigned while `COST` and the table carry on
+    moving. Every derived name would then be answering a different question.
+
+    So the half-registration raises, and says where the entry goes. There is
+    one way to add a kind and it is `KIND_TABLE`.
+    """
+
+    def __setattr__(self, name, value):
+        if name in _DERIVED:
+            raise AttributeError(
+                f"{name} is derived from verify.KIND_TABLE and cannot be "
+                f"assigned — register the kind in KIND_TABLE instead"
+            )
+        super().__setattr__(name, value)
+
+
+sys.modules[__name__].__class__ = _Module
+
+
+# --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
 
@@ -909,3 +1115,299 @@ def summarise(results, limit=3):
             + "; ".join(f"{r.kind} {r.label} — {r.message}" for r in warnings[:3])
         )
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# the gate as a whole
+# --------------------------------------------------------------------------- #
+#
+# `verify_plan` (what `ctx verify --plan` runs over every unit of a plan) and
+# `gate_before_done` (what stands between a unit and `done`) used to live in
+# `cli.py`. Both rebuild the same `run(...)` call — the same `cwd`, the same
+# `since` out of the dispatch seal, the same `wave` out of `review.wave_scope`
+# — and two copies of one call shape, in a module the gate's other callers
+# cannot import, is how the two come to drift. A headless plan run and the
+# done-gate disagreeing about what a unit's scope is would be a disagreement
+# nobody sees until it excuses a real violation. They belong beside `run`.
+#
+# Nothing here imports `cli`: the direction of that dependency is the reason
+# this module can be imported by `plan`, `hooks` and `worktree` at all. What
+# `cli` contributed was `print` with a Windows fallback, which is `echo` below.
+
+
+def echo(*parts):
+    """`print`, but a console that cannot spell a character loses the character
+    rather than the command.
+
+    Windows resolves piped stdout to the legacy code page — cp1252 on the CI
+    runners — and this CLI's output is full of `→`, `·` and `—`. Encoding one
+    of those raises `UnicodeEncodeError` from inside `print`, which aborts the
+    whole command: `ctx status` exited 1 on Windows for no reason worse than an
+    arrow marking the active unit. Degrading the glyph is the right trade; a
+    status board that cannot be read at all is not.
+
+    It lives here rather than in `cli` because the two gate entry points below
+    print, and this module may not import `cli`. `cli._echo` calls through to
+    it, so there is still exactly one implementation.
+    """
+    try:
+        print(*parts)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(*[str(part).encode(encoding, "replace").decode(encoding)
+                for part in parts])
+
+
+def verify_plan(layout, config, slug):
+    """Every unit in a plan, headless. This is what CI runs.
+
+    Mechanical checks only: `rubric` and `human` need a model or a person, so an
+    unattended run reports them pending rather than pretending to judge them.
+    """
+    # Imported here, not at the top: `plan` imports this module, and
+    # `contract` reaches it through `review` -> `plan`. By the time any of
+    # these runs the packages are loaded, so the cost is a dict lookup.
+    from . import (contract as contract_mod, journal,
+                   plan as plan_mod, review as review_mod)
+
+    grouped, problems = plan_mod.check(layout, slug)
+    if problems:
+        echo(f"plan {slug}: {len(problems)} problem(s) — not verifying units")
+        for problem in problems:
+            echo(f"  - {problem}")
+        return 1
+
+    failed, pending, passed, warned = [], [], [], []
+    for level in sorted(grouped):
+        for unit in grouped[level]:
+            # A unit with no usable checks never gets here: plan_mod.check()
+            # rejects it as a validation problem above.
+            # Same scope the done-gate would give this unit: from where it was
+            # dispatched, and forgiving of the siblings running beside it. A CI
+            # run that judged a wave in flight by each unit's `owns` alone would
+            # report N−1 scope violations for work that is entirely in scope.
+            wave, _siblings = review_mod.wave_scope(layout, slug, unit)
+            results, verdict = run(
+                layout, config, unit.checks, cwd=layout.root.parent,
+                key=f"ci-{unit.name}", owns=unit.owns, recorded=unit.recorded,
+                judged=False,
+                since=contract_mod.sealed_commit(layout, slug, unit.name),
+                wave=wave,
+            )
+            flag = {
+                PASS: "ok  ", FAIL: "FAIL",
+                PENDING: "wait", ERROR: "warn",
+            }[verdict]
+            echo(f"  {flag} wave {level} {unit.name} ({unit.status})")
+            if verdict == FAIL:
+                failed.append(unit.name)
+                echo("       " + summarise(results).replace("\n", "\n       "))
+            elif verdict == PENDING:
+                pending.append(unit.name)
+            elif verdict == ERROR:
+                # Not a pass: something in this unit's gate could not run at all.
+                warned.append(unit.name)
+            else:
+                passed.append(unit.name)
+
+    echo("")
+    echo(
+        f"{len(passed)} passed · {len(pending)} awaiting sign-off · "
+        f"{len(warned)} could not run · {len(failed)} failed"
+    )
+    journal.append(
+        layout, config, "verify", slug,
+        f"plan run: {len(passed)}p/{len(pending)}w/{len(warned)}e/{len(failed)}f",
+    )
+    return 1 if failed else 0
+
+
+def _missing_commit_advice(results, unit):
+    """The long half of "the dispatch point is gone".
+
+    A `Result` message is shown to one terminal width, which is the right size
+    for a scope violation and too small for this: the SHA alone is 40 characters
+    of it. So the check reports the SHA and the flag, and the explanation of
+    *why* a gate can neither pass nor error here lives out here, where there is
+    room for it.
+    """
+    if not any(result.kind == "diff" and result.status == FAIL
+               and str(result.message).startswith(MISSING_COMMIT)
+               for result in results):
+        return []
+    return [
+        "",
+        "The commit recorded when this unit was dispatched was amended, rebased or",
+        "reset away while it ran. The gate cannot establish what the unit changed "
+        "from a",
+        "dispatch point that is no longer in the history, and it will not treat "
+        "\"cannot",
+        "tell\" as \"nothing changed\".",
+        f"  ctx start --reseal {unit.name}   re-records the dispatch point over "
+        "the current HEAD",
+        "and re-seals the contract as it now stands — a deliberate act, journalled "
+        "as one.",
+    ]
+
+
+def gate_check(layout, config, slug, unit):
+    """(ok, reason, lines) — may this unit be marked `done`, and if not, why.
+
+    Ordered by what invalidates what, and by cost. A forged contract makes every
+    result below it meaningless, so it is answered first; it and the empty-checks
+    case are both pure file reads, and neither spawns a process.
+
+    Split out of `gate_before_done` so that `--force` can say *what* it is
+    overriding. An escape hatch that records "forced" and nothing else leaves no
+    trace of the thing it stepped over, which is exactly the trace that matters
+    later.
+    """
+    from . import contract as contract_mod, review as review_mod
+
+    lines = []
+
+    # 0. Was this unit ever dispatched through ctx at all?
+    #
+    # The seal exists only if `ctx start` wrote it. A runner sent out by a
+    # direct Task call has no seal, no `before` snapshot and no recorded
+    # dispatch commit — so the contract check below has nothing to compare, the
+    # `diff` check cannot see anything committed, and the review has no
+    # baseline. Three of this gate's four guarantees are absent at once, and
+    # nothing used to say so.
+    #
+    # Scoped to plans that seal at all. A plan where *no* unit has a seal
+    # predates the seal or was never run through `ctx start` in the first
+    # place; refusing there brings back the upgrade brick that `baseline`
+    # returning None exists to avoid. A plan where the siblings are sealed and
+    # this unit is not was dispatched around the ledger, and that is the case
+    # worth refusing.
+    if (contract_mod.load_seal(layout, slug, unit.name) is None
+            and contract_mod.any_seal(layout, slug)):
+        return False, "no dispatch seal", lines + [
+            f"refusing to mark {unit.name} done — it has no dispatch seal, so it "
+            "was never dispatched by ctx:",
+            "  nothing recorded its contract, its review baseline or the commit "
+            "it started from,",
+            "  which is most of what this gate compares against.",
+            "",
+            "`ctx start` is what records a seal. Dispatch the wave through it "
+            "(other units in",
+            f"this plan have one, so this unit was sent out around it), or pass "
+            "--force to accept",
+            "a unit nothing can be checked against.",
+        ]
+
+    # 1. Did the unit rewrite its own contract after it was dispatched?
+    if contract_mod.baseline(layout, slug, unit) is None:
+        # Not a violation. A plan dispatched by an older ctx, or one whose
+        # snapshot failed, has nothing to compare against; refusing there would
+        # brick every in-flight plan on upgrade.
+        lines.append(
+            f"note: no dispatch baseline for {unit.name}, so its contract was not "
+            "checked for edits — /ctx:start records one from now on"
+        )
+    else:
+        intact, changed = contract_mod.compare(layout, slug, unit)
+        if not intact:
+            return False, "contract edited after dispatch", lines + [
+                f"refusing to mark {unit.name} done — its contract changed after "
+                "it was dispatched:",
+                *[f"  changed: {item}" for item in changed],
+                "",
+                "A unit does not get to rewrite the promise it is judged against.",
+                "Restore what changed from the plan, or — if the change is a real",
+                "planning decision — say so out loud and pass --force.",
+            ]
+
+    # 2. A gate with nothing in it holds nothing.
+    if not ordered(unit.checks):
+        return False, "no usable verify checks", lines + [
+            f"refusing to mark {unit.name} done — it has no usable verify checks",
+            "add a `verify` block to the unit file, or pass --force to override",
+        ]
+
+    # 3. The checks themselves.
+    #
+    # `since` is where the unit started, so the `diff` check sees what it
+    # *committed* as well as what is still in the working tree; `wave` is what
+    # its concurrent siblings own, so their in-flight writes are not counted as
+    # this unit's scope violation. Both are resolved by the caller of `run`
+    # rather than by `run` itself — `plan` and `review` import this module, so
+    # only a function like this one, importing them late, may ask them anything.
+    since = contract_mod.sealed_commit(layout, slug, unit.name)
+    if since is None and contract_mod.load_seal(layout, slug, unit.name):
+        lines.append(
+            f"note: no dispatch commit recorded for {unit.name}, so anything it "
+            "committed was not checked for scope — /ctx:start records one from now on"
+        )
+    wave, _siblings = review_mod.wave_scope(layout, slug, unit)
+    results, verdict = run(
+        layout, config, unit.checks, cwd=layout.root.parent,
+        key=f"{slug}/{unit.name}", owns=unit.owns, recorded=unit.recorded,
+        judged=False, since=since, wave=wave,
+    )
+    if verdict in (FAIL, PENDING):
+        return False, verdict, lines + [
+            f"refusing to mark {unit.name} done — the gate did not pass",
+            *[result.line() for result in results],
+            *_missing_commit_advice(results, unit),
+            "",
+            "Fix the failing criterion, or pass --force if you are deliberately",
+            "overriding the gate — which is a decision worth saying out loud.",
+        ]
+    if verdict == ERROR and not any(r.status == PASS for r in results):
+        # Nothing ran. That is a configuration problem, not a work failure — and
+        # it is still not `done`: with `PROFILES["code"]` carrying only `cmd`
+        # checks, a freshly cloned repo that has never run `ctx trust` errors
+        # *every* check, and this branch used to print a warning and mark the
+        # unit done with zero checks executed. Name the configuration problem
+        # (the results below say `ctx trust`, or the missing binary, by name)
+        # and then refuse anyway.
+        return False, "no check could run", lines + [
+            f"refusing to mark {unit.name} done — not one check could run, so "
+            "nothing about this unit was verified:",
+            *[result.line() for result in results],
+            "",
+            "That is a configuration problem, not a work failure — often a "
+            "command this machine has never accepted (`ctx trust`), or a missing "
+            "tool. But an ungated unit is not a done unit: ungated is not done.",
+            "Fix the configuration and re-run, or pass --force to override.",
+        ]
+    if verdict == ERROR:
+        # Some check did pass, so the gate is not blind — this is today's
+        # behaviour, kept deliberately. The refusal above is for *no check
+        # reached PASS*, never for *any check errored*.
+        lines += [
+            f"warning: not every check could run for {unit.name} — configuration, "
+            "not a work failure, so this is not blocking:",
+            *[result.line() for result in results],
+        ]
+    return True, "", lines
+
+
+def gate_before_done(layout, config, slug, unit):
+    """Non-zero exit code when this unit has not earned `done`, else None.
+
+    Only the worktree `merge` path used to verify before completing a unit. For
+    `subagent` — the default tier, and the one the dispatch brief pushes hardest
+    — `done` was whatever the orchestrator typed after reading a report the unit
+    had written about itself. The strongest guarantee in the system did not cover
+    its most common path.
+    """
+    from . import (contract as contract_mod, findings as findings_mod,
+                   journal)
+
+    ok, reason, lines = gate_check(layout, config, slug, unit)
+    for line in lines:
+        echo(line)
+    if ok:
+        # A gate that ran and passed re-seals what it saw, so a finding recorded
+        # by hand between dispatch and now cannot be deleted afterwards.
+        contract_mod.seal_findings(
+            layout, slug, unit.name,
+            findings_mod.load(layout, slug, unit.name),
+        )
+        return None
+    journal.append(layout, config, "unit", unit.name, f"done refused ({reason})")
+    return 1
+

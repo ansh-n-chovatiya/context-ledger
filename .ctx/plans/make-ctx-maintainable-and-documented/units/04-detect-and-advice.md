@@ -7,10 +7,12 @@ depends_on:
   - 03-verify-dispatch-and-gate
 owns:
   - ctx/detect.py
+  - ctx/complexity.py
   - ctx/advice.py
   - ctx/cli.py
   - tests/test_detect.py
   - tests/test_advice.py
+  - tests/test_kind_table_reaches_complexity.py
 reads:
   - path: ctx/config.py
     symbols:
@@ -79,15 +81,30 @@ def _plan_or_report(layout, args, verb)   # the unified preamble
    five call sites in your report with the argument each read **before** your
    change, and assert per call site that it still reads the same one.
 
+**A gap unit 03 found in its own work and could not close.**
+7. `complexity.py:30` does `_JUDGED_KINDS = tuple(verify.JUDGED)` **at import
+   time**, so a judged kind registered into `verify.KIND_TABLE` after import is
+   invisible to `complexity`. That silently weakens unit 03's central claim —
+   a new kind is one dict entry only if every consumer sees it. Read
+   `verify.JUDGED` at the call site instead of freezing it at import. Unit 03
+   reported this rather than reaching outside its scope to fix it; `complexity.py`
+   is now in your `owns` so you can.
+8. A test registers a **judged** synthetic kind into `KIND_TABLE` after import
+   and asserts `complexity.score` treats it as judged — the `judged_verify`
+   weight of 2.0 must apply. Positive control: show it scoring as un-judged
+   against the current code first. Then check whether any other module freezes
+   a `verify` tuple at import time the same way; report what you find, and fix
+   only what is in your `owns`.
+
 **All three.**
-7. **Behaviour-preserving.** Pre-existing tests covering all three areas pass
+9. **Behaviour-preserving.** Pre-existing tests covering all three areas pass
    **unedited**. Any test that must change is reported, not edited.
-8. No import cycle: neither new module may import `cli.py`. A test walks the
+10. No import cycle: neither new module may import `cli.py`. A test walks the
    import graph and asserts the tree is still acyclic — the audit verified zero
    cycles across 27 modules and this wave must not be what introduces one.
-9. `python3 -m unittest discover -s tests -q` passes; `ctx doctor` and `ctx ci`
-   exit 0. Do not lower `SUITE_FLOOR` or `REQUIRED_FLOOR`.
-10. No file outside `owns` is modified.
+11. `python3 -m unittest discover -s tests -q` passes; `ctx doctor` and `ctx ci`
+    exit 0. Do not lower `SUITE_FLOOR` or `REQUIRED_FLOOR`.
+12. No file outside `owns` is modified.
 
 ## Return contract
 Report: files changed · which criteria passed · verbatim verify output · the
