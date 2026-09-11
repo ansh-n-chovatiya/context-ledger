@@ -32,12 +32,25 @@ means — a non-bug unit gates strictly in the order it named, nothing more.
 evidence, the same command exiting zero) to specific phase names, and that
 meaning is opt-in: it only turns on for a unit that actually declared itself
 a bug.
+
+A third choice is borrowed from `ctx.findings` for the same reason the other
+two were: **the gate check and the write it authorises are one locked
+read-modify-write.** `record` used to load the ledger, ask `can_enter` about
+what it had loaded, and then render the whole file back — so a concurrent
+`record` on the same unit both erased the other's entry and answered its gate
+question against a file that no longer existed in that form. Both halves now
+happen inside a single `lock.held(layout, f"plan-{slug}")`: the plan, not the
+unit, because two units of one plan share `plan.json` and the round counter,
+and a per-unit lock would serialise nothing that actually collides. One
+acquisition, never two — `lock.held` is not re-entrant, so `save()` takes no
+lock of its own and `_exclusive` is the module's only lock site.
 """
 
+import contextlib
 import datetime
 import re
 
-from . import config as config_mod, frontmatter
+from . import config as config_mod, frontmatter, lock
 
 # The bug preset: four phases, gated in this order, each with a specific
 # completion rule enforced by `can_enter` — see the module docstring. A unit
@@ -147,10 +160,21 @@ def record(layout, slug, unit, phase, *, command="", exit_code=None, evidence=""
     inside an agent turn, where raising costs the turn and the work with it.
     """
     ledger = load(layout, slug, unit.name)
-    ok, why = can_enter(unit, ledger, phase)
-    if not ok:
-        return False, why
-    ledger.add(phase, command=command, exit_code=exit_code, evidence=evidence, note=note)
+    # The gate question and the write it authorises are the same
+    # read-modify-write: `_exclusive` re-reads the file under the plan lock,
+    # `can_enter` is answered against *that*, and the entry is appended before
+    # the lock is released. Asking outside the lock would let a `reproduce`
+    # recorded by another process arrive between the refusal and the retry —
+    # or, worse, let a `fix` be authorised by a `reproduce` that a concurrent
+    # whole-file write was in the middle of erasing. `_add` is the unlocked
+    # half of `add`: calling `add` here would take the lock a second time, and
+    # it is not re-entrant.
+    with ledger._exclusive():
+        ok, why = can_enter(unit, ledger, phase)
+        if not ok:
+            return False, why
+        ledger._add(phase, command=command, exit_code=exit_code,
+                    evidence=evidence, note=note)
     return True, ledger
 
 
@@ -265,11 +289,14 @@ class Entry:
 class Ledger:
     """The recorded outcomes for one unit's phases, backed by one file."""
 
-    def __init__(self, path, slug, unit_name, entries=None):
+    def __init__(self, path, slug, unit_name, entries=None, layout=None):
         self.path = path
         self.slug = slug
         self.unit_name = unit_name
         self.entries = list(entries or [])
+        # Only `load` has one, and only `_exclusive` uses it. A Ledger built by
+        # hand still works; it just cannot serialise against anyone.
+        self.layout = layout
 
     def __repr__(self):
         return f"<Ledger {self.slug}/{self.unit_name} {len(self.entries)} entries>"
@@ -278,7 +305,36 @@ class Ledger:
         wanted = _norm(phase)
         return [e for e in self.entries if e.phase == wanted]
 
+    @contextlib.contextmanager
+    def _exclusive(self):
+        """Hold `plan-<slug>` across the read *and* the write, and re-read.
+
+        The re-read is the point: waiting for the lock means someone else just
+        wrote this file, so whatever was loaded before the wait is stale, and
+        rendering the whole document back from it is how their entry
+        disappeared. Yields whether the lock was taken — `lock.held` fails
+        open, and a best-effort append beats a refused one.
+        """
+        with _plan_lock(self.layout, self.slug) as taken:
+            self._reread()
+            yield taken
+
+    def _reread(self):
+        """Adopt what is on disk now. A missing file leaves this ledger as it
+        is: an empty ledger is what `load` would have produced anyway."""
+        doc = frontmatter.read(self.path)
+        if doc is None:
+            return
+        self.entries = _parse_body(doc.body)
+
     def add(self, phase, *, command="", exit_code=None, evidence="", note=""):
+        with self._exclusive():
+            return self._add(phase, command=command, exit_code=exit_code,
+                             evidence=evidence, note=note)
+
+    def _add(self, phase, *, command="", exit_code=None, evidence="", note=""):
+        """`add` with the plan lock already held — the half `record` calls once
+        `can_enter` has approved the phase, inside the same acquisition."""
         entry = Entry(phase, command=command, exit_code=exit_code, evidence=evidence,
                        note=note)
         self.entries.append(entry)
@@ -286,6 +342,9 @@ class Ledger:
         return entry
 
     def save(self):
+        """Render and write. Takes no lock: it is the write half of
+        `_exclusive`, which holds one already, and a second acquisition would
+        deadlock on a lock that is not re-entrant."""
         meta = {
             "ctx_schema": config_mod.SCHEMA,
             "unit": self.unit_name,
@@ -330,9 +389,28 @@ def load(layout, slug, unit_name):
     path = path_for(layout, slug, unit_name)
     doc = frontmatter.read(path)
     if doc is None:
-        return Ledger(path, slug, unit_name)
+        return Ledger(path, slug, unit_name, layout=layout)
     return Ledger(path, slug, str(doc.meta.get("unit") or unit_name),
-                  entries=_parse_body(doc.body))
+                  entries=_parse_body(doc.body), layout=layout)
+
+
+@contextlib.contextmanager
+def _plan_lock(layout, slug):
+    """`lock.held(layout, f"plan-{slug}")`, or a no-op without a layout.
+
+    The same name `findings` uses, on purpose: a phase record and a finding on
+    two different units of one plan are the two writers most likely to collide,
+    and they only serialise against each other if they ask for the same lock.
+    """
+    if layout is None or getattr(layout, "runtime", None) is None:
+        # No layout, or a stand-in that only knows where plans live (the
+        # byte-identical tests hand `path_for` exactly that). There is no
+        # `runtime/locks/` to take a lock in, and inventing one under an
+        # unknown object is worse than the lost update it would prevent.
+        yield False
+        return
+    with lock.held(layout, f"plan-{slug}") as taken:
+        yield taken
 
 
 # --------------------------------------------------------------------------- #

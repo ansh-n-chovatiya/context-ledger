@@ -41,12 +41,26 @@ the record lives in the body, fenced, for the same miniyaml reason. With
 `models.escalate_on_failed_round` at its default `false`, nothing calls the
 escalation path at all, so a ledger written by a project that never turns the
 flag on is byte-identical to one written before this feature existed.
+
+**Every mutation is a locked read-modify-write, not a write.** The reviewer and
+the implementer are separate processes working the same plan, and they both
+change this file: one raises a finding, the other resolves a different one. Each
+used to load the ledger, mutate the object it had, and render the *whole* file
+back — so whichever saved second erased the other's finding entirely. So the
+mutators do not write what they loaded. Each one takes `plan-<slug>` (the plan,
+not the unit: a reviewer and an implementer on different units still share the
+round counter and the plan's files), re-reads the file inside that lock, applies
+its change to what it finds there, and writes — all in one acquisition, because
+a lock taken twice around the two halves serialises nothing. `_exclusive` is the
+only place in this module that takes a lock; `save()` deliberately does not, so
+the two can never nest (`lock.held` is not re-entrant).
 """
 
+import contextlib
 import datetime
 import re
 
-from . import config as config_mod, frontmatter
+from . import config as config_mod, frontmatter, lock
 
 SEVERITIES = ("critical", "important", "minor")
 STATUSES = ("open", "addressed", "disputed", "parked")
@@ -91,7 +105,7 @@ def load(layout, slug, unit_name):
     path = path_for(layout, slug, unit_name)
     doc = frontmatter.read(path)
     if doc is None:
-        return Ledger(path, slug, unit_name)
+        return Ledger(path, slug, unit_name, layout=layout)
     findings, escalations = _parse_body(doc.body)
     ledger = Ledger(
         path, slug,
@@ -99,6 +113,7 @@ def load(layout, slug, unit_name):
         findings=findings,
         round_number=_int(doc.meta.get("round"), 1),
         escalations=escalations,
+        layout=layout,
     )
     return ledger
 
@@ -164,13 +179,17 @@ class Escalation:
 
 
 class Ledger:
-    def __init__(self, path, slug, unit, findings=None, round_number=1, escalations=None):
+    def __init__(self, path, slug, unit, findings=None, round_number=1,
+                 escalations=None, layout=None):
         self.path = path
         self.slug = slug
         self.unit = unit
         self.findings = list(findings or [])
         self.round = int(round_number)
         self.escalations = list(escalations or [])
+        # Only `load` has one, and only `_exclusive` uses it. A Ledger built by
+        # hand still works; it just cannot serialise against anyone.
+        self.layout = layout
 
     def __repr__(self):
         return f"<Ledger {self.slug}/{self.unit} {len(self.findings)} findings>"
@@ -182,9 +201,49 @@ class Ledger:
     # saved by hand is one an interrupted turn loses, and losing it is exactly
     # the failure this module exists to prevent. `save()` stays public for a
     # caller that edited a Finding's fields directly.
+    #
+    # Each public mutator is `with self._exclusive(): <the unlocked half>`. The
+    # split is deliberate and load-bearing: the lock is taken exactly once, in
+    # `_exclusive`, which is also what re-reads the file — so the read and the
+    # write it is based on cannot drift apart, and no mutator can nest inside
+    # another and deadlock on a lock that is not re-entrant.
     # ----------------------------------------------------------------------- #
 
+    @contextlib.contextmanager
+    def _exclusive(self):
+        """Hold `plan-<slug>` across the read *and* the write, and re-read.
+
+        The re-read is the point. Waiting for the lock means someone else just
+        wrote this file, so the state loaded before the wait is stale by
+        definition; applying a mutation to it and rendering the whole document
+        back is exactly how the other writer's finding disappeared. Yields
+        whether the lock was actually taken — `lock.held` fails open, and a
+        best-effort mutation is still better than a refused one.
+        """
+        with _plan_lock(self.layout, self.slug) as taken:
+            self._reread()
+            yield taken
+
+    def _reread(self):
+        """Adopt what is on disk now. A missing file leaves this ledger as it
+        is: an empty ledger is what `load` would have produced anyway."""
+        doc = frontmatter.read(self.path)
+        if doc is None:
+            return
+        findings, escalations = _parse_body(doc.body)
+        self.findings = findings
+        self.escalations = escalations
+        self.round = _int(doc.meta.get("round"), self.round)
+
     def add(self, severity, summary, *, where="", evidence="", source="reviewer"):
+        with self._exclusive():
+            return self._add(severity, summary, where=where, evidence=evidence,
+                             source=source)
+
+    def _add(self, severity, summary, *, where="", evidence="", source="reviewer"):
+        """`add` with the plan lock already held. `_next_id` therefore counts
+        the findings the *file* has, not the ones this object was loaded with,
+        so two reviewers cannot both mint id 3."""
         finding = Finding(
             self._next_id(), severity, summary,
             where=where, evidence=evidence, round_number=self.round, source=source,
@@ -205,6 +264,15 @@ class Ledger:
 
     def set_status(self, finding_id, status, *, ruling="", evidence=""):
         """Move a finding, or say why it may not move. Returns (ok, problem)."""
+        with self._exclusive():
+            return self._set_status(finding_id, status, ruling=ruling,
+                                    evidence=evidence)
+
+    def _set_status(self, finding_id, status, *, ruling="", evidence=""):
+        """`set_status` with the plan lock already held. The lookup is inside
+        the lock too: a finding raised by a reviewer a millisecond ago is one
+        this can resolve, and a refusal ("no finding 3 in this ledger") must
+        never be an artefact of having read the file too early."""
         finding = self.get(finding_id)
         if finding is None:
             known = ", ".join(str(f.id) for f in self.findings) or "none"
@@ -275,6 +343,13 @@ class Ledger:
         round without first checking whether escalation is still possible,
         exactly as `config.tier_up`'s own docstring describes.
         """
+        with self._exclusive():
+            return self._bump_round(config, model, reason)
+
+    def _bump_round(self, config=None, model=None, reason=None):
+        """`bump_round` with the plan lock already held. The counter is read
+        from the file and incremented in one acquisition — two processes
+        deciding the next round is 2 is the lost update in its purest form."""
         self.round += 1
         self._maybe_escalate(config, model, reason)
         self.save()
@@ -303,6 +378,12 @@ class Ledger:
         return record
 
     def save(self):
+        """Render and write. Takes no lock, on purpose: it is the write half of
+        `_exclusive`, which already holds one, and a second acquisition here
+        would deadlock every mutator on a lock that is not re-entrant. Called
+        directly — the documented escape hatch for a caller that edited a
+        Finding's fields — it is an unserialised write, exactly as it was
+        before."""
         meta = {
             "ctx_schema": config_mod.SCHEMA,
             "unit": self.unit,
@@ -393,6 +474,27 @@ class Ledger:
         if not self.findings and not self.escalations:
             return "\n".join(lines) + "\n"
         return "\n".join(lines).rstrip() + "\n"
+
+
+@contextlib.contextmanager
+def _plan_lock(layout, slug):
+    """`lock.held(layout, f"plan-{slug}")`, or a no-op without a layout.
+
+    The name is the *plan*, not the unit. A reviewer on `02-api` and an
+    implementer on `03-cli` never touch the same findings file, but they do
+    share `plan.json`, the round counter and the seal — so the thing worth
+    serialising is the plan, and a per-unit lock would have let precisely the
+    reported race through.
+    """
+    if layout is None or getattr(layout, "runtime", None) is None:
+        # No layout, or a stand-in that only knows where plans live (the
+        # byte-identical tests hand `path_for` exactly that). There is no
+        # `runtime/locks/` to take a lock in, and inventing one under an
+        # unknown object is worse than the lost update it would prevent.
+        yield False
+        return
+    with lock.held(layout, f"plan-{slug}") as taken:
+        yield taken
 
 
 # --------------------------------------------------------------------------- #

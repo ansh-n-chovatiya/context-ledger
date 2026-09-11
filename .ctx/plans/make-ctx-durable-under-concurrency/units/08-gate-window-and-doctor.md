@@ -80,6 +80,18 @@ the merge-target guard `worktree.py` was built around.
    The gate itself must run **outside** the lock — holding a lock for 240s would
    block every sibling in a concurrent wave, which is a worse defect than the one
    being fixed. Take the lock only around re-read → modify → write.
+
+   **`lock.held` is not re-entrant, and unit 06 has already put the same
+   `plan-<slug>` lock inside the ledger mutators.** `findings.Ledger.add`,
+   `.set_status`, `.bump_round`, `phases.Ledger.add` and `phases.record` each take
+   it internally now. Calling any of them inside your own `plan-<slug>` span will
+   stall for the full 5s timeout and then fail open — no hang, but no
+   serialisation either, which is the worst of both. Note that `_gate_before_done`
+   calls `contract_mod.seal_findings` and `findings_mod.load` on its success path:
+   check whether either reaches a locked mutator, and keep all of it outside your
+   span. A test that the `done` path never takes the same lock twice — unit 06
+   wrote `test_no_locked_path_ever_takes_the_same_lock_twice` for its own
+   surface; extend the idea to this one — is worth more than the argument.
 2. Positive control, and the point of this unit: a test that writes `base_branch`
    into the unit file *while a slow gate is running* and asserts the value
    survives the `done` transition. Make the gate genuinely slow (a verify `cmd`
@@ -157,10 +169,51 @@ duplicate.** Do not implement ULIDs.
     corrections in this file and got a restructure that pre-empted wave 5. Do not
     repeat that. If you find a third stale claim, report it rather than fixing it.
 
+**A tension unit 04 created, which needs pinning rather than resolving.**
+18. Unit 04 made `hooks.main` fail open on `config.load`'s `SystemExit` — which
+    now includes an unreadable or non-mapping *policy* file. Wave 3 made that
+    condition deliberately fatal ("a control plane that fails soft is a control
+    silently not applied"). The split that results is defensible: a session must
+    not brick, but `ctx doctor` and `ctx ci` must still refuse, so CI catches it.
+    Assert that split explicitly — a test that a corrupt system policy still
+    makes `ctx doctor` and `ctx ci` exit non-zero, so the hook's fail-open cannot
+    silently become the whole product's. You do not own `config.py`; this is a
+    test pinning existing CLI behaviour, not a change to it. If the CLI does
+    *not* still refuse, stop and report it — that is a wave-3 regression, not
+    something to fix here.
+
 **All.**
-18. `python3 -m unittest discover -s tests -q` passes, `ctx doctor` exits 0 and
+19. `python3 -m unittest discover -s tests -q` passes, `ctx doctor` exits 0 and
     `ctx ci` exits 0 on this repository. Suite count strictly up.
-19. No file outside `owns` is modified.
+20. No file outside `owns` is modified.
+
+## Writing a concurrency control that does not drift
+
+Unit 06 had to rewrite three of its controls in this plan, and the reason is
+worth inheriting rather than rediscovering. Its first versions raced two
+processes and asserted on how many writes survived. That passes on an idle
+machine and fails on a loaded one — measured here: 1 failure in 3 full-suite
+runs locally, and CI runs nine matrix jobs, so loaded *is* the normal case
+there. Worse, a control that reddens under load gets its threshold loosened by
+whoever is unblocking CI that day, and a loosened control can no longer fail.
+That is the fail-green pattern this whole remediation exists to remove.
+
+**Force the interleaving; do not race for it.** The shape that works, in
+`tests/test_ledger_locks.py` as `_RENDEZVOUS` / `_wait_for` / `DEADLINE`:
+
+- Workers spawn and block on a marker file rather than a wall-clock start.
+- The code under test is driven to the exact point between its read and its
+  write — unit 06 wrapped `atomic.write_text`, which *is* that point inside
+  `_rotate` — and the wrapper releases the workers and waits for all of them.
+- **Assert the race actually happened** before asserting its outcome. Unit 06
+  asserts all 20 probes are visible in the file before letting the replace
+  proceed, so the test cannot pass by never having raced. This is the half that
+  makes it a control rather than a hope.
+- Then assert the outcome exactly — `0 of 20`, not `fewer than half`.
+
+No timing appears in any assertion. Load changes only how long the rendezvous
+takes, and the deadline exists solely to fail loudly with "timed out waiting"
+rather than to gate a result. Reuse the idiom; do not invent a second one.
 
 ## Return contract
 Report: files changed · which criteria passed · verbatim verify output · the

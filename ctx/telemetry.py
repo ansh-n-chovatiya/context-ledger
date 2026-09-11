@@ -7,8 +7,23 @@ that, so drift shows up as data rather than as a vague sense that things got
 slower.
 
 Two constraints shape the implementation. It sits in the hot path of every hook,
-so it must be cheap — one append, no parsing, no locking. And it must never be
-the reason a hook fails, so every operation swallows its own errors and returns.
+so it must be cheap — one append, no parsing. And it must never be the reason a
+hook fails, so every operation swallows its own errors and returns.
+
+"No locking" used to be part of that first constraint, and it was measurably
+wrong. `_rotate` read the tail and then reopened the destination `"w"`, so every
+append landing between the read and the rewrite was discarded: with twenty
+concurrent records across a forced rotate, zero survived. A lock that costs one
+`O_EXCL` create and one unlink per record is cheaper than losing the
+measurement the module exists to take, so `record` now holds the `telemetry`
+lock across the rotate *and* the append that follows it — one acquisition, not
+two, because a lock taken twice around the two halves serialises nothing. The
+rewrite itself goes through `atomic.write_text`, so a reader sees the old file
+or the new one and never a truncated one.
+
+The lock still fails open (that is `lock.held`'s whole bargain), so the second
+constraint is untouched: a lock that cannot be taken risks a lost record, never
+a broken hook.
 
 Records live in `.ctx/runtime/`, which is gitignored: this is machine-local
 measurement, not project history.
@@ -17,7 +32,13 @@ measurement, not project history.
 import json
 import os
 
+from . import atomic, lock
+
 FILENAME = "telemetry.jsonl"
+
+# The logical key `lock.held` slugifies. One lock for the one file.
+LOCK_NAME = "telemetry"
+
 MAX_BYTES = 256 * 1024
 KEEP_LINES = 400
 
@@ -44,13 +65,27 @@ def record(layout, event, ms, **fields):
     reason to exist: it is the key its `by_role` breakdown groups on.
     """
     try:
-        layout.runtime.mkdir(parents=True, exist_ok=True)
-        target = path_for(layout)
-        _rotate(target)
+        # Rendered before the lock: a record that cannot even be serialised is
+        # not worth making twenty other processes wait for.
         payload = {"event": str(event), "ms": round(float(ms), 1)}
         payload.update({k: v for k, v in fields.items() if v is not None})
-        with target.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        line = json.dumps(payload, sort_keys=True) + "\n"
+    except (TypeError, ValueError):
+        return
+    try:
+        layout.runtime.mkdir(parents=True, exist_ok=True)
+        target = path_for(layout)
+        # One acquisition, spanning the rotate's read-modify-write *and* this
+        # append. Locking them separately would leave exactly the window the
+        # lock is here to close: an append that lands after another process has
+        # read the tail but before it has replaced the file is discarded by the
+        # replace. `_rotate` therefore takes no lock of its own — it is only
+        # ever called from inside this one, which also keeps the two lock sites
+        # from nesting, and `lock.held` is not re-entrant.
+        with lock.held(layout, LOCK_NAME):
+            _rotate(target)
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write(line)
     except (OSError, TypeError, ValueError):
         pass
 
@@ -59,14 +94,18 @@ def _rotate(target):
     """Trim to the most recent KEEP_LINES once the file gets large.
 
     Checked by size rather than line count so the common path is one stat call.
+
+    Called only with the `telemetry` lock already held — see `record`. The
+    rewrite is an atomic replace rather than a reopen-for-write, so even a
+    writer that never asked for the lock sees a whole file: the old one or the
+    trimmed one, never the half-second during which it is neither.
     """
     try:
         if not target.is_file() or target.stat().st_size <= MAX_BYTES:
             return
         with target.open("r", encoding="utf-8", errors="replace") as handle:
             lines = handle.readlines()[-KEEP_LINES:]
-        with target.open("w", encoding="utf-8") as handle:
-            handle.writelines(lines)
+        atomic.write_text(target, "".join(lines))
     except OSError:
         pass
 

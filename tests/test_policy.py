@@ -30,6 +30,7 @@ resolved config against a byte-for-byte re-implementation of the merge as it was
 before any of this existed.
 """
 
+import contextlib
 import copy
 import datetime
 import io
@@ -44,7 +45,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ctx import (  # noqa: E402
-    config as config_mod, hooks, journal, miniyaml, trust as trust_mod,
+    config as config_mod, frontmatter, hooks, journal, miniyaml, state,
+    trust as trust_mod,
 )
 from support import FAILS, OK, Fixture  # noqa: E402
 
@@ -141,6 +143,42 @@ class PolicyFixture(Fixture):
     def journal_text(self):
         path = self.layout.journal_file(journal.today())
         return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+    # -- the Stop hook, for real ------------------------------------------ #
+
+    def arm_the_gate(self):
+        """A task whose verify check fails, so the Stop hook has a verdict.
+
+        Without one, `on_stop` returning `""` proves nothing: a gate that was
+        bypassed and a gate that found no work to judge are indistinguishable.
+        Armed, the two are opposites — a block or a clean exit.
+        """
+        self.assertEqual(self.cli("task", "gated")[0], 0)
+        checks = [{"kind": "cmd", "run": FAILS}]
+        trust_mod.accept(self.layout, checks)
+        path = self.layout.task_file("gated")
+        doc = frontmatter.read(path)
+        doc.meta["verify"] = checks
+        doc.body = (
+            "## Objective\nDo the thing.\n\n## Acceptance criteria\n1. it works\n"
+        )
+        doc.write(path)
+        config_mod.reset_policy_warnings()
+
+    def stop(self, config=None):
+        """Run the real Stop hook. A decision dict, or None for "carry on"."""
+        if config is None:
+            config, _err = self.load()
+        return hooks.on_stop(self.layout, config, self.payload()) or None
+
+    def rearm(self):
+        """Forget the attempt counter between runs of an armed gate.
+
+        The gate is bounded: it blocks `max_attempts` times and then escalates
+        and stands down. A test that runs it four times is testing the bound,
+        not the bypass, unless it resets between them.
+        """
+        state.clear_attempts(self.layout)
 
 
 class TestPrecedence(PolicyFixture):
@@ -380,13 +418,19 @@ class TestDoctorExplainsTheSource(PolicyFixture):
 
 
 class TestTheOffSwitchLeavesARecord(PolicyFixture):
-    """`CTX_GATE=off` is journalled every time it takes effect.
+    """`CTX_GATE=off` is journalled every time it takes effect, at both sites.
 
-    The Stop hook is the second site. It is not this unit's file to edit, so the
-    coverage here is of the shared decision `hooks.on_stop` must call —
-    `config.gate_override(layout, config, "stop")` in place of its own inline
-    `os.environ.get("CTX_GATE", ...)` test at `hooks.py:219`. One definition of
-    "off", one journal line, one place a policy can refuse it.
+    The Stop hook was the second site and the one that mattered — it is where a
+    session actually walks past the gate — and it used to spell the test out
+    inline: its own `os.environ.get("CTX_GATE", "").lower() in (...)`, four
+    spellings against the CLI's three, returning `""` with no record anywhere.
+    `hooks.on_stop` now calls `config.gate_override(layout, config, "stop")` and
+    obeys what comes back, so there is one definition of "off", one journal line
+    per bypass, and one place a policy can refuse it.
+
+    These tests drive `on_stop` itself rather than the shared decision it calls.
+    That distinction is the whole point: the shared decision was already correct
+    while the hook ignored it, and a test of the decision could not tell.
     """
 
     def setUp(self):
@@ -399,32 +443,92 @@ class TestTheOffSwitchLeavesARecord(PolicyFixture):
         self.assertIn("doctor: gate disabled by CTX_GATE=off", self.journal_text())
         self.assertEqual(code, 0, out)
 
+    def test_the_gate_is_armed_when_the_switch_is_not_thrown(self):
+        """The control every test below depends on: with `CTX_GATE` unset this
+        task blocks, so a `None` from `on_stop` is the bypass and nothing else."""
+        self.arm_the_gate()
+        os.environ.pop("CTX_GATE")
+        decision = self.stop()
+        self.assertIsNotNone(decision, "the armed gate must block on its own")
+        self.assertEqual(decision["decision"], "block")
+
     def test_the_stop_hook_site_journals_the_bypass(self):
-        config, _err = self.load()
-        override = config_mod.gate_override(self.layout, config, "stop")
-        self.assertTrue(override.disabled)
-        self.assertTrue(override.recorded)
+        self.arm_the_gate()
+        self.assertIsNone(self.stop(), "the hook must obey the override")
         self.assertIn("stop: gate disabled by CTX_GATE=off", self.journal_text())
 
     def test_every_occurrence_is_recorded_not_just_the_first(self):
-        config, _err = self.load()
+        self.arm_the_gate()
         for _ in range(3):
-            config_mod.gate_override(self.layout, config, "stop")
+            self.assertIsNone(self.stop())
         self.assertEqual(self.journal_text().count("gate disabled by CTX_GATE"), 3)
 
     def test_every_spelling_of_off_is_one_decision(self):
         """The CLI honoured three spellings and the Stop hook four, so
         `CTX_GATE=disabled` switched the gate off while `ctx doctor` reported it
-        as on. One tuple now, checked here so it stays one."""
-        config, _err = self.load()
+        as on. One tuple now, and asserted through the hook so that a site
+        re-growing its own list of spellings is a failing test."""
+        self.arm_the_gate()
         for value in ("off", "0", "false", "disabled", "OFF"):
-            os.environ["CTX_GATE"] = value
-            self.assertTrue(config_mod.gate_override(self.layout, config, "stop"),
-                            f"{value} must disable the gate")
+            with self.subTest(value=value):
+                os.environ["CTX_GATE"] = value
+                self.rearm()
+                self.assertIsNone(self.stop(), f"{value} must disable the gate")
         for value in ("", "on", "1", "true"):
-            os.environ["CTX_GATE"] = value
-            self.assertFalse(config_mod.gate_override(self.layout, config, "stop"),
-                             f"{value} must leave the gate alone")
+            with self.subTest(value=value):
+                os.environ["CTX_GATE"] = value
+                self.rearm()
+                decision = self.stop()
+                self.assertIsNotNone(decision, f"{value} must leave the gate alone")
+                self.assertEqual(decision["decision"], "block")
+
+    def test_an_unset_variable_is_not_journalled_as_a_bypass(self):
+        """A gate that ran is not an escape hatch, and a record of one bypass
+        per Stop in every session would make the real ones unfindable."""
+        self.arm_the_gate()
+        os.environ.pop("CTX_GATE")
+        self.stop()
+        self.assertNotIn("CTX_GATE", self.journal_text())
+
+    def test_a_bypass_the_journal_refuses_still_bypasses(self):
+        """The audit record must not become a new way to break a session.
+
+        `TestARecordThatCannotBeWritten` makes this point against the shared
+        decision with a mocked `journal.append`; here it is the hook, against a
+        journal directory the process genuinely cannot write. Whatever the
+        journal does, `on_stop` returns the same verdict it would have returned
+        with a working disk.
+        """
+        self.arm_the_gate()
+        with_journal = self.stop()
+        self.assertIsNone(with_journal)
+
+        err = io.StringIO()
+        with self.read_only_journal(), mock.patch.object(sys, "stderr", err):
+            without_journal = self.stop()
+        self.assertIsNone(without_journal, "the verdict must not depend on the log")
+        self.assertIn("unrecorded", err.getvalue(), "and it must not go unnoticed")
+
+    @contextlib.contextmanager
+    def read_only_journal(self):
+        """Make the journal genuinely unwritable, and writable again afterwards.
+
+        Restored inside the test rather than by `addCleanup`, which unittest
+        runs *after* `tearDown` — by which point the fixture has already tried
+        to delete a directory it is not allowed to empty.
+        """
+        if os.name == "nt" or os.geteuid() == 0:
+            self.skipTest("a read-only directory does not stop this process here")
+        files = sorted(self.layout.journal.glob("*.md"))
+        try:
+            for path in files:
+                path.chmod(0o444)
+            self.layout.journal.chmod(0o555)
+            yield
+        finally:
+            self.layout.journal.chmod(0o755)
+            for path in files:
+                path.chmod(0o644)
 
 
 class TestPolicyCanRefuseTheOffSwitch(PolicyFixture):
@@ -447,6 +551,15 @@ class TestPolicyCanRefuseTheOffSwitch(PolicyFixture):
     def test_the_refusal_is_journalled(self):
         config, _err = self.load()
         config_mod.gate_override(self.layout, config, "stop")
+        self.assertIn("refused by user policy", self.journal_text())
+
+    def test_the_stop_hook_obeys_the_refusal_and_gates_anyway(self):
+        """The refusal is worth nothing unless the site that reads `CTX_GATE`
+        honours it. Exactly the CLI's answer, from the hook: the gate runs."""
+        self.arm_the_gate()
+        decision = self.stop()
+        self.assertIsNotNone(decision, "a refused bypass leaves the gate armed")
+        self.assertEqual(decision["decision"], "block")
         self.assertIn("refused by user policy", self.journal_text())
 
     def test_doctor_reports_the_gate_as_still_enabled(self):

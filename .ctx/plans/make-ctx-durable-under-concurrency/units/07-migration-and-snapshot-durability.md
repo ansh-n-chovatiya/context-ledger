@@ -94,6 +94,34 @@ merges, so a misread ledger is a merge that should have been blocked.
 9. `python3 -m unittest discover -s tests -q` passes; suite count strictly up.
 10. No file outside `owns` is modified.
 
+## Writing a concurrency control that does not drift
+
+Unit 06 had to rewrite three of its controls in this plan, and the reason is
+worth inheriting rather than rediscovering. Its first versions raced two
+processes and asserted on how many writes survived. That passes on an idle
+machine and fails on a loaded one — measured here: 1 failure in 3 full-suite
+runs locally, and CI runs nine matrix jobs, so loaded *is* the normal case
+there. Worse, a control that reddens under load gets its threshold loosened by
+whoever is unblocking CI that day, and a loosened control can no longer fail.
+That is the fail-green pattern this whole remediation exists to remove.
+
+**Force the interleaving; do not race for it.** The shape that works, in
+`tests/test_ledger_locks.py` as `_RENDEZVOUS` / `_wait_for` / `DEADLINE`:
+
+- Workers spawn and block on a marker file rather than a wall-clock start.
+- The code under test is driven to the exact point between its read and its
+  write — unit 06 wrapped `atomic.write_text`, which *is* that point inside
+  `_rotate` — and the wrapper releases the workers and waits for all of them.
+- **Assert the race actually happened** before asserting its outcome. Unit 06
+  asserts all 20 probes are visible in the file before letting the replace
+  proceed, so the test cannot pass by never having raced. This is the half that
+  makes it a control rather than a hope.
+- Then assert the outcome exactly — `0 of 20`, not `fewer than half`.
+
+No timing appears in any assertion. Load changes only how long the rendezvous
+takes, and the deadline exists solely to fail loudly with "timed out waiting"
+rather than to gate a result. Reuse the idiom; do not invent a second one.
+
 ## Return contract
 Report: files changed · which criteria passed · verbatim verify output · the
 before/after runs proving criteria 2, 6 and 7 are real positive controls · the

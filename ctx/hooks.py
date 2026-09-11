@@ -7,9 +7,12 @@ without a live session. Two invariants:
 * **Silent in untracked projects.** No `.ctx/` means no output and no work. The
   plugin is installed globally, so this is what keeps it free everywhere else.
 * **Never break a session.** Anything unexpected is appended to
-  `.ctx/runtime/hook-errors.log` and the hook exits 0. The done-gate is the
-  only hook allowed to fail closed, and it is not registered until the gate
-  ships.
+  `.ctx/runtime/hook-errors.log` and the hook exits 0 — including a ledger this
+  plugin is too old to read, which is a refusal `config.load` signals with
+  `SystemExit` because the CLI needs it to stop a command. A hook has no command
+  to stop, so it reports one line and contributes nothing. The done-gate is the
+  only hook allowed to fail closed, and it fails closed on a *criterion*, never
+  on a configuration.
 """
 
 import datetime
@@ -37,7 +40,27 @@ def main(event, stream=None, out=None):
     layout = paths.Layout(root)
     started = time.perf_counter()
     try:
-        config = config_mod.load(layout)
+        try:
+            config = config_mod.load(layout)
+        except SystemExit as refusal:
+            # The one condition the blanket fail-open below deliberately did not
+            # cover, and the likeliest one to actually happen. A teammate commits
+            # a ledger written by a newer plugin; `config.load` raises the CLI's
+            # "stop the command" signal; `except SystemExit: raise` handed it to
+            # the shim, which exited non-zero with a bare error line — on *every
+            # tool call*, in a session that cannot act on it and did not ask.
+            #
+            # A hook is not a command: it has nothing to stop, and refusing to
+            # run is the whole of what it can usefully do. So the refusal is
+            # reported as a notice and the hook contributes nothing, exactly as
+            # it does for every other failure here.
+            #
+            # Scoped to this one call on purpose. A `SystemExit` out of a
+            # *handler* is not a config refusal, it is a bug, and the `raise`
+            # below still lets it out rather than hiding it.
+            _report_unusable_config(event, refusal)
+            _measure(layout, event, started, failed=True)
+            return 0
         handler = HANDLERS.get(event)
         if handler is None:
             return 0
@@ -61,6 +84,30 @@ def main(event, stream=None, out=None):
         _log_error(layout, event, traceback.format_exc())
         _measure(layout, event, started, failed=True)
         return 0
+
+
+def _report_unusable_config(event, refusal):
+    """One line of notice for a ledger this plugin cannot read. Never raises.
+
+    Deliberately not deduplicated across events. Every hook event is its own
+    process, so a cache would be empty on arrival and could only ever quieten a
+    test suite — and a per-session store for a condition that is permanent until
+    someone upgrades the plugin would outlive its usefulness immediately. One
+    line per event, and never a traceback, is the bargain.
+    """
+    message = " ".join(str(refusal).split())
+    if not message or message.lstrip("-").isdigit():
+        # `SystemExit(2)` and `SystemExit()` stringify to "2" and "" — say
+        # something a reader can act on rather than echoing an exit status.
+        message = "this ledger could not be read by the installed plugin"
+    try:
+        print(
+            f"ctx: {message} "
+            f"(the {event} hook did nothing rather than failing your session)",
+            file=sys.stderr,
+        )
+    except Exception:  # pragma: no cover - a console that cannot take the line
+        pass
 
 
 def _read_payload(stream):
@@ -216,7 +263,10 @@ def on_stop(layout, config, payload):
     gate = config.get("gate") or {}
     if not gate.get("enabled", True):
         return ""
-    if os.environ.get("CTX_GATE", "").lower() in ("off", "0", "false", "disabled"):
+    # One definition of "off", one journal line, one place a policy can refuse
+    # it. This site used to spell the test out inline — four spellings against
+    # the CLI's three, and no record anywhere that the gate had been walked past.
+    if config_mod.gate_override(layout, config, "stop"):
         return ""
 
     current = state.load(layout)
