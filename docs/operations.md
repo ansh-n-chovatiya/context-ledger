@@ -182,6 +182,44 @@ both.
   ok   wave 1: 60,000 of 250,000 tokens
 ```
 
+## Telemetry — what is recorded, and where it stays
+
+Telemetry is **on by default and opt-out**, so this section exists to say
+exactly what that means rather than leaving you to read `ctx/telemetry.py`.
+
+**Where it goes.** One JSON object per line in
+`.ctx/runtime/telemetry.jsonl`. `runtime/` is gitignored, so it is
+machine-local and never committed. Nothing is sent anywhere: the package has
+zero runtime dependencies and no network-capable import in the tree, and
+`tests/test_packaging.py` asserts both.
+
+**What a line contains.** Every record carries `event` (the hook or command
+name) and `ms` (how long it took). Beyond those, only what the call site
+supplies:
+
+| Field | Written by | Meaning |
+| --- | --- | --- |
+| `chars` | SessionStart | size of the briefing actually injected |
+| `decision` | the Stop gate | `block`, or absent |
+| `failed` | any hook that raised | that it failed, not what failed |
+| `model`, `role`, `score` | `ctx start` | the dispatch tier and its inputs |
+| `bytes` | review capture | size of the snapshot |
+| `spend`, `unit` | `ctx telemetry --spend` | tokens you reported, by unit |
+
+**What it never contains.** No file contents, no command output, no paths, no
+diffs, no prompts, no identity. The exception worth naming: `event` names a
+hook or subcommand, and `unit` names one of your own units — both are strings
+you chose.
+
+**Retention.** The file is trimmed to its last 500 records once it passes
+64 KB, so it is bounded rather than append-forever. Delete it whenever you
+like; nothing reads it but `ctx telemetry` and `ctx doctor`.
+
+**Turning it off.** `telemetry: {enabled: false}` in `.ctx/ctx.yaml`. That is
+honoured on every path, including the one where a hook fails — an off switch
+that held on the success path and not the failure path was a real defect, and
+is now a test.
+
 ### Reported spend
 
 ```bash

@@ -10,7 +10,7 @@ import json
 import os
 import tempfile
 
-from . import config as config_mod, lock as lock_mod
+from . import config as config_mod, lock as lock_mod, log
 
 # A wave means several `ctx` processes writing this file at once. `os.replace`
 # already made each *write* atomic, but load-then-save is not: two processes that
@@ -46,8 +46,13 @@ def load(layout):
             found = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(found, dict):
                 data.update(found)
-        except (OSError, ValueError):
-            pass  # a corrupt pointer degrades to L0 rather than failing
+        except (OSError, ValueError) as exc:
+            # Degrading to L0 is right — a session must start. Doing it in
+            # silence was not: a corrupt pointer reads as a fresh repository,
+            # so "no active work" is indistinguishable from "your active work
+            # is unreadable", and the user re-dispatches a unit already running
+            # in a worktree. The behaviour is unchanged; only the silence is.
+            log.failure("state.load", exc, path=str(path))
     data["level"] = config_mod.normalise_level(data.get("level"))
     if not isinstance(data.get("attempts"), dict):
         data["attempts"] = {}

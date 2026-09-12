@@ -113,11 +113,24 @@ class TestJournalCost(Fixture):
         self.assertLess(len(text), 2500)
 
     def test_entries_are_scrubbed_and_length_capped(self):
-        journal.append(self.layout, self.config, "edit", "x.py", "token: ghp_" + "a" * 40)
+        """Both halves, and the cap half has to be given something to cap.
+
+        The note was `"token: ghp_" + "a" * 40` — about fifty characters
+        against a two-hundred character cap, so the length assertion could
+        never fail and only the scrub was ever tested. The note is now longer
+        than the cap, so the truncation is exercised rather than assumed.
+        """
+        cap = self.config["journal"]["max_line_chars"]
+        note = "token: ghp_" + "a" * 40 + " " + "z" * (cap * 2)
+        journal.append(self.layout, self.config, "edit", "x.py", note)
         body = self.layout.journal_file(journal.today()).read_text(encoding="utf-8")
         self.assertNotIn("ghp_aaaa", body)
+        entries = [line for line in body.splitlines() if line.startswith(("0", "1", "2"))]
+        self.assertTrue(entries, "no entry was written — nothing was capped")
+        self.assertTrue(any(len(line) >= cap - 1 for line in entries),
+                        "the note was shorter than the cap, so nothing was cut")
         for line in body.splitlines():
-            self.assertLessEqual(len(line), self.config["journal"]["max_line_chars"])
+            self.assertLessEqual(len(line), cap)
 
     def test_recent_paths_prefers_most_recent(self):
         journal.append(self.layout, self.config, "edit", "a.py")

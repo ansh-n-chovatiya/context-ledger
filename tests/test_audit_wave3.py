@@ -72,9 +72,21 @@ class TestCommandTrust(Fixture):
         self.assertEqual(code, 0)
         config = __import__("ctx.config", fromlist=["config"]).load(self.layout)
         accepted = trust.load(self.layout)
-        for check in config.get("verify") or []:
-            if check.get("kind") == "cmd":
-                self.assertTrue(trust.is_accepted(check, accepted), check)
+        # Both guards had to go. `for check in config.get("verify") or []` runs
+        # zero assertions when `init` writes an empty `verify:` — which is the
+        # exact regression this test exists to catch, so it was green precisely
+        # when the thing it guards had broken. The `if kind == "cmd"` inside it
+        # was the same hole one level down. The subject is asserted first now,
+        # and the loop can only narrow it.
+        commands = [check for check in (config.get("verify") or [])
+                    if check.get("kind") == "cmd"]
+        self.assertTrue(
+            commands,
+            "init proposed no cmd check, so there is nothing to have accepted "
+            "— this test cannot pass vacuously",
+        )
+        for check in commands:
+            self.assertTrue(trust.is_accepted(check, accepted), check)
 
     def test_trust_lists_before_it_accepts(self):
         path = self.layout.task_file("demo")
