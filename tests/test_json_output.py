@@ -24,6 +24,7 @@ Four properties, and the order they are tested in is the order they break in:
 """
 
 import json
+import os
 import re
 import sys
 import unittest
@@ -101,6 +102,12 @@ class Scenario(Fixture):
         for root, token in ((self.root, "<ROOT>"), (self.untracked, "<GLOBAL>")):
             text = text.replace(str(Path(root).resolve()), token)
             text = text.replace(str(root), token)
+        if os.sep != "/":
+            # Paths below a placeholder are still spelled with the platform
+            # separator: `<GLOBAL>\global\policy.yaml` against the golden's
+            # `<GLOBAL>/global/policy.yaml`. The golden is shared by three
+            # platforms, so it holds one spelling and this supplies it.
+            text = text.replace("\\", "/")
         text = text.replace(sys.executable, "<PYTHON>")
         text = re.sub(r"\d{4}-\d{2}-\d{2}T[\d:.]+", "<TS>", text)
         text = re.sub(r"\d{4}-\d{2}-\d{2}", "<DATE>", text)
