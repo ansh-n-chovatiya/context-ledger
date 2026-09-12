@@ -35,6 +35,15 @@ The prose keys, and the only ones a renderer may insert unescaped:
     steps[].tech.criteria[]     block HTML
     critical_path.basis         one line
 
+**A step is headed by what a human called it**, from `plain.md`'s block
+heading, falling back to the slug in words (`01-plain-source` -> "Plain
+source") when nobody wrote one. `steps[].title_generated` says which of the two
+you are looking at, with the same polarity as `steps[].plain.generated`: True
+means the machine produced it. It sits beside the value it describes rather
+than inside that map, so that every key of `plain.generated` still has a
+matching key in `plain` — a renderer pairing the two off cannot trip over a
+flag whose text lives somewhere else.
+
 **No clock.** The page is committed, so bytes that change because a day passed
 are a spurious diff on every reviewer's branch. `plan.json`'s `generated` date
 is carried through as data; the clock that produced it is `plan.py`'s. A test
@@ -349,6 +358,27 @@ def view_model(layout, slug):
     }
 
 
+def _title(unit, authored, patterns):
+    """`(title, generated)` — what a human called this step, or what it is.
+
+    `plain.Plain.title` returns what somebody wrote in the block heading, or
+    `None`; it deliberately invents nothing, so the fallback is here. Both
+    routes go through `_phrase`, because both end up inside a heading element
+    and one of them is prose out of a file a human edits — a title carrying
+    `<script>` or a secret is escaped and redacted exactly like the five
+    fields below it.
+
+    The fallback also catches an authored title that *renders* to nothing: a
+    heading of zero-width characters, or the placeholder comment `scaffold`
+    writes, is not a title, and a step headed by an empty string cannot be
+    read. `generated` is True in that case, because that is what happened.
+    """
+    title = _phrase(authored or "", patterns)
+    if title:
+        return title, False
+    return _phrase(_words(unit.name, drop_index=True), patterns), True
+
+
 def _step(unit, numbers, rounds, grouped, source, patterns):
     """One step: what a reader needs, then what an engineer needs, separately."""
     level = rounds[unit.name]
@@ -375,10 +405,13 @@ def _step(unit, numbers, rounds, grouped, source, patterns):
         for field, key in zip(plain_mod.UNIT_FIELDS, FIELD_KEYS)
     )
 
+    title, derived = _title(unit, written.get("title"), patterns)
+
     return {
         "number": number,
         "slug": unit.name,
-        "title": _phrase(_words(unit.name, drop_index=True), patterns),
+        "title": title,
+        "title_generated": derived,
         "plain": prose,
         "round": level,
         "alongside": alongside,

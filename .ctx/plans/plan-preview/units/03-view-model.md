@@ -43,7 +43,7 @@ forbid:
   - ctx/commands.py
   - ctx/cli.py
 budget_tokens: 60000
-status: pending
+status: done
 verify:
   - kind: diff
   - kind: symbol

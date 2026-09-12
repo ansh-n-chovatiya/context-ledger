@@ -68,3 +68,7 @@
 23:12 | gate | 01-plain-source | manual fail
 23:15 | unit | 01-plain-source | done refused (contract edited after dispatch)
 23:17 | unit | 01-plain-source | done
+23:25 | unit | 03-view-model | done refused (fail)
+23:26 | start | 03-view-model | re-sealed deliberately (--reseal): the contract had not changed; the seal and review baseline were retaken over the current tree (recorded findings kept)
+23:26 | start | plan-preview | wave 2, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+23:27 | unit | 03-view-model | done

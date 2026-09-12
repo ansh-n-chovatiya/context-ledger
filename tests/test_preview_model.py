@@ -448,6 +448,105 @@ class TestDegradation(ModelCase):
         self.assertEqual(len(model["steps"]), 6)
 
 
+class TestTheAuthoredStepTitle(ModelCase):
+    """A step is headed by what a human called it, when a human called it
+    anything.
+
+    `Plain source`, `Safe html`, `Cli wiring` — the slug-derived titles are
+    honest and say nothing, and a title taken from the unit's objective would
+    put a `.py` path in the one region of the page that may not contain one.
+    So the title is authored in `plain.md`'s block heading, and this class
+    holds the three things that has to be true of: the authored one is
+    preferred, the derived one is untouched underneath it, and the authored one
+    is prose — escaped and redacted like every other thing a human typed.
+    """
+
+    def test_an_authored_title_reaches_the_step(self):
+        self.write_plain(
+            "## Unit: 01-alpha — Make the safety check honest\n"
+            "**Risk:** Low, in the author's view.\n"
+        )
+        step = self.step(self.model(), "01-alpha")
+        self.assertEqual(step["title"], "Make the safety check honest")
+        self.assertFalse(step["title_generated"])
+
+    def test_a_plain_hyphen_separator_reaches_the_step_too(self):
+        self.write_plain("## Unit: 02-beta - Stop logging the session token\n")
+        step = self.step(self.model(), "02-beta")
+        self.assertEqual(step["title"], "Stop logging the session token")
+        self.assertFalse(step["title_generated"])
+
+    def test_a_step_with_no_authored_title_keeps_the_derived_one(self):
+        """The fallback is unchanged, and it is used per step, not per file.
+
+        `01-alpha` is titled and `02-beta` is not, in the same `plain.md`: one
+        authored heading must not decide the other three.
+        """
+        self.write_plain("## Unit: 01-alpha — Make the safety check honest\n")
+        model = self.model()
+        self.assertEqual(self.step(model, "02-beta")["title"], "Beta")
+        self.assertTrue(self.step(model, "02-beta")["title_generated"])
+        self.assertEqual(
+            [s["title"] for s in model["steps"]][1:],
+            ["Beta", "Gamma", "Delta"])
+
+    def test_with_no_plain_file_at_all_every_title_is_the_derived_one(self):
+        model = self.model()
+        self.assertEqual([s["title"] for s in model["steps"]],
+                         ["Alpha", "Beta", "Gamma", "Delta"])
+        self.assertTrue(all(s["title_generated"] for s in model["steps"]))
+
+    def test_an_authored_title_is_escaped_and_redacted_like_any_prose(self):
+        self.write_plain(
+            "## Unit: 01-alpha — Rotate <script>alert(1)</script> keys\n\n"
+            "## Unit: 02-beta — Stop printing password: hunter2 at startup\n"
+        )
+        model = self.model()
+
+        alpha = self.step(model, "01-alpha")["title"]
+        self.assertNotIn("<script>", alpha)
+        self.assertIn("&lt;script&gt;", alpha)
+
+        beta = self.step(model, "02-beta")["title"]
+        self.assertNotIn("hunter2", beta)
+        self.assertIn("redacted", beta)
+
+        # Inline, not a block: these sit inside a heading element, and a `<p>`
+        # in an `<h2>` closes the heading at the parser.
+        for step in model["steps"]:
+            self.assertNotIn("<p>", step["title"])
+
+    def test_a_title_that_sanitizes_away_to_nothing_falls_back(self):
+        """An authored heading of invisible characters is not an authored
+        title, and a step headed by an empty string is unreadable."""
+        invisible = "\u200b" * 3  # zero-width spaces: a heading, not a title
+        self.write_plain("## Unit: 01-alpha \u2014 %s\n" % invisible)
+        step = self.step(self.model(), "01-alpha")
+        self.assertEqual(step["title"], "Alpha")
+        self.assertTrue(step["title_generated"])
+
+    def test_the_scaffolded_placeholder_is_not_an_authored_title(self):
+        self.write_plain(
+            "## Unit: 01-alpha — %s\n" % plain_mod.TITLE_PLACEHOLDER)
+        step = self.step(self.model(), "01-alpha")
+        self.assertEqual(step["title"], "Alpha")
+        self.assertTrue(step["title_generated"])
+
+    def test_an_authored_title_does_not_disturb_determinism(self):
+        self.write_plain("## Unit: 01-alpha — Make the safety check honest\n")
+        first, second = self.model(), self.model()
+        self.assertEqual(first, second)
+        self.assertEqual(json.dumps(first, sort_keys=True),
+                         json.dumps(second, sort_keys=True))
+
+    def test_the_flag_says_which_of_the_two_was_used(self):
+        self.write_plain("## Unit: 03-gamma — Widen the gate\n")
+        flags = dict((s["slug"], s["title_generated"])
+                     for s in self.model()["steps"])
+        self.assertEqual(flags, {"01-alpha": True, "02-beta": True,
+                                 "03-gamma": False, "04-delta": True})
+
+
 class TestWritingTheData(ModelCase):
 
     def test_it_writes_where_it_says_and_round_trips_unchanged(self):
