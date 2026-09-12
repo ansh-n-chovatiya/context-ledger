@@ -128,11 +128,30 @@ def _install_isolation_guard():
     # nothing on exactly the two interpreters this project supports at the
     # floor. Its own test caught that the first time the suite met the 3.9
     # matrix on CI. Wrapping the method covers every version the same way.
-    real_path_mkdir = Path.mkdir
+    # Every mutating `Path` method is wrapped in its own right rather than
+    # reached through `os`. Which `os` function a given `Path` method calls,
+    # and whether it looks it up at import time or at call time, has changed
+    # repeatedly across 3.8 to 3.14 — `Path.mkdir` went through an accessor
+    # bound at import on 3.8/3.9, and `Path.write_text` slipped past an
+    # `io.open` patch on 3.10. Both gaps were found one CI runner at a time.
+    # Wrapping the methods themselves is version-independent by construction.
+    _PATH_WRITERS = ("mkdir", "write_text", "write_bytes", "touch",
+                     "rename", "replace", "unlink", "rmdir")
+    originals = {name: getattr(Path, name) for name in _PATH_WRITERS}
 
-    def guarded_path_mkdir(self, *a, **kw):
-        _guard(self, "mkdir")
-        return real_path_mkdir(self, *a, **kw)
+    def _wrap_path(name, original):
+        def guarded(self, *a, **kw):
+            _guard(self, name)
+            return original(self, *a, **kw)
+        guarded.__name__ = "guarded_path_" + name
+        return guarded
+
+    real_path_open = Path.open
+
+    def guarded_path_open(self, mode="r", *a, **kw):
+        if any(ch in mode for ch in "wxa+"):
+            _guard(self, "Path.open(mode=%r)" % mode)
+        return real_path_open(self, mode, *a, **kw)
 
     os.replace = guarded_replace
     os.rename = guarded_rename
@@ -140,7 +159,9 @@ def _install_isolation_guard():
     os.makedirs = guarded_makedirs
     builtins.open = guarded_open
     io.open = guarded_io_open
-    Path.mkdir = guarded_path_mkdir
+    for _name, _original in originals.items():
+        setattr(Path, _name, _wrap_path(_name, _original))
+    Path.open = guarded_path_open
 
 
 _install_isolation_guard()

@@ -38,6 +38,32 @@ class TheGuardCatchesAWriteToTheRealLedger(unittest.TestCase):
             "protect and this test would prove nothing",
         )
         self.before = self.CANARY.read_bytes()
+        # Writes aim here, not at .gitignore. The previous version wrote "*"
+        # straight at the real .ctx/.gitignore and relied on the guard to stop
+        # it — so on Python 3.10, where Path.write_text slipped past the guard,
+        # the test itself set this repository's ledger to `*` and the next test
+        # read it back. A canary that destroys the thing it is guarding when
+        # the guard has a gap is the wrong canary.
+        self.WRITE_CANARY = _REAL_CTX / "isolation-guard-canary"
+        self.addCleanup(self._sweep)
+
+    def _sweep(self):
+        """Leave nothing behind, even if the guard let something through."""
+        for stray in (self.WRITE_CANARY,
+                      _REAL_CTX / "isolation-guard-canary-dir"):
+            try:
+                if stray.is_dir():
+                    stray.rmdir()
+                elif stray.exists():
+                    stray.unlink()
+            except OSError:
+                pass
+        if self.CANARY.read_bytes() != self.before:
+            self.CANARY.write_bytes(self.before)
+            raise AssertionError(
+                "the guard let a write reach the real .ctx/.gitignore; it has "
+                "been restored, but the guard has a gap on this interpreter"
+            )
 
     def assertUntouched(self):
         self.assertEqual(
@@ -52,25 +78,25 @@ class TheGuardCatchesAWriteToTheRealLedger(unittest.TestCase):
         # is an earlier, stricter catch than the final `os.replace`, not a
         # different one: both name this checkout's real `.ctx/`.
         with self.assertRaises(RealLedgerWriteError) as caught:
-            atomic.write_text(self.CANARY, "*")
+            atomic.write_text(self.WRITE_CANARY, "*")
         self.assertIn(str(_REAL_CTX), str(caught.exception))
         self.assertUntouched()
 
     def test_frontmatter_document_write_is_caught(self):
         doc = frontmatter.Document({"ctx_schema": 1}, "body\n")
         with self.assertRaises(RealLedgerWriteError) as caught:
-            doc.write(self.CANARY)
+            doc.write(self.WRITE_CANARY)
         self.assertIn(str(_REAL_CTX), str(caught.exception))
         self.assertUntouched()
 
     def test_a_plain_path_write_text_is_caught(self):
         with self.assertRaises(RealLedgerWriteError):
-            self.CANARY.write_text("*", encoding="utf-8")
+            self.WRITE_CANARY.write_text("*", encoding="utf-8")
         self.assertUntouched()
 
     def test_a_plain_open_in_write_mode_is_caught(self):
         with self.assertRaises(RealLedgerWriteError):
-            open(self.CANARY, "w", encoding="utf-8")
+            open(self.WRITE_CANARY, "w", encoding="utf-8")
         self.assertUntouched()
 
     def test_a_new_directory_under_the_real_ledger_is_caught(self):
