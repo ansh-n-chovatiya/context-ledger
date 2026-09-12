@@ -927,6 +927,26 @@ def _minimal_argv(name, rows):
     return argv
 
 
+def _portable(rows):
+    """The surface with the one field argparse computes differently per version.
+
+    A *positional*'s `required` is not something this project sets — argparse
+    derives it, and the derivation changed between 3.9 and 3.14, so a fixture
+    generated on one reports `False` where the other reports `True`. It went
+    unnoticed until the suite first met the 3.8/3.9 matrix on CI. Every field
+    this project actually declares is still compared byte for byte; only the
+    derived one is dropped, and only for positionals, where `_minimal_argv`
+    keys off `nargs` rather than reading it anyway.
+    """
+    out = []
+    for row in rows:
+        row = tuple(row)
+        if row and row[0] == "<positional>":
+            row = row[:7] + (None,) + row[8:]
+        out.append(row)
+    return out
+
+
 class TestTheSurfaceIsUnchanged(unittest.TestCase):
     """Forty-one subcommands still parse exactly as they did."""
 
@@ -939,7 +959,7 @@ class TestTheSurfaceIsUnchanged(unittest.TestCase):
         live = _live()
         for name, expected in SURFACE.items():
             with self.subTest(command=name):
-                self.assertEqual(live[name], expected)
+                self.assertEqual(_portable(live[name]), _portable(expected))
 
     def test_the_top_level_parser_is_unchanged(self):
         parser = cli.build_parser()

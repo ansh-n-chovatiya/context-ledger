@@ -121,12 +121,26 @@ def _install_isolation_guard():
     # not the `open` builtin, which is a separate attribute that merely
     # started out equal to it — so both have to be patched, or every write
     # made through a `Path` would sail past a guard on `builtins.open` alone.
+    # `Path.mkdir` has to be wrapped in its own right, not reached through
+    # `os.mkdir`. On Python 3.8 and 3.9 pathlib routes it through an accessor
+    # object that binds `os.mkdir` at *import* time, so patching the `os`
+    # attribute afterwards never reaches it — the guard silently protected
+    # nothing on exactly the two interpreters this project supports at the
+    # floor. Its own test caught that the first time the suite met the 3.9
+    # matrix on CI. Wrapping the method covers every version the same way.
+    real_path_mkdir = Path.mkdir
+
+    def guarded_path_mkdir(self, *a, **kw):
+        _guard(self, "mkdir")
+        return real_path_mkdir(self, *a, **kw)
+
     os.replace = guarded_replace
     os.rename = guarded_rename
     os.mkdir = guarded_mkdir
     os.makedirs = guarded_makedirs
     builtins.open = guarded_open
     io.open = guarded_io_open
+    Path.mkdir = guarded_path_mkdir
 
 
 _install_isolation_guard()

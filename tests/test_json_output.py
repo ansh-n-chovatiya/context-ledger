@@ -99,10 +99,8 @@ class Scenario(Fixture):
         # verify command embeds it. Locally that path is 44 characters and on a
         # macOS runner it is 61, which moved the count from 239 to 256 and
         # failed a test whose subject is the prose, not the arithmetic.
-        text = re.sub(r"briefing \d+/(\d+) chars \(~\d+ tokens\)",
-                      r"briefing <N>/\1 chars (~<T> tokens)", text)
-        text = re.sub(r"(briefing +L\d) \d+/(\d+) chars \(~\d+ tokens\)",
-                      r"\1 <N>/\2 chars (~<T> tokens)", text)
+        text = re.sub(r"\b\d+/(\d+) chars \(~\d+ tokens\)",
+                      r"<N>/\1 chars (~<T> tokens)", text)
         return text
 
     def human(self, argv):
@@ -174,9 +172,9 @@ next: /ctx:verify
   ok   .ctx/runtime
   ok   .ctx/runtime/verify
 ## briefing budget
-  ok   L0 93/220 chars (~26 tokens)
-  ok   L1 83/900 chars (~23 tokens)
-  ok   L2 239/2600 chars (~66 tokens)
+  ok   L0 <N>/220 chars (~<T> tokens)
+  ok   L1 <N>/900 chars (~<T> tokens)
+  ok   L2 <N>/2600 chars (~<T> tokens)
 ## verify commands
   none configured (fine at L0; required for L1/L2 gates)
 ## command trust
