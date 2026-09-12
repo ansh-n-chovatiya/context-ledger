@@ -39,6 +39,7 @@ forks real processes.
 
 import contextlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -238,8 +239,19 @@ class TelemetryRotateTests(Fixture):
 
         self.assertIn("before", witnessed,
                       "the rotate never reached its replace — nothing was tested")
-        self.assertEqual(sorted(witnessed["before"]), list(range(self.PROBES)),
-                         "the appends never landed — the control proves nothing")
+        if os.name == "nt":
+            # Windows emulates append mode rather than implementing O_APPEND,
+            # so twenty processes appending to one file is not atomic there and
+            # a line can be lost before the rotate ever runs. The product does
+            # not care — `record` appends under the lock — but this control
+            # deliberately removes the lock, so it cannot claim all twenty
+            # arrived. It still proves the thing it exists to prove: whatever
+            # did land was in the file, and the rewrite discarded it.
+            self.assertTrue(witnessed["before"],
+                            "no append landed at all — the control proves nothing")
+        else:
+            self.assertEqual(sorted(witnessed["before"]), list(range(self.PROBES)),
+                             "the appends never landed — the control proves nothing")
         self.assertEqual(self._survivors(), set(),
                          "the rewrite did not discard the concurrent appends")
 
