@@ -1,660 +1,509 @@
-# Plan — Plan Briefing: a shareable page that explains a plan in plain words
+# Plan Preview — a shareable page a non-technical reviewer can approve
 
-**Status:** proposed. Not yet a ledger plan — see §11 before dispatching.
-**Target version:** 0.10.0 (0.9.0 belongs to `make-the-ctx-cli-safe-to-automate`)
-**Written:** 2026-09-10
-**Supersedes:** the first draft (`plan.md`), which four reviews found defective in
-eleven confirmed ways. Every one is closed below; §12 records them so the same
-mistakes are not re-made.
+**Status:** proposed, not dispatched
+**Target version:** 0.9.0
+**Written:** 2026-09-10 · **Revised:** 2026-09-12, against `main` at `057a055`
+
+> **Revision note.** The first draft predated the `report.md` remediation.
+> Four of its assumptions are now false and one of its decisions conflicts
+> with a later one; §11 lists every change and why. Read §11 before §6 if you
+> have seen the earlier version.
 
 ---
 
 ## 1. The problem
 
 A `ctx` plan exists as `plan.json`, a terse `README.md`, and unit contracts
-written for an engineer or a subagent. There is no artefact a person can read to
-find out what is about to happen.
+written for an engineer or a subagent. **There is no artefact a person can look
+at and say "yes, do that" before work starts.**
 
-Claude normally solves this with an artifact — but an artifact needs a claude.ai
-account. The people who most need to understand a plan often do not have one, and
-may not be technical.
+Claude normally reaches for an artifact, but that needs a claude.ai account.
+The people who most need to approve a plan often do not have one and may not be
+technical.
 
-Context Ledger's job is to run work in parallel and organise it for somebody who
-is not writing prompts by hand. That job is unfinished if the only readable
-description of the work is a file full of `owns:` globs and `_check_cmd`
-internals.
+The product's thesis is running work in parallel and organising it so somebody
+who is not writing prompts by hand can still direct it. That is unfinished while
+the only readable description of the work is a file of `owns:` globs.
 
-**So:** every plan can produce a self-contained HTML page, written in plain
-language, that opens by double-clicking — no account, no server, no network.
+**So:** every plan gets a self-contained HTML file, in plain language, that
+opens by double-clicking — no account, no server, no network.
 
-## 2. What this is, and what it is not
+---
 
-It is a **briefing**, not an approval. The page explains what is about to
-happen and ends with one line of recourse: *"This page describes work. It never
-asks you to run, install, or authorise anything. If something looks wrong, tell
-whoever sent it before they run the next step."*
-
-That wording is load-bearing. The first draft called itself a page a reviewer
-could *approve* while its own non-goals removed every approval mechanism — an
-artefact soliciting a decision it could not receive. Either it grows an approval
-state machine (a sixth stage in a five-stage process) or it stops claiming to be
-one. It stops claiming.
-
-**Non-goals, held firmly:**
-
-- Nothing blocks. `ctx start` prints one advisory line and dispatches as always.
-- No approval state, no `reviewed:` flag, no checkboxes, no round-trip.
-- Nothing enters the SessionStart briefing. That budget is the project's core value.
-- No server, no CDN, no fonts, no `fetch`. It opens with the wifi off.
-
-## 3. Files
+## 2. What we are building
 
 ```
 .ctx/plans/<slug>/
-  plan.json                 structure, for machines          (committed, exists)
-  README.md                 the board, for the orchestrator  (committed, exists)
-  units/*.md                contracts, for engineers         (committed, exists)
-  plain.md                  NEW — plain language, authored   (committed)
-  revisions/                                                 (committed, exists)
-
-.ctx/runtime/preview/
-  <slug>-briefing.html      NEW — the generated page         (gitignored)
-  <slug>-model.json         NEW — the view-model, --design   (gitignored)
+  plan.json          structure, for machines          (exists)
+  README.md          the board, for the orchestrator  (exists)
+  units/*.md         contracts, for engineers          (exists)
+  plain.md           NEW — plain language, authored
+  preview.html       NEW — the generated page, committed
+  preview.data.json  NEW — the view-model, written by --data
 ```
 
-`plain.md` is committed: it is authored, small, diffable, reviewable in a pull
-request, and useful with no HTML at all. It is the artefact with content.
+### Non-goals
 
-The HTML is **not** committed. Every tracked file under `.ctx/` today is
-`.md`/`.json`/`.yaml`; no build output has ever been committed there, and
-`.ctx/.gitignore` is exactly `runtime/`, so `runtime/preview/` needs no new
-rule. Three facts killed the committed version: `write_graph` increments
-`revision` on every `plan-check` even when nothing changed (`plan.r5.json` and
-`plan.r6.json` are byte-identical apart from it), `plan.json` stamps
-`date.today()`, and the page is large. A committed file that re-diffs on no-op
-runs is noise, and determinism is an argument *against* committing, not for it:
-anyone with the repo regenerates it byte-identically.
+- **Nothing blocks.** `ctx start` prints one advisory line and dispatches as
+  always. No gate, no approval state.
+- The page is read-only. No checkboxes, no verdicts, no round trip.
+- No server, no CDN, no fonts, no `fetch`. It opens from `file://` with the
+  wifi off.
 
-Sharing is unchanged — you send the file.
+---
 
-The filename carries the slug because five files called `preview.html` in a
-downloads folder are indistinguishable, and `<title>` carries the plan's
-plain-language title because that is the browser tab and the PDF filename.
+## 3. The one rule that makes this safe
 
-## 4. The one rule
-
-**The page never sees the plan. It sees a view-model.**
+**The HTML never sees the plan. It sees a view-model.**
 
 ```
-plan.json ─┐
-units/*.md ─┼─► view_model(layout, config, slug) ─► dict, JSON-safe, sole truth
-plain.md  ─┘                                         │
-                        ┌────────────────────────────┴───────────────┐
-                        ▼                                            ▼
-              preview_page.render()                    <slug>-model.json + brief
-              built-in page, tested                    the --design path
+ctx plan-check --json ─┐
+units/*.md ────────────┼─► view_model() ─► dict, JSON-safe, single source
+plain.md ──────────────┘                    │
+                                            ▼
+                                   render() → preview.html
 ```
 
-Both renderers consume the same dict. A bespoke design can change every pixel
-and still cannot invent, drop or reword a fact — *provided* the tripwire in §8
-holds, which is a weaker guarantee than the first draft claimed.
+Three properties hold for every generated page:
 
-### 4.1 The pipeline, in the only correct order
+1. **Escape first, mark up second.** Unit prose can arrive from a shared
+   repository and the output is a file somebody double-clicks. Every string is
+   HTML-escaped, and only then is a tiny markdown subset applied to the
+   already-escaped text. Embedded JSON is `</script>`-safe.
+2. **Redaction on the write path.** `ctx/redact.py` scrubs all prose before it
+   reaches disk. This file is committed and shared; a secret that reaches disk
+   has already leaked. Note the ordering lesson already recorded in this repo:
+   **scrub before escaping**, and only prose — redaction run the other way
+   eats `budget_tokens` and inverts `credential: none`.
+3. **Byte-deterministic.** No wall-clock, no random ids, sorted keys. Same plan
+   revision in, identical file out — otherwise every `plan-check` produces a
+   spurious diff on a committed artefact.
 
-**`sanitize` → `redact` → `escape` → `markup`.** Four steps. The draft said two
-and got the order wrong, which both leaked secrets and corrupted text.
+### Why this one is committed, when `DIGEST.md` is not
 
-**`sanitize(text)`** — strip C0/C1 controls except `\n` and `\t`; strip
-U+200B–200F, U+202A–202E, U+2060–2064, U+2066–2069, U+FEFF; strip U+2028/2029
-(which also break `str.splitlines`, a corruption vector `miniyaml` already
-documents); NFC-normalise. This is what stops a bidi override making
-`Step 3 — delete\u202E)sdrocer remotsuc(` read as something else while every
-substring check passes.
+Wave 4 untracked `DIGEST.md` because a derived artefact that is committed
+conflicts between concurrent authors. That precedent has to be answered, not
+ignored.
 
-**`redact`** runs on plain text, before escaping, **once**, and only over
-free-prose fields. Verified against the real module, the draft's order simply
-does not work — `_ASSIGNMENT`'s value class excludes `&`, so once `"` is `&quot;`
-nothing matches:
+`preview.html` is committed anyway, and the difference is real: `DIGEST.md` is
+regenerated at **session end by every agent**, so two agents finishing at once
+conflict on a file neither authored. `preview.html` regenerates only when
+`plan-check` runs, is byte-deterministic, and changes only when the plan
+changes — the same conditions under which `plan.json` is already committed
+without complaint. And the entire point is handing the file to somebody who
+cannot run `ctx` to regenerate it.
 
-```
-'"password": "hunter2"'   scrub→escape: '&quot;password&quot;: &quot;<<redacted>>&quot;'
-                          escape→scrub: '&quot;password&quot;: &quot;hunter2&quot;'   ← LEAKS
-```
+---
 
-And redaction over structured or numeric data destroys it:
+## 4. Writing for the reviewer
 
-```
-budget_tokens: 60000      → budget_tokens: <<redacted>>       ← the page's own data
-{"budget_tokens": 60000}  → {"budget_tokens": <<redacted>>    ← brace eaten, JSON dies
-credential: none needed   → credential: <<redacted>> needed   ← "none" deleted
-```
+### 4.1 What the page says, in order
 
-The third is the dangerous one. Redaction is irreversible and runs on the write
-path, so a hostile unit contract can use it to delete the half of a sentence the
-reader needed: `"deletes the archive; retention token: keep-90-days"` becomes
-`retention token: <<redacted>>`. Precision-over-recall is right for the journal
-and insufficient here.
+| Section | Answers |
+|---|---|
+| Heading | What this plan is called, in words, not a slug |
+| What we're going to do | 3–5 sentences of narrative |
+| Why we're doing it | The problem, without jargon |
+| What will be different afterwards | Observable outcomes, not file changes |
+| How the work is split up | The steps, and **which happen at the same time** |
+| Each step | What · why · what changes · risk · how we'll know |
+| What could go wrong | Risks in plain words |
+| What we are *not* doing | Out of scope, so silence is not a promise |
+| How we'll check it worked | Verification, described not commanded |
 
-Therefore: **a field allowlist**, not a blanket scrub. Only prose fields are
-scrubbed; numbers, paths, unit names, counts and budgets never are. And when
-redaction fires, the page shows a visible marker that text was removed, so the
-reader knows something was taken rather than reading a mutated sentence.
-`config["redact"]` patterns are threaded through — a project that added a house
-pattern must get it honoured here too, not only in the journal.
+The parallelism story gets real estate, because that is the product. A reviewer
+should see "steps 1 and 2 happen together, step 3 waits for both" without
+knowing what a wave is.
 
-**Redaction is a backstop, not a control.** It matches only named shapes. An
-internal hostname, a ticket id, a customer name, a bare 40-char hex, or
-"the staging login is admin/spring2024" all pass straight through. The control
-is the field allowlist plus a check that no absolute path, `$HOME`, `/Users/`,
-`/home/` or `C:\Users\` reaches the output.
+### 4.2 Language rules the renderer enforces
 
-**`escape`** is `html.escape(s, quote=True)` — not a hand-rolled replace chain,
-whose classic ordering bug turns `&lt;` into `&amp;lt;`.
+Not style suggestions — unit `04` tests them.
 
-**`markup`** consumes only already-escaped text. It never re-reads the source and
-never unescapes — that rule is what closes the code-fence info-string hole
-(```` ```py" onload="alert(1) ````). Truncation happens *before* escaping, never
-after, or entities get cut in half.
+- **No unexplained jargon in the default view.** `owns`, `forbid`,
+  `depends_on`, `wave`, `tier`, `budget_tokens`, `subagent` and file paths live
+  behind the technical toggle. The default says "runs at the same time as
+  Step 2", not "wave 1".
+- **Steps numbered from 1**, not `01-kebab-name`. The slug appears only under
+  the toggle.
+- **Every stated risk names a consequence**, not a severity word alone.
+- **A glossary** covers terms that cannot be avoided.
 
-### 4.2 Escaping is context-blind, so contexts are removed
+### 4.3 Where the plain words come from
 
-`escape()` is safe in exactly one place: element content. Everything below
-survives it untouched, so the design removes the context rather than sanitising it.
+A renderer can translate *structure*. It cannot translate *substance* — nothing
+mechanical turns "`_check_cmd` calls `_missing_tool(output)`" into "we're fixing
+a safety check that sometimes hides real breakages".
 
-- **No links.** `SUBSET` has no link construct; `href` is not a channel. The
-  draft demanded `javascript:` be safe "in link position" while declaring no
-  links exist — a vacuously-passing test of exactly the fail-green shape this
-  repo's audit exists to remove. `preview_html.href(v)` returns `#` unless
-  `^#[A-Za-z0-9_-]+$`. No autolinking of bare URLs. This also kills
-  `file:///Users/victim/.ssh/id_rsa` (same-origin-ish from `file://`) and
-  `\\attacker.example.com\share\x.png`, which on Windows fetches over SMB and
-  leaks the reviewer's NTLM hash on page load.
-- **No interpolation into `<script>` or `<style>`.** They are raw-text elements
-  where escaping is inert and `\` is unescaped. The only channel is `embed_json`.
-- **Attributes carry their own quotes.** `attr()` returns the value *including*
-  quotes so a caller cannot omit them — `class=step-{name}` with
-  `name="x autofocus onfocus=alert(1)"` contains no escapable character.
-- **The SVG graph is built from structure only.** Node ids from the step index,
-  never the slug. Inside `<svg>` the tokeniser changes: CDATA is honoured,
-  `<script>`/`<style>` execute, `<foreignObject>` re-enters HTML. None permitted.
-- **Fences and inline code are extracted first** and exempted from every other
-  rule, or `pytest -k "a*b*c"` in a verify command renders as `a<em>b</em>c` and
-  the reader approves a command different from the one that runs.
-- **The markup scanner is single-pass and line-oriented**, no nested quantifiers,
-  with a hard input cap. A regex subset over attacker text running inside a
-  `Stop` hook is the same unbounded-`re.search` bug `01-verify-kinds` just fixed
-  in `verify.py`. Payload: 50,000 `*` characters in an objective.
-
-### 4.3 `embed_json`
-
-`json.dumps` alone is not sufficient. Verified: it emits `</script>` and
-`<!--<script>` raw, and bare `Infinity`.
-
-```python
-def embed_json(obj):
-    text = json.dumps(obj, sort_keys=True, ensure_ascii=True,
-                      separators=(",", ":"), allow_nan=False)
-    return text.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-```
-
-`</script>` terminates the element. `<!--<script>` enters double-escaped state
-where the document's *real* `</script>` no longer terminates — a whole-page
-content-hiding primitive. Bare `Infinity` makes `JSON.parse` throw, so the page
-loads with no data and **fails open, silently**. Read side:
-`JSON.parse(el.textContent)` — never `innerHTML`, never `eval`.
-
-### 4.4 Paths
-
-`plan_dir(layout, slug)` gives zero confinement — `Path(base) / "/etc/evil"`
-discards the base. It is safe today only because every caller routes through
-`bundle.slugify`. The new path-producing functions reopen it, and the slug can
-come from data: `plain.md` frontmatter carries `plan:`, and `plan.json` carries
-`"plan"`. Neither is slugified anywhere. `plan: ../../../.github/workflows/ci.yml`
-would be a write primitive.
-
-One helper, called by every path-producing function:
-
-```python
-def _slug(raw):
-    s = str(raw)
-    if not s or s != bundle.slugify(s):
-        raise SystemExit("plan slug must be [a-z0-9-] — refusing to resolve %r" % s)
-    return s
-```
-
-Plus `commonpath` confinement after `resolve()` (which follows symlinks), and
-`view_model` refuses a `plan.json` whose `"plan"` disagrees with the directory it
-came from, and re-validates every unit name against `plan._UNIT_NAME`.
-
-This is the `verify.py` oracle in mirror image: `--check` prints per-problem
-detail, so an unconfined slug is a one-bit read oracle over any readable file.
-
-**`layout.rel()` must not be used.** Verified: it resolves relative paths against
-`os.getcwd()`, so the same call returns `ctx/verify.py` from the repo root and
-`ctx/ctx/verify.py` from inside `ctx/`; and its `except` branch returns absolute
-paths verbatim, leaking `/Users/<name>/`. Use `plan._normalise` — pure string,
-forward slashes, no filesystem access — and treat any absolute or `..` entry in
-`owns` as a problem rather than rendering it.
-
-## 5. Writing for the reader
-
-### 5.1 Section order
-
-The draft's order was an author's outline. A reader asks different questions,
-in a different order, and three of the first four were missing entirely.
-
-1. Title, and one sentence
-2. **What this is** — a briefing; how to object; who to tell
-3. **The problem, and what happens if we do nothing** — often the strongest fact
-4. **What we'll do, and what you'll notice**
-5. **What it costs** — money, wall-clock, how many agents at once
-6. **What could go wrong**, the two steps to read hardest, and what we are
-   deliberately *not* fixing
-7. **Can this be undone** — blast radius: tool vs. your data, branch vs. main
-8. **The steps** — reference material, which is why it is here and not third
-9. **How we'll know it worked** — machine checks vs. what *you* could check
-10. Glossary, provenance, and a pointer to the source files
-
-Cost is not "390k tokens". That is a budget, not a bill, and to this reader it
-is not a number. It is money (tokens × a stated rate) and wall-clock, and real
-data exists — the journal shows this repo's last plan ran 19:47→21:13, first
-results 26 minutes in.
-
-### 5.2 Drop the wave spine
-
-The draft made round structure the page's spine. Three arguments against, all
-from real data:
-
-- **It is not interesting.** This plan's wave shape is 2,1,2,1,1 — maximum
-  concurrency two, five of seven steps serial.
-- **It encodes file ownership, not meaning.** Two steps share a round because
-  they own different files, not because they belong together — and conversely
-  `01` and `03` are one story split across rounds only to avoid a collision.
-  Round structure actively scrambles the grouping a reader wants.
-- **It is the least stable thing in the plan.** Across `ctx-0-8`'s 15 revisions
-  the wave shape changed four times.
-
-Replace with what a reader actually wants, all derivable: **when do I hear
-something and when is it over**; **what has to work first** (here, step 3 blocks
-five of seven); **how many agents run at once, and what that costs**; **which
-steps touch the same files**; and **what happens if one fails mid-run** — for
-which the honest answer is reassuring and true: one did, the gate caught it, and
-the plan did not collapse.
-
-### 5.3 `plain.md`
-
-The draft's five fields were tested by writing two real entries and failed on
-six counts. Revised format:
+So substance is authored into `plain.md` at planning time:
 
 ```markdown
 ---
 ctx_schema: 1
-plan: <slug>
+plan: close-the-wave-1-audit-blockers
+revision: 4
 ---
 
 ## Summary
+We are fixing seven safety problems we found in our own checking system...
+
 ## Why now
-## What you'll notice
+## What changes for you
 ## What could go wrong
-## What we're not doing
-## What this costs
+## Out of scope
 
-## Unit: 01-safe-html
-digest: <contract.combine(field_digests(doc))>
-status: pending
-**Problem 1 — <short name>**
-**What it does:** …
-**Why it matters:** …
-**What we're choosing not to fix here:** …
-**Problem 2 — …** (repeat; a unit may close several)
-**What you'll notice:** …
-**Machine checks:** …
-**What you could check yourself:** …
-**Source:** units/01-safe-html.md:41
+## Unit: 01-verify-kinds
+**What it does:** Makes the safety check report a real breakage as a real
+breakage, instead of quietly filing it as a setup problem.
+**Why it matters:** Right now the one failure the check exists to catch is the
+one it can miss.
+**What changes:** The single file that decides whether work passed or failed.
+**Risk:** Low — it makes an existing check stricter; nothing new runs.
+**How we'll know:** New tests deliberately break something and confirm the
+check now notices.
 ```
 
-What changed and why:
+`frontmatter.Document.sections()` already splits on `##`. `revision:` is
+compared against `plan.json` — a mismatch marks entries "may be out of date"
+and is reported by `ctx preview --check`.
 
-- **Multiple problems per step.** Both real units close two distinct findings.
-  One entry cannot carry them, and the draft's own worked example proved it:
-  written deliberately, as the showcase, it **dropped a security finding
-  entirely**, said "the single file" when the unit owns three, and rated it
-  *"Risk: Low"* when the contract authorises rewriting an existing test. Every
-  error ran toward reassurance. The proposed `--check` would have passed it.
-- **`risk` is deleted, not extended.** A severity word written by the AI that
-  wrote the plan is worth less than nothing — it discharges the reader's
-  attention onto the judgement of the thing being overseen. It is replaced by
-  **derived blast radius** (file count; tool vs. user data; branch vs. main;
-  **whether existing tests are being amended**) and **what a failure would look
-  like to you**. "This step is authorised to rewrite an existing test" is
-  mechanically derivable and worth ten *"risk: low"*s.
-- **Attention is derived, not asserted.** Rank steps by files owned, existing
-  tests amended, downstream steps blocked, contested files, budget, and security
-  vocabulary in the objective; print *"if you read two things, read these."* On
-  the real plan that surfaces `03` and `01` — correctly.
-- **`how we'll know` splits in two.** "The tests pass" is the AI grading its own
-  homework. **What you could check yourself** is the only line on the page a
-  non-technical reader can independently falsify.
-- **A place for deliberate exclusions.** Real units carry "Decisions already
-  taken" and accepted holes. Those are exactly what a reader might object to,
-  and the draft dropped them silently.
-- **Status per step, in the plain view.** Right now all seven unit files read
-  `done` while the committed README still says `pending` for four. A page
-  written in the future tense about finished work lies by grammar.
-- **A source line per field** — turns "trust me" into "check me".
+**When `plain.md` is missing the page still renders**, falling back to generated
+structural sentences plus a visible banner. The feature degrades to "less
+useful", never "broken".
 
-**Provenance is shown inline per field: `authored | drafted | generated`.** When
-`plain.md` is missing, the page still renders from generated structural
-sentences with a visible banner. That is what lets the page exist with no agent
-in the loop.
+### 4.4 Baseline layout
 
-**Staleness is per-step and content-based**, not the plan revision. The revision
-is broken in both directions: it bumps on no-op re-checks (so the banner becomes
-permanent wallpaper) and `plan.json` records no unit prose (so every acceptance
-criterion can be rewritten with the revision unchanged). `ctx/contract.py`
-already ships `field_digests`, `combine`, `digest` and `compare` — the exact
-mechanism already trusted to catch agents editing their own contracts. Stamp each
-`## Unit:` block with the digest it was written from. A stale field renders
-struck through and replaced inline by the generated fallback — a reader who skims
-past a banner cannot skim past a struck-out sentence.
+Plain by default; one **Technical detail** switch reveals paths, `owns`/`forbid`,
+dependencies, criteria verbatim, verify commands, tier, model and budget — in
+place, not on a separate page.
 
-### 5.4 Disclosure, and accessibility
-
-**Per-claim `<details>`, not a global mode.** The draft's technical toggle serves
-neither audience: the engineer has the unit file (richer, and the source of
-truth), all-or-nothing punishes a reader who wants one fact, it creates a place
-to hide things, and its test — a regex deciding which side of a DOM boundary a
-string is on — is gamed by markup rather than meaning. Each plain sentence
-resting on a fact gets an inline `<details>` revealing that fact and its source
-line. The affordance changes from *"here is the scary stuff you're spared"* to
-*"here is my evidence"*. One global "open everything" checkbox remains, for print.
-
-`<details>`/`<summary>` also solves no-JS properly: it opens without script, is
-announced by screen readers, and prints open under `details[open]`.
-
-Required and currently absent: strict heading hierarchy with no skips; the SVG
-graph with `role="img"`, `<title>`/`<desc>` and a text equivalent; `lang="en"`;
-**no meaning carried by colour alone** (the draft's `● low risk` dot is the worst
-possible encoding for a page about pass/fail); focus visibility;
-`prefers-reduced-motion`; 200% reflow; a **light ground forced for print**
-(dark mode + print is an ink brick); and a reading-level floor over the plain
-regions — median sentence under ~20 words, none over 40, no undefined acronyms.
-
-Honest translation is *longer* than the draft's sample. The criteria must not
-reward brevity.
-
-## 6. Units
-
-Three modules, five units, four waves. `preview_html.py` stays separately
-**ownable** so the page unit cannot quietly weaken the escaper; `plain.md`
-parsing folds into the view-model (it has no other consumer); the tripwire folds
-into the page unit (it is calibrated against `render()`'s output, so they are one
-unit); docs stay separate, per the repo's own precedent.
-
-Every unit carries the house frontmatter — `ctx_schema`, `unit`, `plan`, `tier`,
-`status: pending`, `depends_on`, `owns`, `reads` as `- path:`/`symbols:`,
-`forbid`, `budget_tokens`, `verify` — and the house sections: `## Objective`,
-`## Decisions already taken (do not relitigate)`, `## Constraints`,
-`## Interfaces`, `## Acceptance criteria`, `## Return contract`. The draft had
-none of these, and `plan.validate` would have rejected all seven units on
-missing `tier` and `verify` alone.
-
-| # | Unit | Wave | depends_on | Owns | Tier | Budget | Model |
-|---|---|---|---|---|---|---|---|
-| 01 | `01-safe-html` | 1 | — | `ctx/preview_html.py`, `tests/test_preview_html_safety.py` | subagent | 55k | opus |
-| 02 | `02-view-model` | 1 | — | `ctx/preview.py`, `tests/test_preview_model.py`, `tests/fixtures/preview_plan/` | subagent | 80k | sonnet |
-| 03 | `03-page-and-tripwire` | 2 | 01, 02 | `ctx/preview_page.py`, `tests/test_preview_page.py`, `tests/test_preview_tripwire.py` | subagent | 95k | opus |
-| 04 | `04-cli-wiring` | 3 | 03 | `ctx/cli.py`, `tests/test_preview_cli.py` | subagent | 55k | sonnet |
-| 05 | `05-document-preview` | 4 | 01–04 | `README.md`, `CHANGELOG.md`, `commands/preview.md`, `ctx/__init__.py`, `.claude-plugin/plugin.json` | subagent | 40k | sonnet |
-
-Wave sums 135k / 95k / 55k / 40k, all under the 250k `wave_budget_tokens` cap.
-`opus` on `01` because the escape-ordering argument is subtle, and on `03`
-because the design judgement *is* the feature — a default model produces a page
-that passes every assertion and reads like a config dump.
-
-`commands/preview.md` sits in `05`, after the subparser lands in `04`. In the
-draft it sat two waves *earlier*, which would have broken
-`test_every_bang_line_names_a_real_subcommand` — asserting every `!` line names a
-registered subcommand — and since that suite is every unit's verify command, the
-unit would have failed its own gate.
-
-`05`'s `forbid` is enumerated, not `ctx/ except __init__.py`. The list has no
-exclusion syntax, `hooks.on_pre_tool_use` tests `forbid` before `owns`, and
-`_matches("ctx/__init__.py", ["ctx/"])` is True — the runner would have been
-nudged off the one thing that must not be missed: the version bump in both
-`ctx/__init__.py` and `.claude-plugin/plugin.json`.
-
-### 6.1 Verify blocks, and the two judged checks
-
-Every unit:
-
-```yaml
-verify:
-  - kind: cmd
-    run: python3 -m unittest discover -s tests -q
-  - kind: diff
+```
+┌──────────────────────────────────────── [ ● Technical detail ] ┐
+│  Closing seven safety gaps in our checking system              │
+│  7 steps · 5 rounds · about 390k tokens of work                │
+├────────────────────────────────────────────────────────────────┤
+│  How the work is split up                                      │
+│   ┌ Round 1 ── Step 1 ─┬─ Step 2 ─┐   these happen together    │
+│   └ Round 2 ─────────── Step 3 ───┘   waits for both           │
+│                                                                │
+│  Step 1 — Make the safety check honest            ● low risk   │
+│  ▸ Happens at the same time as Step 2                          │
+│  ▸ owns ctx/verify.py, tests/test_gates.py         ← toggled   │
+└────────────────────────────────────────────────────────────────┘
 ```
 
-`03` and `05` additionally carry the checks that make this feature's real
-done-bar visible to the gate. The draft stated both in prose, where
-`_gate_before_done` — which reads the `verify:` block, not acceptance criteria —
-could never see them.
+Plus: wave timeline as the spine, dependency graph as inline SVG, print
+stylesheet producing a clean PDF, dark mode via `prefers-color-scheme`, readable
+at 400px.
 
-```yaml
-# 03-page-and-tripwire
-  - kind: human
-    about: page opened at 1440px and 400px, light and dark, print preview
-           inspected, and opened once with the network interface down
+---
 
-# 05-document-preview
-  - kind: rubric
-    about: open the page and read it as if you did not write it. If a
-           non-technical reader could not say what is about to happen, why,
-           and what could go wrong, this has not shipped.
+## 5. Units
+
+Five units, four waves. Cut along file ownership.
+
+### Wave 1
+
+#### `01-plain-source`
+**Owns:** `ctx/plain.py`, `tests/test_plain_source.py`
+**Reads:** `ctx/frontmatter.py`, `ctx/plan.py`, `tests/support.py`
+**Forbid:** `ctx/preview.py`, `ctx/preview_html.py`, `ctx/commands.py`, `ctx/cli.py`
+
+```python
+plain.PLAN_SECTIONS = ("summary", "why now", "what changes for you",
+                       "what could go wrong", "out of scope")
+plain.UNIT_FIELDS   = ("what it does", "why it matters", "what changes",
+                       "risk", "how we'll know")
+plain.path(layout, slug) -> Path
+plain.load(layout, slug) -> Plain          # never raises on absence
+plain.scaffold(layout, slug, units) -> Path
+
+class Plain:
+    exists: bool; revision: int|None; stale: bool
+    plan: dict; units: dict; missing: list; unknown: list
+    def unit(self, name, fallback_facts) -> dict
 ```
 
-Both return PENDING, `verdict_of` ranks PENDING above ERROR, and the transition
-is refused until sign-off. Adding a judged kind also raises `complexity.score`
-via `weights["judged_verify"]`, which feeds `dispatch.model_for` — a more
-expensive model for the units needing judgement. That is the correct incentive.
+**Acceptance criteria**
+1. `load` with no `plain.md` returns `Plain(exists=False)`, every section `""`,
+   every unit in `missing`. Does not raise.
+2. Parses `## Unit: <name>` and the five bolded fields, whitespace stripped.
+   An unrecognised field is ignored, not an error — a human wrote this by hand.
+3. A `## Unit:` naming a unit not in the plan lands in `unknown`, not silently.
+4. `stale` is True when frontmatter `revision` differs from `plan.json`'s;
+   a `plain.md` with no `revision` is stale.
+5. `unit()` returns authored text when present, else sentences built only from
+   facts: step position, how many files change, what it waits for, what runs
+   alongside, how it is checked. **Generated text never claims a purpose or a
+   risk level.**
+6. Generated text contains none of `owns`, `forbid`, `depends_on`, `wave`,
+   `tier`, `budget_tokens`, `subagent`, or any path separator. Asserted by an
+   explicit vocabulary test **plus a positive control** proving the assertion
+   fires when a banned word is introduced.
+7. `scaffold` writes every plan section and one `## Unit:` block per unit, each
+   field present and empty — a form to fill in, not a blank page.
+8. Python 3.8 compatible, stdlib only, `ruff` clean.
 
-### 6.2 Criteria are written with positive controls
+---
 
-Roughly 57 of the draft's 60 criteria were fail-green — assertable without the
-feature working. The pattern and its repair, which every unit's criteria follow:
+#### `02-safe-html`
+**Owns:** `ctx/preview_html.py`, `tests/test_preview_html_safety.py`
+**Reads:** `ctx/redact.py`, `tests/support.py`
+**Forbid:** `ctx/plain.py`, `ctx/preview.py`, `ctx/preview_page.py`, `ctx/commands.py`
 
-| Draft (fail-green) | Honest |
-|---|---|
-| "no `http://`, no `fetch(`… asserted as a string test" — `render()` returning `""` passes | (a) output contains every step title and is ≥ N bytes; (b) `_external_refs(html) == []` **and** `_external_refs(html_with_injected_cdn) == ['https://cdn.example/x.css']`, proving the scanner fires |
-| "renders twice, byte-identical" — true of any constant | pair with sensitivity: two models differing in one title produce output differing at that title |
-| "no `datetime.now()` — asserted by grepping the module" — blind to `date.today()`, `time.time()`, `uuid4()`, and an empty module passes | monkeypatch the clock to raise, rebuild, assert equality with a frozen build — **and** assert bumping the fixture's revision *does* change it |
-| "yields text containing no `<script`" — `""` passes | `assertEqual(markup(payload).strip(), '<p>&lt;/script&gt;…</p>')`. An equality is its own positive control |
-| "20 hostile inputs, no unescaped `<`" — `""` scores 20/20 | per input, `html.unescape(strip_tags(markup(s))) == s` — the text survives *and* nothing became markup |
-| "`check` returns a problem for each of…" — a constant non-empty list passes all five | assert the problem list by **equality**, naming the specific missing unit |
-| "if rendering fails, `plan-check` still succeeds" — a `plan-check` that never calls the renderer passes | (a) renderer patched to raise → exit 0 + `note:`; (b) unpatched → exit 0 **and** the file exists with an mtime after the run started |
-| "prints exactly one advisory line" | capture `ctx start` stdout with the page absent and present; assert the symmetric difference of the line sets is exactly one line naming the path |
-| "on a headless machine prints the path" — no headless machine in CI | monkeypatch `webbrowser.open` to raise `webbrowser.Error` → exit 0 + path; positive control asserts one call with the correct `file://` URI |
+Security-critical primitives. Pure functions, no I/O, no knowledge of plans.
 
-**Mutation verification** is required for the two security-critical units, as
-the repo's own `06-merge-preflight` does: mutate the escaper to a passthrough,
-confirm the new tests die, restore, and report both directions verbatim.
+```python
+preview_html.escape(text) -> str
+preview_html.markup(text) -> str        # escape, THEN the tiny subset
+preview_html.embed_json(obj) -> str     # </script>-safe, sorted, stable
+preview_html.attr(value) -> str
+preview_html.SUBSET = ("paragraph","list","fence","code","bold","italic")
+```
 
-Criteria never cite this document by section number — the draft's did, and
-`commands/start.md` forbids the orchestrator from reading source. The nine
-section headings become `preview_page.SECTIONS`; the banned vocabulary becomes a
-constant; both travel in the unit file.
+**Acceptance criteria**
+1. `markup("</script><img src=x onerror=alert(1)>")` contains no `<script`, no
+   `<img`, no `onerror`, and renders as that literal string. Same for
+   `javascript:` and `data:text/html` in link position.
+2. The subset is exactly `SUBSET`. Raw HTML is escaped, never passed through.
+3. **Escape precedes markup**, proven by a case whose output differs if the
+   order reverses, e.g. `` `<b>` ``.
+4. `embed_json` survives `</script>`, `<!--`, and lone surrogates inside
+   `<script type="application/json">`, parsing back to an identical object.
+5. `embed_json` is deterministic: byte-identical, keys sorted.
+6. Redaction applies — an AWS-shaped key or `postgres://user:pw@host` emits
+   `<<redacted>>`. **Positive control: an ordinary file path is not redacted,
+   and `budget_tokens: 60000` survives intact.**
+7. At least 20 hostile inputs, each asserting no unescaped `<` outside
+   generated tags.
+8. Python 3.8, stdlib only, `ruff` clean.
 
-## 7. Contrast, print, and width — mechanical where possible
+---
 
-The draft asserted things a string test cannot decide. Where a formula exists,
-use it; an agent eyeballing a screenshot is strictly worse.
+### Wave 2
 
-- **Contrast:** parse hex tokens out of `<style>`, compute WCAG relative
-  luminance for each declared foreground/background pair, assert ≥ 4.5:1 — and
-  assert the CSS actually contains those tokens.
-- **No-JS:** stripping every `<script>` element still leaves every step title and
-  every plain paragraph present.
-- **Print:** every collapse class has a `@media print` counterpart that unsets
-  it, enumerated from the render; light ground forced.
-- **400px:** no `min-width` above 400px, no fixed pixel widths on layout
-  containers, `overflow-x:auto` on table and SVG wrappers.
-- **"Correctly" / "readable"** fold into the `kind: human` check. That is what it
-  is for.
+#### `03-view-model`
+**Depends on:** `01-plain-source`, `02-safe-html`
+**Owns:** `ctx/preview.py`, `tests/test_preview_model.py`
+**Reads:** `ctx/plan.py`, `ctx/plain.py`, `ctx/preview_html.py`, `ctx/complexity.py`
+**Forbid:** `ctx/plain.py`, `ctx/preview_html.py`, `ctx/preview_page.py`, `ctx/commands.py`
 
-## 8. The tripwire (formerly "the faithfulness checker")
+**Build on `plan-check --json`, do not re-derive it.** That contract already
+carries `waves`, `parallelism`, `bottlenecks`, `critical_path` and
+`ownership_gaps`. Re-deriving them here creates a second implementation of the
+same truth, free to disagree with the first.
 
-It is renamed because it cannot prove faithfulness and should not claim to. As
-drafted it was substring containment over HTML source, defeated by a single
-`<div hidden>` holding every unit name and path. It could not see visibility,
-association, or **invention** — and for a briefing, a fabricated fact is more
-dangerous than a missing one. It checked omission only.
+```python
+preview.SCHEMA = 1
+preview.view_model(layout, slug) -> dict
+preview.data_path(layout, slug) -> Path
+preview.html_path(layout, slug) -> Path
+preview.write_data(layout, slug) -> Path
+```
 
-`ctx preview --check`:
+**Acceptance criteria**
+1. Every wave/graph/ownership fact is taken from the existing plan-check JSON
+   derivation, not recomputed. A test asserts the two agree on a fixture — if
+   they can disagree, this criterion has failed.
+2. `view_model` on this repo's own committed plans returns every unit, in wave
+   order, numbered from 1, with `alongside` and `waits_for` derived, never
+   hand-written.
+3. Called twice on unchanged input the dicts are equal and
+   `json.dumps(sort_keys=True)` is byte-identical. **No `datetime.now()` in the
+   module** — asserted by parsing the module source.
+4. All prose passes through `preview_html` redaction before entering the dict.
+5. `plain.present` False and `missing` complete when `plain.md` is absent; the
+   model still carries a full `steps` list with `generated == True`.
+6. A plan with zero units returns a valid empty model. A missing `plan.json`
+   raises a clear `SystemExit` naming `ctx plan-check`, not a `KeyError`.
+7. Python 3.8, stdlib only, `ruff` clean.
 
-1. **Equality on the data.** Exactly one `<script type="application/json"
-   id="ctx-view-model">`; parse it; require `== view_model(...)`. The only
-   unforgeable anchor in the file.
-2. **Check rendered text, not source.** Walk with `html.parser.HTMLParser`; drop
-   `<script>`, `<style>`, `<template>`, comments, and anything `hidden`,
-   `aria-hidden="true"`, or inline-styled `display:none|visibility:hidden|
-   opacity:0|font-size:0`. Assert against *that* text.
-3. **Ban the hatches by construction:** no `<template>`; no long HTML comments;
-   no `content:` declaration containing letters; no `<script>` but the JSON blob
-   and an allowlisted, byte-pinned toggle script.
-4. **Require anchors.** Each step's subtree carries `data-step="<slug>"`, each
-   fact `data-field="…"`. Then association is checkable: this step's paths appear
-   under *this* step and nowhere else. No anchors → fail.
-5. **Check for invention.** Every path-shaped token, every integer and every
-   `Step \d+` in visible text must be traceable to a view-model value. This is
-   the only assertion that catches a fabricated fact.
-6. **Count what the reader sees:** exactly `len(steps)` step headings.
-7. **Bind the file to its inputs:** embed and display a sha256 over the sorted
-   bytes of `plan.json` + every `units/*.md` + `plain.md`; `--check` recomputes.
-8. **Coverage, not presence.** Fail when a unit objective contains `**(a)**`/
-   `**(b)**` sub-findings and the plain entry describes fewer; when a security
-   word (`execution`, `credential`, `arbitrary`, `oracle`, `secret`, `remote`)
-   appears in the objective and nowhere in the plain entry; when `what you'll
-   notice` names fewer files than `owns` holds. Each of these would have caught
-   this document's own first draft.
-9. **Social engineering:** flag shell-command shapes and imperative
-   "run / install / enter your" phrasing in the plain view. Perfect escaping
-   still renders attacker-chosen prose to a non-technical person in a file that
-   looks authoritative.
+---
 
-**Offline is an allowlist, not a blocklist.** Six substrings cannot cover it:
-`<base href>` alone rewrites every relative URL in the document. Parse; for every
-URL-bearing attribute (`src`, `srcset`, `imagesrcset`, `href`, `data`, `poster`,
-`background`, `action`, `formaction`, `cite`, `ping`, `usemap`, `manifest`,
-`archive`, `codebase`, `longdesc`, `profile`, SVG `xlink:href`/`href`) require
-`^#[A-Za-z0-9_-]*$` or `^data:image/(png|svg\+xml);base64,…$`. Reject `<base>`,
-`<meta http-equiv=refresh>`, every `<link rel>` including the favicon,
-`<iframe>` and `srcdoc`, `<embed>`, `<object>`, `<form>`, media elements. Scan
-`<style>` bodies and `style=` for `url(`, `@import`, `image-set`, `behavior`,
-`-moz-binding`. Scan inline JS for `WebSocket`, `EventSource`, `sendBeacon`,
-dynamic `import(`, `Worker`, `serviceWorker`, `new Image().src`,
-`location.href=`, `window.open`, `RTCPeerConnection` (STUN works from `file://`
-and leaks the reviewer's IP), `WebAssembly.instantiateStreaming`. Fail closed on
-any unknown scheme, including UNC `\\host\share`. Also reject
-`<script type="module">` and any relative `fetch` — both are blocked on `file://`
-and are precisely why the JSON is inline.
+### Wave 3
 
-Then, because it is cheap: **open it once with the network interface down and
-the devtools network panel open.** That is the `kind: human` check. Measuring a
-page's source is not seeing it.
+#### `04-baseline-page`
+**Depends on:** `03-view-model`
+**Owns:** `ctx/preview_page.py`, `tests/test_preview_page.py`
+**Reads:** `ctx/preview.py`, `ctx/preview_html.py`
+**Forbid:** `ctx/preview.py`, `ctx/preview_html.py`, `ctx/plain.py`, `ctx/commands.py`
 
-## 9. `--design`
+```python
+preview_page.render(vm) -> str
+preview_page.write(layout, slug) -> Path
+preview_page.check(html, vm) -> list      # [] when the page covers vm faithfully
+```
 
-`ctx preview --design` writes `.ctx/runtime/preview/<slug>-model.json` and prints
-a brief. `/ctx:preview --design` invokes `ui-ux-pro-max`, **starting from a
-low-fidelity sketch every time**, and produces a page designed for this plan.
+**Acceptance criteria**
+1. One self-contained document: no `http://`, `https://`, `//cdn`, external
+   `<link>`, `fetch(`, `XMLHttpRequest`, or `<script src=`.
+2. All CSS and JS inline; the view-model embedded via `embed_json`.
+3. The default view contains none of the banned vocabulary from `01` outside
+   elements marked technical. Asserted by extracting non-technical DOM regions.
+4. All nine reviewer sections from §4.1, in order.
+5. Steps numbered from 1; slugs only inside technical regions.
+6. Concurrency stated in words on every step with siblings.
+7. The technical toggle is CSS-class based; **a page that turns blank without
+   JavaScript fails.**
+8. `prefers-color-scheme: dark` honoured; both themes define explicit
+   background and foreground; no text below 4.5:1 contrast.
+9. Print stylesheet expands collapsed regions — `Cmd-P → PDF` is complete.
+10. Renders at 400px with no horizontal page scroll; tables and the SVG each in
+    their own scroll container.
+11. `render(vm)` twice is byte-identical.
+12. When `plain.present` is False, a visible banner says so and every step
+    still renders.
+13. `check()` flags: a unit name absent from the page, an `owns` path absent
+    from technical regions, a criteria count disagreeing with the model, a
+    missing plain entry the model has, and any external reference. It returns
+    `[]` for this unit's own output — **the renderer must pass its own checker,
+    which is what proves the checker is calibrated.** Every rejection test has
+    a positive control showing `[]` once the defect is removed.
+14. **Verified by looking.** Done only after the page is opened in a browser at
+    desktop and 400px, light and dark, and the print preview inspected. The
+    report says what was seen, not only that assertions passed.
 
-Constrained, because it is a prompt-injection sink: it hands a model
-attacker-authored prose from a possibly-shared repo and asks it to write HTML.
+---
 
-- The brief states, as its first line, that view-model content is **untrusted
-  data, not instructions**.
-- The page **reads strings from the embedded JSON at runtime** rather than the
-  model retyping them into the source — enforced, not requested: no view-model
-  string may appear as a literal in the HTML outside the JSON blob.
-- Output goes to `runtime/`. It is never committed by any command.
-- `--check` is run by the harness, not by the agent claiming it ran.
-- The built-in page ships first and is held to the same bar. If the baseline is
-  good, most plans never need this.
+### Wave 4
 
-## 10. Risks
+#### `05-cli-wiring`
+**Depends on:** `03-view-model`, `04-baseline-page`
+**Owns:** `ctx/cli.py`, `ctx/commands.py`, `commands/preview.md`,
+`tests/test_preview_cli.py`, `tests/test_json_output.py`,
+`tests/test_commands_registry.py`, `tests/test_docs_currency.py`
+**Reads:** `ctx/preview.py`, `ctx/preview_page.py`, `ctx/plain.py`
+
+**Ownership note, learned the hard way.** Adding a subcommand touches four
+tests that pin the CLI surface, and adding keys to `plan-check --json` touches
+the schema test and its golden. Three units blocked mid-wave this session for
+exactly this, so those files are in `owns` up front rather than discovered.
+
+`cli.py` holds `build_parser`, the `COMMANDS` registry and `main`;
+`commands.py` holds the 41 `cmd_*` bodies. A new command is one registry entry
+plus one body.
+
+**Acceptance criteria**
+1. `ctx preview [slug]` renders and writes `preview.html`, echoing the relative
+   path. No slug uses the active plan; no active plan prints the same guidance
+   the other plan commands print and exits 0.
+2. `ctx plan-check` additionally writes `preview.html` and echoes it. **If
+   rendering fails, `plan-check` still succeeds and prints a `note:`** — a
+   preview problem must never block planning.
+3. `ctx start` prints exactly one advisory line: the preview's path, or that it
+   is missing or behind. No other new output, no exit-code change.
+4. `ctx preview --data` writes `preview.data.json`.
+5. `ctx preview --check` runs `preview_page.check` against the file on disk,
+   printing each problem and exiting non-zero when there are any.
+6. `ctx preview --open` uses `webbrowser.open`, printing the path instead of
+   raising on a headless machine.
+7. `ctx preview --scaffold-plain` writes the form, refusing to overwrite
+   without `--force`.
+8. `--json` is supported and its shape added to the schema test. `plan-check`'s
+   JSON gains the preview path; the golden is updated in the same change.
+9. `commands/preview.md` follows house frontmatter, ends its `!` line with
+   `|| true`, and appears in the slash-command table (`test_docs_currency`).
+10. **Every existing test passes; any assertion changed is reported with what it
+    was pinning**, not quietly edited.
+11. `SUITE_FLOOR` and `REQUIRED_FLOOR` stay equal and are not lowered; coverage
+    floors likewise.
+12. Python 3.8, stdlib only, `ruff` clean.
+
+---
+
+### Wave 5
+
+#### `06-document-preview`
+**Depends on:** all
+**Owns:** `docs/reference.md`, `docs/walkthroughs.md`, `README.md`,
+`CHANGELOG.md`, `.claude-plugin/plugin.json`, `ctx/__init__.py`
+
+**Acceptance criteria**
+1. `docs/reference.md` documents `ctx preview`, its flags and `plain.md`'s
+   format; `docs/walkthroughs.md` shows the flow end to end. **README gains at
+   most a few lines and a link** — it is 299 lines by deliberate decision and
+   reference material does not go there.
+2. CHANGELOG gains a 0.9.0 entry.
+3. Version bumped in **both** `ctx/__init__.py` and `.claude-plugin/plugin.json`
+   — a `ctx` change shipped without bumping `plugin.json` leaves every
+   installed copy stale.
+4. Every claim verified against the code, not against a sibling's report.
+5. `ctx doctor` output and the briefing budget are unchanged by this feature.
+
+---
+
+## 6. Waves
+
+| Round | Units | Why together |
+|---|---|---|
+| 1 | `01-plain-source`, `02-safe-html` | Independent leaves, no shared files |
+| 2 | `03-view-model` | Needs both interfaces |
+| 3 | `04-baseline-page` | Consumes the view-model |
+| 4 | `05-cli-wiring` | Sole owner of `cli.py`/`commands.py` and the surface tests |
+| 5 | `06-document-preview` | Documents what shipped |
+
+Parallelism 1.2× — low, and unavoidable: this is a dependency chain, not a
+fan-out. `plan-check` will say so; that is expected here rather than a defect.
+
+---
+
+## 7. Verification
+
+Every unit: `python3 -m unittest discover -s tests -q`, plus `kind: diff`.
+
+After wave 4:
+
+```bash
+ctx plan-check && ctx preview --check && ctx ci && ruff check ctx/ tests/
+```
+
+And the check no command can make: **open `preview.html` and read it as if you
+had not written it.** If a non-technical reader could not say what is about to
+happen, why, and what could go wrong, the feature has not shipped — whatever
+the suite says.
+
+---
+
+## 8. Risks
 
 | Risk | Mitigation |
 |---|---|
-| A page reassures about work that is risky | Derived blast radius replaces self-assessed severity; attention ranking is mechanical; provenance shown inline per field; tripwire checks coverage and invention |
-| `plain.md` goes stale as the plan is revised | Per-unit `contract.field_digests`; stale fields struck through and replaced inline, not a page-level banner |
-| Redaction corrupts or is weaponised | Field allowlist; prose only; visible marker when it fires; never over structured data |
-| A bespoke design misrepresents the plan | Tripwire (§8), honestly labelled; `kind: human` is the actual guarantee |
-| The page becomes an XSS vector | sanitize→redact→escape→markup; no links, no script interpolation; mutation-verified |
-| Resource exhaustion on the write path | Caps on unit count, per-file bytes and JSON depth, with a clear refusal |
-| Scope creep into an approval gate | It is a briefing (§2); `start` prints one line and never blocks |
+| Committed generated HTML makes noisy diffs | Byte-determinism; §3 argues the `DIGEST.md` precedent explicitly |
+| `plain.md` goes stale | Revision stamp, staleness banner, reported by `--check` |
+| The page becomes an XSS vector | Escape-then-markup, 20 hostile inputs, no raw HTML passthrough |
+| The view-model disagrees with `plan-check` | It is built from that derivation, and a test asserts they agree |
+| Design work consumes the wave | The bespoke `--design` path is cut; see §11 |
 
-## 11. Before this can be dispatched
+---
 
-**Sequencing.** The wave-1 audit work has landed (749 tests green,
-`ctx/cli.py` clean). The next plan, `make-the-ctx-cli-safe-to-automate`, is
-spec-ready and already scaffolded, and it collides head-on: its stated fix is
-*"The mechanism today is `HARD_FAIL` (`cli.py:2682`) … The shape of the fix is to
-invert it."* The draft's `04-cli-wiring` instructed a runner to **add** to that
-frozenset. **Land the cli-safety plan first**, then re-derive `04`'s criteria
-against the new exit-code contract. Waves 1–2 here are all new files and touch no
-`cli.py`; they can run alongside it in a worktree safely.
+## 9. Out of scope
 
-**Version.** 0.9.0 belongs to the cli-safety plan. This is 0.10.0. Two plans each
-bumping to 0.9.0 is a conflict and a wrong changelog.
-
-**This is not yet a ledger plan.** It has no spec, no `.ctx/plans/<slug>/`
-directory and no unit files, so no tool in the repo can see it. Converting it is
-deliberate — it would flip the active-plan pointer, and another session is
-mid-plan. When the time comes: `ctx spec`, answer the questions below, then
-`ctx plan` and one unit file per row in §6.
-
-**Three questions a spec must answer before planning:**
-
-1. Should `plan-check` write the page at all, given it now lands in `runtime/`?
-   (Leaning yes — it is free and the advisory line needs something to point at.)
-2. Who authors `plain.md`, and when? The flow assumed is `plan-check` scaffolds
-   the form, `/ctx:preview` fills it in. That keeps `commands/plan.md` untouched.
-3. Should `ctx ci` gain a preview row? It already iterates plans. A missing page
-   must be `ok`, not `FAIL`, or every pre-0.10.0 plan turns CI red.
-
-**One upstream fix worth doing separately:** `write_graph` should not increment
-`revision` on a no-op re-check — compare the graph minus `revision`/`generated`
-and keep the revision if identical. It benefits the whole ledger, not just this
-feature, and it is not this plan's to make.
-
-## 12. What the first draft got wrong
-
-Recorded so it is not re-made. All eleven were verified against real code.
-
-1. Redaction after escaping — leaked; and over structured data — corrupted.
-2. `json.dumps` treated as `</script>`-safe. It is not, and `Infinity` fails open.
-3. `layout.rel()` — cwd-dependent output, and absolute home paths leaked verbatim.
-4. Every unit missing `tier` and `verify`; `plan.validate` rejects all seven.
-5. `commands/preview.md` two waves before its subparser — the unit fails its own gate.
-6. Staleness keyed on a revision that bumps on no-ops and is blind to prose edits.
-7. `HARD_FAIL` misread, and colliding with the next plan.
-8. The worked example dropped a security finding and mis-rated risk downward.
-9. Tripwire defeated by `<div hidden>`; checked omission, never invention.
-10. Offline as a six-item blocklist; `<base href>` alone defeats it.
-11. ~57 of 60 criteria fail-green.
-
-Plus three structural errors: modules cut for the dispatcher rather than the
-reader; a wave spine that is neither meaningful nor stable; and an artefact that
-called itself an approval while removing every means of approving.
-
-## 13. Out of scope
-
-- Any blocking gate, stored approval, or `reviewed:` state.
-- Interactive review, comments, verdicts exported back into the ledger.
+- Any blocking approval gate or stored approval state.
+- Interactive review, comments, verdicts exported back to the ledger.
 - Hosting or uploading. It is a file on disk.
 - Previews for tasks (L1) or specs — plans only.
+- **A bespoke per-plan design.** Cut deliberately; see §11.
 - Localisation.
-- **The results page.** Regenerating this page *after* a run — promised vs.
-  actual, built from the journal, `contract.compare` and the findings ledger —
-  is the obvious sequel and probably more valuable than this. Every input
-  already exists. It is named here precisely so it stays out of this plan.
+
+---
+
+## 10. What this needs from a human
+
+`plain.md` is authored, not generated. The feature's value is exactly as good
+as those five sentences per unit. An agent can draft them at planning time, but
+somebody who understands *why* the work is being done should read them before
+the page is handed to a reviewer.
+
+---
+
+## 11. What changed from the 2026-09-10 draft, and why
+
+| Change | Reason |
+|---|---|
+| **View-model builds on `plan-check --json`** | That contract now carries `waves`, `parallelism`, `bottlenecks`, `critical_path`, `ownership_gaps`. A parallel derivation would be a second truth free to disagree. |
+| **`--design` path cut** (old unit `06`) | The most speculative third of the work. A unique design per plan is a want, not a need, and this repo has already recorded losing time to exactly that. `--check` survives, attached to the baseline. |
+| **`05` owns `commands.py` and four surface tests** | `cli.py` is 538 lines and holds only the registry; bodies are in `commands.py`. Adding a command touches the generated parser fixture, the JSON schema test and its golden, and the docs-currency test — none of which any unit owned when three units blocked on this pattern this session. |
+| **Docs go to `docs/`, not README** | README is 299 lines by decision; reference material lives in `docs/reference.md`. |
+| **§3 argues the committed-artefact question** | Wave 4 untracked `DIGEST.md` for the opposite reason; the precedent has to be answered rather than ignored. |
+| **Concurrent-session warning removed** | The wave-1 audit work landed long ago. |
+| **Floors and `ruff` added to criteria** | Both are enforced now and both are pinned in pairs. |
+| 7 units / 5 waves → **5 units / 5 waves** | Same chain, less speculative surface. |
