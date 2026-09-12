@@ -17,3 +17,8 @@
 00:23 | unit | 06-document-preview | done
 00:25 | trust | 5 command(s) | accepted
 00:26 | plan | plan-preview | checked, graph r12
+01:24 | shell | /private/tmp/claude-502/-Users-user2-Desktop-Personal-context-ledger/30e0db5b-5639-40f9-aac1-6e02b511d3d0/scratchpad/ruffenv/bin/ruff
+01:24 | shell | ctx
+01:24 | shell | tests
+01:24 | shell | 2>/dev/null
+01:24 | shell | >/dev/null
