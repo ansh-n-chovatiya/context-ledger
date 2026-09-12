@@ -283,15 +283,46 @@ class TestTheStructure(ModelCase):
         self.assertIn("the first one", tech["criteria"][0])
         self.assertEqual([c["kind"] for c in tech["verify"]], ["cmd"])
 
-    def test_the_revision_is_carried_but_nothing_a_reader_sees_uses_it(self):
-        """`plan.json`'s `revision` moves on every run; the prose must not."""
-        first = self.model()
+    def revision(self):
+        graph = plan_mod.graph_path(self.layout, self.SLUG)
+        return json.loads(graph.read_text(encoding="utf-8"))["revision"]
+
+    def test_a_re_check_that_changes_nothing_moves_nothing_in_the_model(self):
+        """The counter must not reach the model at all.
+
+        This test used to assert the opposite — that `revision` was carried and
+        incremented, and that only the prose held still. That was the wrong
+        promise: the model is embedded verbatim in a **committed** page which
+        `plan-check` now rewrites on every run, so a counter anywhere in it
+        means every `plan-check` dirties a tracked file forever, whether or not
+        the plan changed. The digest below is the page's identity precisely
+        because it moves with what the units promise and not with a run count.
+
+        The bump is forced and asserted rather than assumed: `plan.json` is
+        read either side, so a `write_graph` that stopped incrementing could
+        not make this pass by accident.
+        """
+        before = self.revision()
+        first = json.dumps(self.model(), sort_keys=True)
         self.check()
-        second = self.model()
-        self.assertEqual(second["plan"]["revision"], first["plan"]["revision"] + 1)
-        self.assertEqual(second["plan"]["digest"], first["plan"]["digest"])
-        self.assertEqual(second["steps"], first["steps"])
-        self.assertEqual(second["plain"], first["plain"])
+        self.assertEqual(self.revision(), before + 1,
+                         "the revision did not move, so this proves nothing")
+        self.assertEqual(json.dumps(self.model(), sort_keys=True), first)
+
+    def test_the_revision_is_not_in_the_model_at_all(self):
+        """Not merely unrendered: it is embedded as JSON, so absence from the
+        page means absence from the dict."""
+        model = self.model()
+        self.assertNotIn("revision", model["plan"])
+        self.assertNotIn("revision", json.dumps(model))
+
+    def test_the_digest_stays_and_is_the_page_identity(self):
+        """`ctx start` keys its staleness advisory off the digest embedded in
+        the page, so this key is load-bearing for a caller outside this unit."""
+        model = self.model()
+        self.assertEqual(model["plan"]["digest"],
+                         plain_mod.digest(self.layout, self.SLUG))
+        self.assertTrue(model["plan"]["digest"])
 
 
 # --------------------------------------------------------------------------- #

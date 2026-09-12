@@ -19,7 +19,6 @@ model's in `tests/test_preview_model.py`. Nothing here re-asserts either.
 """
 
 import json
-import re
 import sys
 import unittest
 import unittest.mock
@@ -327,25 +326,32 @@ class TestPlanCheckWritesThePage(PlanCase):
         self.cli("preview", self.SLUG)
         self.assertEqual(self.page.read_bytes(), first)
 
-    def test_across_plan_checks_only_the_revision_it_quotes_moves(self):
-        """`plan-check` bumps `plan.json`'s revision on every run, and the page
-        quotes it — so the page does churn in a diff, exactly as `plan.json`
-        already does and for the same reason. Nothing *else* about it moves,
-        which is what keeps the churn readable rather than a rewrite.
+    def test_across_plan_checks_nothing_about_the_page_moves(self):
+        """A `plan-check` that changed nothing leaves the committed page alone.
+
+        This test previously asserted the weaker — and wrong — claim that only
+        the revision it quotes moves, and it passed: `plan.json`'s counter
+        reached the page twice, in a footer sentence and inside the embedded
+        view-model. The page is committed *and* rewritten on every run, so that
+        made every `plan-check` dirty a tracked file for nobody's benefit. The
+        counter is gone from the model, and this is the claim that says so
+        end-to-end, through the renderer and the file on disk.
+
+        The revision is read either side to prove it really did move; without
+        that, a `write_graph` that quietly stopped incrementing would make this
+        pass while saying nothing.
         """
-        def without_revision(raw):
-            # Twice over: the sentence a reader sees in the footer, and the
-            # same number inside the embedded view-model.
-            text = re.sub(r"revision \d+", "revision <N>", raw.decode("utf-8"))
-            return re.sub(r'"revision":\s*\d+', '"revision":<N>',
-                          text).encode("utf-8")
+        graph = plan_mod.graph_path(self.layout, self.SLUG)
+
+        def revision():
+            return json.loads(graph.read_text(encoding="utf-8"))["revision"]
 
         self.cli("plan-check", self.SLUG)
-        first = self.page.read_bytes()
+        first, before = self.page.read_bytes(), revision()
         self.cli("plan-check", self.SLUG)
-        second = self.page.read_bytes()
-        self.assertNotEqual(second, first, "the revision did not move at all")
-        self.assertEqual(without_revision(second), without_revision(first))
+        self.assertEqual(revision(), before + 1,
+                         "the revision did not move, so this proves nothing")
+        self.assertEqual(self.page.read_bytes(), first)
 
     def test_the_json_document_carries_the_page(self):
         code, data = self.document("plan-check", self.SLUG)

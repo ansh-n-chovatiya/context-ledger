@@ -49,10 +49,17 @@ are a spurious diff on every reviewer's branch. `plan.json`'s `generated` date
 is carried through as data; the clock that produced it is `plan.py`'s. A test
 parses this module and fails on any call that could read one.
 
-**`revision` is technical.** `plan.write_graph` bumps it on every `plan-check`
-run, so anything user-visible keyed off it would move when nothing moved. It is
-carried for the technical view; staleness comes from `plain.digest`, which
-hashes what the units promise.
+**`plan.json`'s `revision` is deliberately not here**, not even as a technical
+fact. `plan.write_graph` bumps that counter on every `plan-check` run, and this
+dict is embedded verbatim in a page that is committed *and* rewritten on every
+`plan-check` — so carrying the number, anywhere in the model, means every run
+dirties a tracked file whether or not the plan changed. It was carried once, in
+the technical block, and it reached the page twice: a footer sentence and the
+embedded JSON. `plan.digest` is the page's identity instead — it hashes what
+the units promise, so it moves when the plan's substance moves and not
+otherwise, and it is what `ctx start` reads back out of the page to decide
+whether the page is behind. The counter stays in `plan.json`, where a counter
+belongs, and `plan-check --json` still reports it.
 """
 
 import json
@@ -305,7 +312,9 @@ def view_model(layout, slug):
             "slug": slug,
             "title": _phrase(_plan_title(layout, slug), patterns),
             "spec": str(graph.get("spec") or slug),
-            "revision": _int(graph.get("revision")),
+            # No `revision`: see the module docstring. It is the one value in
+            # `plan.json` that moves without the plan moving, and this dict is
+            # embedded in a committed file.
             "generated": str(graph.get("generated") or ""),
             "digest": source.current_digest or "",
             "counts": {
@@ -441,13 +450,6 @@ def _check(check):
     is therefore structure, not prose: the renderer escapes it.
     """
     return {"kind": str(check.get("kind") or ""), "label": verify.label_of(check)}
-
-
-def _int(value):
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
 
 
 # --------------------------------------------------------------------------- #
