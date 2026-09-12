@@ -58,6 +58,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -872,9 +873,9 @@ def _check_cmd(layout, check, cwd, key, timeout, head, tail, patterns=()):
     output = (completed.stdout or "") + (completed.stderr or "")
     if completed.returncode == 0:
         return Result("cmd", command, PASS)
-    if completed.returncode in _NOT_FOUND_EXITS:
-        # The shell's own verdict, not the child's: 127 from a POSIX shell and
-        # 9009 from cmd.exe both mean nothing was ever launched.
+    if completed.returncode in _NOT_FOUND_EXITS or _never_launched(command,
+                                                                   completed):
+        # The shell's own verdict, not the child's: nothing was ever launched.
         return Result("cmd", command, ERROR,
                       f"command not found (exit {completed.returncode}): "
                       f"{_program(command)}")
@@ -900,9 +901,40 @@ def _check_cmd(layout, check, cwd, key, timeout, head, tail, patterns=()):
     return Result("cmd", command, FAIL, message, log_path)
 
 
-# A POSIX shell reports "not found" as 127; cmd.exe reports it as 9009. Both are
-# the launcher speaking, before any child of ours existed.
+# A POSIX shell reports "not found" as 127; cmd.exe is documented as 9009. Both
+# are the launcher speaking, before any child of ours existed.
 _NOT_FOUND_EXITS = (127, 9009)
+
+# `cmd /c missing-thing` does not actually return 9009 — it returns 1, which is
+# indistinguishable from a test that ran and failed. So on Windows the exit code
+# alone cannot tell "your toolchain is broken" from "your work is broken", and
+# every gate there reported a missing binary as a work failure. CI found it the
+# first time this suite met a Windows runner.
+#
+# PATH is consulted only to *explain a failure that already happened*, never to
+# pre-judge whether a command will run — that distinction is the whole reason
+# `_preflight` refuses `shutil.which`. A shell builtin fails without being on
+# PATH, so the lookup is skipped for anything the shell runs itself, and for any
+# command with shell syntax in it, where `_argv` already declines to guess.
+_CMD_BUILTINS = frozenset("""
+assoc break call cd chdir cls color copy date del dir echo endlocal erase exit
+for goto if md mkdir mklink move path pause popd prompt pushd rd rem ren rename
+rmdir set setlocal shift start time title type ver verify vol
+""".split())
+
+
+def _never_launched(command, completed):
+    """Whether the shell failed to find the program, on a platform whose exit
+    code cannot say so."""
+    if os.name != "nt" or completed.returncode == 0:
+        return False
+    parts = _argv(command)
+    if not parts:
+        return False
+    program = parts[0].strip('"').strip("'")
+    if os.path.basename(program).lower() in _CMD_BUILTINS:
+        return False
+    return shutil.which(program) is None
 
 # Shell syntax we cannot reason about statically. A command containing any of it
 # is left alone: the pre-flight declines to answer rather than answering wrongly,

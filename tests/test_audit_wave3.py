@@ -280,7 +280,10 @@ class TestShippedSurface(unittest.TestCase):
             if "__pycache__" in str(path):
                 continue
             with self.subTest(path=path.name):
-                ast.parse(path.read_text(), filename=str(path),
+                # `encoding=` is not optional: without it Python uses the
+                # locale codec, which is cp1252 on a Windows runner, and these
+                # sources carry `·` and em dashes throughout.
+                ast.parse(path.read_text(encoding="utf-8"), filename=str(path),
                           feature_version=(3, 8))
 
 

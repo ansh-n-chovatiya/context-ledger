@@ -94,6 +94,10 @@ class Scenario(Fixture):
         # in front of the placeholder. That artifact was captured into the
         # golden, which then could not match on Linux, where there is no such
         # prefix — the first thing this branch hit on a non-macOS runner.
+        # The system policy path is chosen per platform — /etc/ctx/policy.yaml
+        # on POSIX, C:\\ProgramData\\ctx\\policy.yaml on Windows — so the
+        # concrete path cannot live in a golden shared by both.
+        text = re.sub(r"\S*[/\\]ctx[/\\]policy\.yaml", "<SYSTEM-POLICY>", text)
         for root, token in ((self.root, "<ROOT>"), (self.untracked, "<GLOBAL>")):
             text = text.replace(str(Path(root).resolve()), token)
             text = text.replace(str(root), token)
@@ -197,7 +201,7 @@ next: /ctx:verify
   the briefing above is the hook cost only; the plugin's own always-on
   context is separate — measure it with: claude plugin details ctx
 ## policy
-  none system     /etc/ctx/policy.yaml  (absent)
+  none system     <SYSTEM-POLICY>  (absent)
   none user       <GLOBAL>/global/policy.yaml  (absent)
   ok   repo       <ROOT>/.ctx/ctx.yaml
        no policy above the repository — ctx.yaml decides everything
