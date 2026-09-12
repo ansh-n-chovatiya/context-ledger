@@ -2,8 +2,8 @@
   "ctx_schema": 1,
   "plan": "plan-preview",
   "spec": "plan-preview",
-  "revision": 12,
-  "generated": "2026-09-13",
+  "revision": 11,
+  "generated": "2026-09-12",
   "waves": [
     [
       "01-plain-source",

@@ -15,3 +15,5 @@
 00:11 | start | 06-document-preview | re-baselined deliberately (--rebaseline): the review baseline was re-captured over the current tree and the contract re-sealed, so this unit's contract as it now…
 00:11 | start | plan-preview | wave 5, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
 00:23 | unit | 06-document-preview | done
+00:25 | trust | 5 command(s) | accepted
+00:26 | plan | plan-preview | checked, graph r12

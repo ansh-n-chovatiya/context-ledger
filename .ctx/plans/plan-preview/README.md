@@ -17,6 +17,7 @@ Spec: `.ctx/specs/plan-preview/spec.md`
 
 
 
+
 **Wave 1** — these may run concurrently
 
 - `01-plain-source` (subagent, done) — `ctx/plain.py`: read the authored plain-language file for a plan, say precisely which parts a human has actual
@@ -41,7 +42,7 @@ Spec: `.ctx/specs/plan-preview/spec.md`
 
 **Wave 5** — these may run concurrently
 
-- `06-document-preview` (subagent, running) — Document what actually shipped, and ship it — reference, walkthrough, changelog, the two version numbers that 
+- `06-document-preview` (subagent, done) — Document what actually shipped, and ship it — reference, walkthrough, changelog, the two version numbers that 
   - owns: docs/reference.md, docs/walkthroughs.md, README.md, CHANGELOG.md, .claude-plugin/plugin.json, ctx/__init__.py, tests/test_ci_floor.py, .github/workflows/ci.yml
 
 ## Out of scope
