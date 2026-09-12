@@ -47,6 +47,16 @@ import json, sys, time
 sys.path.insert(0, {repo!r})
 from ctx import lock, paths
 
+# This test deliberately creates more contention than any real wave does:
+# 8 workers x 40 rounds x a 10ms window is 3.2s of unavoidable serialised
+# holding, against a shipped 5s timeout. That left 1.8s for every process
+# spawn and every filesystem round-trip, which held on a developer laptop and
+# did not on a CI runner — the last worker timed out, `held` failed open
+# exactly as documented, and the assertion read as a lock defect. The subject
+# here is that no update is lost, not that five seconds is enough, so the
+# workers get a timeout with room in it.
+lock.LOCK_TIMEOUT = 60.0
+
 layout = paths.Layout({root!r})
 counter = layout.runtime / "counter.json"
 

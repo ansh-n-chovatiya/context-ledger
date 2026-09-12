@@ -94,6 +94,15 @@ class Scenario(Fixture):
         text = re.sub(r"\d{4}-\d{2}-\d{2}T[\d:.]+", "<TS>", text)
         text = re.sub(r"\d{4}-\d{2}-\d{2}", "<DATE>", text)
         text = re.sub(r"\b\d{2}:\d{2}\b", "<TIME>", text)
+        # The briefing's own size is measured before this normalisation runs,
+        # so it carries the length of *this* machine's interpreter path — the
+        # verify command embeds it. Locally that path is 44 characters and on a
+        # macOS runner it is 61, which moved the count from 239 to 256 and
+        # failed a test whose subject is the prose, not the arithmetic.
+        text = re.sub(r"briefing \d+/(\d+) chars \(~\d+ tokens\)",
+                      r"briefing <N>/\1 chars (~<T> tokens)", text)
+        text = re.sub(r"(briefing +L\d) \d+/(\d+) chars \(~\d+ tokens\)",
+                      r"\1 <N>/\2 chars (~<T> tokens)", text)
         return text
 
     def human(self, argv):
@@ -133,7 +142,7 @@ GOLDEN = {
 level    L2 (planned)   profile code
 task     —
 plan     auth   unit 02-logout
-briefing 239/2600 chars (~66 tokens)
+briefing <N>/2600 chars (~<T> tokens)
 
 wave board — plan auth:
   wave 1
