@@ -236,7 +236,7 @@ every slash command costs always-on context.
 | `ctx plan «name» [--spec S] [--no-spec]` | Scaffold a plan; refuses while the spec is ambiguous | `/ctx:plan` |
 | `ctx plan-unit «name»` | Scaffold one unit file | |
 | `ctx plan-check [name]` | Compute waves and check for collisions; writes the preview page | |
-| `ctx preview [name]` | Render the plan as a page a non-technical reviewer can read | `/ctx:preview` |
+| `ctx preview [name]` | Render the plan as [a page a non-technical reviewer can read](docs/reference.md#the-preview-page); `--check`, `--data`, `--open`, `--scaffold-plain` | `/ctx:preview` |
 | `ctx start [--wave N] [--worktree]` | Dispatch brief for the next wave; `--rebaseline`/`--reseal` a single unit | `/ctx:start` |
 | `ctx snapshot «unit» [--phase P]` | Capture a content snapshot by hand; `ctx start` takes the `before` phase itself | |
 | `ctx review «unit» [--round N]` | Build the review package: diff, scope violations, stat summary | `/ctx:review` |
@@ -282,8 +282,8 @@ ctx unit 03-rotate          # arms the done-gate for this unit
 
 | | |
 |---|---|
-| [docs/walkthroughs.md](docs/walkthroughs.md) | A small change (L1) and a large one (L2), end to end: spec, plan, dispatch, review, findings, merge, handoff. Context bundles and standing memory. |
-| [docs/reference.md](docs/reference.md) | Every `ctx.yaml` key, policy layering, the eight verify kinds, phase gates, profiles, command trust, failure policy, exit codes and `--json`. |
+| [docs/walkthroughs.md](docs/walkthroughs.md) | A small change (L1) and a large one (L2), end to end: spec, plan, preview, dispatch, review, findings, merge, handoff. Context bundles and standing memory. |
+| [docs/reference.md](docs/reference.md) | Every `ctx.yaml` key, policy layering, the eight verify kinds, phase gates, profiles, command trust, failure policy, the preview page and `plain.md`, exit codes and `--json`. |
 | [docs/operations.md](docs/operations.md) | What lives on disk, CI, measurement, cost, troubleshooting, how it works, security, uninstalling, development and releasing. |
 | [GUIDE.md](GUIDE.md) | The plain-language guide. |
 | [report.md](report.md) | The current audit. Earlier ones are archived under [docs/history/](docs/history/). |

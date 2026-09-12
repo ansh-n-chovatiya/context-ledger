@@ -191,7 +191,73 @@ plan billing-migration: 4 unit(s) in 2 wave(s) · graph r1
   wave 1: 01-key-store, 02-clock       wave 2: 03-rotate, 04-refresh
 ```
 
-### Step 4 — Dispatch a wave
+### Step 4 — Show the plan to whoever signs it off
+
+`plan-check` has already written the page and the form it reads:
+
+```
+wrote .ctx/plans/billing-migration/plan.json
+wrote .ctx/plans/billing-migration/preview.html
+```
+
+`preview.html` is one self-contained file — no network, no build step. Opened as
+it stands it is already complete and already honest: every plain-language field
+nobody has filled in reads *"Nobody has written this down yet."*
+
+Fill those in by editing `.ctx/plans/billing-migration/plain.md`, which
+`plan-check` scaffolded beside the plan. Five sections describe the plan —
+**Summary**, **Why now**, **What changes for you**, **What could go wrong**,
+**Out of scope** — and a five-field block describes each unit. An excerpt:
+
+```markdown
+## Summary
+We are moving billing onto rotating keys, so a leaked key stops being forever.
+
+## Unit: 01-key-store — Somewhere safe to keep the keys
+**What it does:** Adds the store the new keys live in.
+**Why it matters:** Today one key is pasted in four places, and rotating it
+means finding all four.
+**What changes:** Nothing a customer sees.
+**Risk:** Low — nothing reads from the new store until step 3.
+**How we'll know:** The automated checks all pass.
+```
+
+**Write this yourself; don't have an agent write it.** The five fields ask what
+the work is for and why it matters, and an agent answering them is an agent
+grading its own homework. The whole point of the page is that a human said it.
+Anything left blank stays visibly blank rather than being quietly filled — see
+[The preview page](reference.md#the-preview-page).
+
+Then render and look at it:
+
+```bash
+ctx preview billing-migration --open
+```
+
+```
+wrote .ctx/plans/billing-migration/preview.html
+opened it in your browser
+```
+
+On a machine with no browser the second line is `no browser on this machine —
+open it yourself:` and the full path, and the exit code is still 0.
+
+Hand that one file to the reviewer — attach it, or point them at it in the
+repository. They need nothing installed. When they come back with changes, edit
+`plain.md` and render again; if you hand-edited the HTML instead, `ctx preview
+billing-migration --check` holds the file against the plan and exits non-zero if
+it has lost a step, a file, a criterion or a line of somebody's prose:
+
+```
+.ctx/plans/billing-migration/preview.html: 1 problem(s) — the page does not carry the whole plan
+  - step 1: the plain-language what is missing from the page
+```
+
+Take that as a real answer and re-render rather than arguing with it. From here
+on `ctx start` ends each dispatch with one line saying where the page is, or that
+it is behind the plan and wants another `plan-check`.
+
+### Step 5 — Dispatch a wave
 
 ```
 /ctx:start
@@ -267,7 +333,7 @@ exclusively, so while it exists `git checkout ctx/auth-rotation/03-rotate` here 
 refused and you test inside the worktree. `ctx merge` gives the branch back.
 Worth asking for, not worth taking by default — hence opt-in.
 
-### Step 5 — Record each outcome
+### Step 6 — Record each outcome
 
 ```
 ctx unit 03-rotate --status done
@@ -305,7 +371,7 @@ ctx worktree list            # what's outstanding
 ctx worktree remove 03-rotate --force   # discard a unit that went wrong
 ```
 
-### Step 6 — Track and hand off
+### Step 7 — Track and hand off
 
 ```
 /ctx:status                  # wave board

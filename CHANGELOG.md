@@ -1,14 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.9.0
 
 Making `ctx` installable and governable: packaging metadata and a tag-gated
 release workflow, a policy layer above `ctx.yaml` that a pull request cannot
 overrule, a committed lockfile of the shell commands the gate is allowed to run,
-and a supply-chain floor for the repository's own CI. The documented CI recipe
-that shipped before this was itself the hole: it cloned unpinned `HEAD` from a
-personal account and then ran `ctx trust --yes`, which accepts whatever the
-branch under test declares.
+and a supply-chain floor for the repository's own CI. And, at the other end of
+the tool, a plan is now something you can hand to the person who has to approve
+it: one page, in plain words, that they open without installing anything. The
+documented CI recipe that shipped before this was itself the hole: it cloned
+unpinned `HEAD` from a personal account and then ran `ctx trust --yes`, which
+accepts whatever the branch under test declares.
 
 ### Breaking
 
@@ -24,6 +26,37 @@ branch under test declares.
   locally, and `ctx trust` / `--yes` still mean exactly what they meant.
 
 ### Added
+
+- **`ctx preview` — the plan as one page a non-technical reviewer can read.**
+  `.ctx/plans/«plan»/preview.html` is a single self-contained file: no network,
+  no build step, no assets. `ctx plan-check` writes it on **every** run, so it is
+  there without being asked for, and rendering is never allowed to fail the
+  command — a page that will not render prints a `note:` and `plan-check` still
+  exits 0. `--check` holds the file on disk against the plan and exits non-zero
+  if it has lost a step, a file it declares, an acceptance criterion or a line of
+  somebody's prose; `--data` writes the same model as JSON; `--open` asks the
+  machine for a browser and prints the path when there is none. `ctx start` ends
+  a dispatch with one line saying where the page is, or that it is missing or
+  behind.
+- **`plain.md` — the half of a plan a human writes.** Five plan-level sections
+  and one block per unit, with five bolded fields each, scaffolded automatically
+  beside `plan.json` and appended to as the plan gains units, never overwriting a
+  word anybody wrote. `--scaffold-plain` writes it on demand and refuses over an
+  existing file unless `--force` says to throw it away. **A field that is present
+  but empty counts as unwritten** and falls back to generated text reading
+  *"Nobody has written this down yet."* — that is what stops a scaffolded form
+  being mistaken for authored prose, which is a worse failure than an obvious
+  gap, because an empty form looks like somebody considered the question.
+  Generated text states facts and never judges: it will say a step changes four
+  files, and it will not say the step is low risk.
+- **Page staleness is a content digest, not a revision.** `plan.json`'s
+  `revision` moves on every `plan-check` run, so keying staleness to it would
+  report every page in the repository out of date after a re-check that changed
+  nothing. The digest hashes what the units *promise* — `contract.field_digests`
+  minus `verified`, since work progressing is not the prose going stale — so it
+  moves with the plan's substance and not otherwise. For the same reason the page
+  states no revision at all: it is committed and rewritten on every run, and a
+  counter in it would dirty a tracked file every time.
 
 - **Packaging metadata.** `pyproject.toml` builds an sdist and a wheel from a
   hatchling backend. The distribution is `context-ledger`; the import package

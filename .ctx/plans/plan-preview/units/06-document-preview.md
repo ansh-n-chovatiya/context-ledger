@@ -31,7 +31,7 @@ forbid:
   - ctx/preview_html.py
   - ctx/plain.py
 budget_tokens: 45000
-status: running
+status: done
 verify:
   - kind: diff
   - kind: exists

@@ -667,6 +667,114 @@ comparison, its own findings re-seal, its own all-ERROR refusal and its own
 journal line. Batching changes *when* a shared command runs, never *what* a
 unit is held to.
 
+## The preview page
+
+A plan on disk is unit contracts: `owns`, `depends_on`, `verify`, wave numbers.
+That is the right language for the thing that dispatches work and the wrong
+language for the person who has to approve it. `ctx preview` renders the plan as
+one self-contained HTML file beside it — no network, no build step, no assets.
+The reviewer opens the file.
+
+```
+ctx preview [name] [--data] [--check] [--open] [--scaffold-plain [--force]] [--json]
+```
+
+| Flag | What it does |
+|---|---|
+| *(none)* | Writes `.ctx/plans/«plan»/preview.html` and prints the path |
+| `--data` | Also writes `preview.data.json`, the same model as JSON, for a script |
+| `--check` | Holds the file **on disk** against the plan and renders nothing. Exit 1 if the page has lost a step, a file it declares, an acceptance criterion or a line of somebody's prose |
+| `--open` | Asks the machine for a browser, and prints the path instead when there is none |
+| `--scaffold-plain` | Writes the plain-language form a human fills in. Refuses over an existing `plain.md` |
+| `--force` | Lets `--scaffold-plain` overwrite one, losing every word now in it |
+| `--json` | The usual envelope; `data` carries `plan`, `page`, `data`, `plain`, `problems[]`, `checked`, `opened` |
+
+**`ctx plan-check` writes the page on every run**, and scaffolds `plain.md` when
+it is absent, so most of the time `ctx preview` has only refreshed something that
+already existed. A plan that gains a unit gains a blank block for it on the next
+`plan-check`, appended without touching a word anybody wrote. Rendering is not
+allowed to fail the command: the plan has already been validated and written by
+the time the page is attempted, so a preview that will not render prints a
+`note:` line and `plan-check` still exits 0.
+
+`ctx start` adds exactly one advisory line at the foot of a dispatch, naming the
+page, or saying there is none yet, or that the one on disk is behind the plan.
+
+### `plain.md` — the half a human writes
+
+The page's plain-language content comes from `plain.md`, beside `plan.json`. It
+holds five plan-level sections and one block per unit:
+
+```
+---
+ctx_schema: 1
+plan: checkout
+digest: bd7605051212af60…
+---
+
+## Summary
+## Why now
+## What changes for you
+## What could go wrong
+## Out of scope
+
+## Unit: 01-cart — Remember what you picked
+**What it does:** Keeps the basket contents while you shop.
+**Why it matters:** …
+**What changes:** …
+**Risk:** …
+**How we'll know:** …
+```
+
+The title after the unit name is optional and authored like everything else. An
+em dash, an en dash, or a hyphen *surrounded by whitespace* separates it — a bare
+hyphen does not, because unit names are full of hyphens and
+`01-a-long-hyphenated-name` must not lose its own tail. A separator with nothing
+after it counts as unwritten, and a step with no title is the ordinary case: the
+page then names it after the slug in words, and records that it did.
+
+**A field that is present but empty is not authored.** `plan-check` scaffolds
+this form automatically, so the common state on disk is headings and labels with
+nothing after them. Treating a blank `**Risk:**` as prose would show a reviewer
+an empty form and call it an answer, which is worse than showing nothing — it
+looks like somebody considered the question. Blank falls back to generated text,
+reads *"Nobody has written this down yet."*, and the unit is reported as
+unwritten. Every generated value is flagged as generated in the model, so a
+renderer can tell the two apart.
+
+Generated text states facts and never judges. It may say a step changes four
+files and runs at the same time as step 2; it may not say the step is low risk,
+because nothing mechanical knows that and a machine-written "Risk: low" on a page
+a human signs is a lie with a signature under it.
+
+### Staleness is a content digest, not a revision
+
+`plain.md` carries a `digest:` of what the plan's units **promise** — per unit
+`contract.field_digests` minus `verified`, combined in name order. The same
+digest is embedded in the rendered page, which is what `ctx start` reads back out
+to decide whether the page is behind.
+
+It is deliberately **not** `plan.json`'s `revision`. `plan.write_graph`
+increments that counter on *every* `plan-check` run, so a re-check that changed
+nothing would mark every page and every `plain.md` in the repository stale — and
+a staleness warning that fires when nothing changed is a staleness warning nobody
+reads. The digest moves when what the plan promises moves, and not otherwise.
+`verified` is excluded from it because it accumulates as a unit's checks are
+signed off, and work progressing is not the prose going out of date.
+
+For the same reason the page itself never states a revision. It is committed and
+rewritten on every `plan-check`, so a counter anywhere in it would dirty a
+tracked file on every run. What its footer states instead is:
+
+```
+plan checkout · spec checkout · graph generated 2026-09-13 · summary digest 61d1b8d43845 · view-model schema 1
+```
+
+The date is `plan.json`'s own `generated`, carried through as data — the page
+reads no clock, because bytes that change because a day passed are a spurious
+diff on every reviewer's branch. The counter stays in `plan.json`, where a
+counter belongs, and `plan-check --json` still reports it.
+
 ## Exit codes
 
 For every command, not a privileged few. `0` is success or an advisory notice;

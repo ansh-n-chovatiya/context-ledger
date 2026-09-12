@@ -89,7 +89,12 @@ jobs:
           # Raised from 1190 to 1420 in the maintainability wave: the suite it
           # guards reached 1433, and a floor 243 tests below the real count is
           # the exact drift this pair was written to prevent.
-          SUITE_FLOOR = 1420
+          #
+          # Raised from 1420 to 1835 for the preview page: that wave took the
+          # suite to 1849, and 429 tests of slack is the same drift again. The
+          # remaining 14 is headroom for the matrix, where a platform-specific
+          # module can legitimately contribute a few tests fewer.
+          SUITE_FLOOR = 1835
 
           command = [sys.executable, "-m"] + "unittest discover -s tests".split()
           proc = subprocess.run(command, capture_output=True, text=True,

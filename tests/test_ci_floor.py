@@ -42,7 +42,11 @@ WORKFLOW = ROOT / ".github/workflows/ci.yml"
 # what a floor exists to catch is a silent DROP, and a floor far below the
 # real count cannot see one. 1190 against a suite of 1433 was 243 tests of
 # slack, so it moved with the suite that this wave grew.
-REQUIRED_FLOOR = 1420
+#
+# The preview page took the suite to 1849, which left 1420 with 429 tests of
+# slack -- the same drift, one wave later. 1835 keeps 14 tests of headroom for
+# the matrix and nothing more.
+REQUIRED_FLOOR = 1835
 
 
 # --------------------------------------------------------------------------
