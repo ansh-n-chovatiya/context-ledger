@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.1
+
+### Fixed
+
+- A lock could fail open on Windows the moment it collided with a holder that
+  was releasing, instead of waiting. `os.open(O_CREAT|O_EXCL)` raises `EACCES`
+  there for a delete-pending file, and `_acquire` read that as "read-only
+  checkout, nothing to serialise" and gave up at once — so a waiter proceeded
+  with no lock and a read-modify-write lost an update. CI caught it twice on
+  `windows-latest · python 3.9`: one increment lost in eighty, and a worker
+  reporting "failed open under contention". The timeout was never involved,
+  which is why raising it had not helped. `EACCES` on a *writable* directory is
+  now treated as the contention it is and waited out; a genuinely unwritable
+  directory still fails open immediately, and `EROFS` still does too.
+
 ## 0.9.0
 
 Making `ctx` installable and governable: packaging metadata and a tag-gated

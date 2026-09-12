@@ -188,8 +188,27 @@ def _acquire(path, timeout, stale):
                 time.sleep(_POLL)  # a reclaim retries at once; a live lock waits
             continue
         except OSError as exc:
-            if exc.errno in (errno.EACCES, errno.EROFS, errno.EPERM):
-                return None, None  # read-only checkout: nothing to serialise
+            if exc.errno in (errno.EACCES, errno.EPERM):
+                # Two very different things share this errno. A read-only
+                # checkout raises it forever and there is nothing to serialise
+                # against, so failing open at once is right. Windows also
+                # raises it *transiently*: `os.open(O_CREAT|O_EXCL)` against a
+                # file another holder is unlinking hits a delete-pending
+                # sharing violation, which is exactly what contention looks
+                # like. Treating that as "read-only" made a waiter give up
+                # instantly instead of waiting out its timeout — which is why
+                # raising the timeout to 60s never helped, and why only Windows
+                # ever failed open.
+                #
+                # Writability tells the two apart in one cheap call.
+                if not os.access(str(path.parent), os.W_OK):
+                    return None, None
+                if time.monotonic() >= deadline:
+                    return None, None
+                time.sleep(_POLL)
+                continue
+            if exc.errno == errno.EROFS:
+                return None, None  # read-only filesystem: nothing to serialise
             return None, None
         token = ("%d %s" % (os.getpid(), uuid.uuid4().hex)).encode("ascii")
         try:
