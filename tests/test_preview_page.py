@@ -29,6 +29,7 @@ unit ends with a rendered sample and a human gate. What *is* provable here:
 """
 
 import ast
+import json
 import re
 import sys
 import unittest
@@ -139,6 +140,19 @@ class PageCase(Fixture):
         """Everything between `<style>` and `</style>`."""
         html = html if html is not None else self.page()
         return "\n".join(re.findall(r"<style>(.*?)</style>", html, re.S))
+
+    def stated(self, html):
+        """Everything the page says, in both views — but not the data island.
+
+        The embedded view-model is the model *verbatim*: `check()` and
+        `test_the_styles_are_inline_and_the_model_is_embedded` both hold the
+        page to `embed_json(vm)` byte for byte, so a renderer that edited it
+        on the way past would make the island disagree with
+        `ctx preview --data`. What the page states in its own markup is a
+        separate question, and this is how it is asked.
+        """
+        regions = preview_page.regions(html)
+        return regions.plain_text + "\n" + regions.tech_text
 
     def block(self, css, opener):
         """The body of the first `@media ...` block whose header matches."""
@@ -384,6 +398,76 @@ class TestHowItBehaves(PageCase):
         model = self.model()
         self.assertEqual(preview_page.render(model), preview_page.render(model))
         self.assertEqual(preview_page.render(self.model()), self.page())
+
+    def test_the_graph_revision_never_reaches_the_page(self):
+        """`plan.json`'s counter is not a fact about the plan.
+
+        `plan.write_graph` increments it on every `plan-check` run, and the
+        page is committed *and* rewritten on every run — so a counter on the
+        page means every `plan-check` dirties a file in somebody's working
+        tree forever. Unit 05 found it by testing the claim instead of
+        trusting it.
+
+        Two assertions, because the model dropping the key is not the same
+        promise as the page refusing to print it: a renderer that prints
+        whatever `plan` happens to carry would come back the moment anything
+        put a counter there again.
+        """
+        vm = self.model()
+        self.assertNotIn("revision", vm["plan"])
+        # End to end, on the real model: nowhere on the page at all, data
+        # island included, because unit 03 stopped carrying it.
+        self.assertNotIn("revision", preview_page.render(vm).lower())
+
+        # And the page says it nowhere of its own accord. A model that still
+        # carried the counter would still not put the number in front of a
+        # reader, in either view.
+        carrying = self.model()
+        carrying["plan"]["revision"] = 7
+        html = preview_page.render(carrying)
+        self.assertNotIn("revision", self.stated(html).lower())
+        self.assertEqual(self.stated(html), self.stated(preview_page.render(vm)))
+        self.assertEqual(preview_page.check(html, carrying), [])
+
+    def test_the_page_does_not_move_when_plan_check_bumps_the_counter(self):
+        """The bump is forced and asserted, not assumed.
+
+        A test that merely re-rendered an unchanged plan would pass whether or
+        not `plan-check` had touched the counter, which is exactly the
+        reassurance that was wrong before. So the counter is read off disk on
+        both sides, the increase is asserted, and the model is handed the
+        counter as the pre-fix model carried it — the page still has to come
+        out byte for byte the same.
+        """
+        def counter():
+            path = plan_mod.graph_path(self.layout, self.SLUG)
+            return int(json.loads(path.read_text(encoding="utf-8"))["revision"])
+
+        def carrying():
+            model = self.model()
+            model["plan"]["revision"] = counter()
+            return model
+
+        # The first `plan-check` after `setUp` scaffolds `plain.md`, which is
+        # a real change to the plan's substance and moves the page for a good
+        # reason. Settle that first, so what follows measures the counter and
+        # nothing else.
+        self.assertEqual(self.cli("plan-check", self.SLUG)[0], 0)
+        before = counter()
+        first = self.page()
+        first_stated = self.stated(preview_page.render(carrying()))
+
+        code, out = self.cli("plan-check", self.SLUG)
+        self.assertEqual(code, 0, out)
+        self.assertGreater(counter(), before, "plan-check did not bump the "
+                           "counter, so this test proved nothing")
+
+        # The real page, byte for byte.
+        self.assertEqual(self.page(), first)
+        # And what the page states, even when handed the counter the way the
+        # model used to carry it — which is the shape the defect had.
+        self.assertEqual(self.stated(preview_page.render(carrying())),
+                         first_stated)
 
     def test_the_module_cannot_read_a_clock(self):
         """The page is committed. Bytes that move because a day passed are a

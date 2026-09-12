@@ -629,11 +629,21 @@ def _glossary():
 
 
 def _footer(vm):
+    """What this page was made from — everything except the graph revision.
+
+    `plan.json`'s `revision` counter is deliberately absent, and this is the
+    one fact the page refuses to print even if a model hands it over. Unit 05
+    found why by testing the claim: `plan.write_graph` increments the counter
+    on every `plan-check` run, and the page is committed *and* rewritten on
+    every run, so a counter here means every plan-check dirties a tracked file
+    for everybody, forever. The digest below already identifies the plan's
+    substance, which is the question a reader of the footer is actually
+    asking; the counter stays in `plan.json` and in `ctx preview --data`.
+    """
     plan = vm.get("plan") or {}
     facts = [
         "plan %s" % (plan.get("slug") or ""),
         "spec %s" % (plan.get("spec") or ""),
-        "revision %d" % _int(plan.get("revision")),
         "graph generated %s" % (plan.get("generated") or "unknown"),
         "summary digest %s" % ((plan.get("digest") or "none")[:12] or "none"),
         "view-model schema %d" % _int(vm.get("schema")),
