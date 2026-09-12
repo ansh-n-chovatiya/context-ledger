@@ -18,3 +18,19 @@
 12:18 | unit | 06-test-isolation-guard | done
 12:20 | unit | 07-wave-scope-after-done | done
 12:21 | unit | 08-test-lint-debt | done
+22:04 | spec | plan-preview | opened
+22:04 | spec | plan-preview | +1 blocking question(s)
+22:04 | spec | plan-preview | +1 blocking question(s)
+22:04 | spec | plan-preview | +1 blocking question(s)
+22:04 | spec | plan-preview | +1 non-blocking question(s)
+22:04 | spec | plan-preview | +1 non-blocking question(s)
+22:04 | spec | plan-preview | resolved: Who authors plain.md
+22:04 | spec | plan-preview | resolved: Should plan-check write preview.html
+22:04 | spec | plan-preview | resolved: What should plain.md staleness
+22:04 | spec | plan-preview | resolved: unfilled scaffold field
+22:05 | spec | plan-preview | resolved: gitignored rather than committed
+22:05 | plan | plan-preview | opened (0 unit stubs)
+22:09 | plan | plan-preview | checked, graph r1
+22:09 | plan | plan-preview | checked, graph r2
+22:10 | plan | plan-preview | checked, graph r3
+22:10 | plan | plan-preview | checked, graph r4

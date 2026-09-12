@@ -1,0 +1,194 @@
+{
+  "ctx_schema": 1,
+  "plan": "plan-preview",
+  "spec": "plan-preview",
+  "revision": 3,
+  "generated": "2026-09-12",
+  "waves": [
+    [
+      "01-plain-source",
+      "02-safe-html"
+    ],
+    [
+      "03-view-model"
+    ],
+    [
+      "04-baseline-page"
+    ],
+    [
+      "05-cli-wiring"
+    ],
+    [
+      "06-document-preview"
+    ]
+  ],
+  "units": {
+    "01-plain-source": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/plain.py",
+        "tests/test_plain_source.py"
+      ],
+      "reads": [
+        "ctx/frontmatter.py",
+        "ctx/plan.py",
+        "ctx/contract.py",
+        "ctx/atomic.py",
+        "tests/support.py"
+      ],
+      "forbid": [
+        "ctx/preview.py",
+        "ctx/preview_html.py",
+        "ctx/preview_page.py",
+        "ctx/commands.py",
+        "ctx/cli.py"
+      ],
+      "budget_tokens": 55000
+    },
+    "02-safe-html": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/preview_html.py",
+        "tests/test_preview_html_safety.py"
+      ],
+      "reads": [
+        "ctx/redact.py",
+        "tests/support.py"
+      ],
+      "forbid": [
+        "ctx/plain.py",
+        "ctx/preview.py",
+        "ctx/preview_page.py",
+        "ctx/commands.py",
+        "ctx/cli.py"
+      ],
+      "budget_tokens": 55000
+    },
+    "03-view-model": {
+      "tier": "subagent",
+      "wave": 2,
+      "depends_on": [
+        "01-plain-source",
+        "02-safe-html"
+      ],
+      "owns": [
+        "ctx/preview.py",
+        "tests/test_preview_model.py"
+      ],
+      "reads": [
+        "ctx/plan.py",
+        "ctx/plain.py",
+        "ctx/preview_html.py",
+        "ctx/complexity.py",
+        "ctx/paths.py",
+        "tests/support.py"
+      ],
+      "forbid": [
+        "ctx/plain.py",
+        "ctx/preview_html.py",
+        "ctx/preview_page.py",
+        "ctx/commands.py",
+        "ctx/cli.py"
+      ],
+      "budget_tokens": 60000
+    },
+    "04-baseline-page": {
+      "tier": "subagent",
+      "wave": 3,
+      "depends_on": [
+        "03-view-model"
+      ],
+      "owns": [
+        "ctx/preview_page.py",
+        "tests/test_preview_page.py"
+      ],
+      "reads": [
+        "ctx/preview.py",
+        "ctx/preview_html.py",
+        "ctx/atomic.py",
+        "tests/support.py"
+      ],
+      "forbid": [
+        "ctx/preview.py",
+        "ctx/preview_html.py",
+        "ctx/plain.py",
+        "ctx/commands.py",
+        "ctx/cli.py"
+      ],
+      "budget_tokens": 70000
+    },
+    "05-cli-wiring": {
+      "tier": "subagent",
+      "wave": 4,
+      "depends_on": [
+        "03-view-model",
+        "04-baseline-page"
+      ],
+      "owns": [
+        "ctx/cli.py",
+        "ctx/commands.py",
+        "commands/preview.md",
+        "tests/test_preview_cli.py",
+        "tests/test_json_output.py",
+        "tests/test_commands_registry.py",
+        "tests/test_docs_currency.py",
+        "tests/test_command_bodies.py",
+        "tests/test_cli_exit_codes.py",
+        "tests/test_commands.py"
+      ],
+      "reads": [
+        "ctx/preview.py",
+        "ctx/preview_page.py",
+        "ctx/plain.py",
+        "tests/support.py"
+      ],
+      "forbid": [
+        "ctx/preview.py",
+        "ctx/preview_page.py",
+        "ctx/preview_html.py",
+        "ctx/plain.py"
+      ],
+      "budget_tokens": 70000
+    },
+    "06-document-preview": {
+      "tier": "subagent",
+      "wave": 5,
+      "depends_on": [
+        "01-plain-source",
+        "02-safe-html",
+        "03-view-model",
+        "04-baseline-page",
+        "05-cli-wiring"
+      ],
+      "owns": [
+        "docs/reference.md",
+        "docs/walkthroughs.md",
+        "README.md",
+        "CHANGELOG.md",
+        ".claude-plugin/plugin.json",
+        "ctx/__init__.py",
+        "tests/test_ci_floor.py",
+        ".github/workflows/ci.yml"
+      ],
+      "reads": [
+        "ctx/preview.py",
+        "ctx/preview_page.py",
+        "ctx/plain.py",
+        "ctx/commands.py",
+        "commands/preview.md"
+      ],
+      "forbid": [
+        "ctx/cli.py",
+        "ctx/preview.py",
+        "ctx/preview_page.py",
+        "ctx/preview_html.py",
+        "ctx/plain.py"
+      ],
+      "budget_tokens": 45000
+    }
+  }
+}
