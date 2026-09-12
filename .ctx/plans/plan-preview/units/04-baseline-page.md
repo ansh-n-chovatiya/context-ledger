@@ -32,7 +32,7 @@ forbid:
   - ctx/commands.py
   - ctx/cli.py
 budget_tokens: 70000
-status: done
+status: running
 verify:
   - kind: diff
   - kind: symbol
@@ -176,8 +176,39 @@ must not glob `*/units/*.md`.
 **Project rules**
 18. Python 3.8 compatible, standard library only, `ruff` clean.
 19. Every test is shown failing before it passes. Report the failure output.
+
+**The revision must not reach the page** (added after unit 05's finding)
+
+21. The rendered page no longer states `plan.revision` anywhere — not in the
+    footer, not in a technical region. Unit 03 is removing it from the model in
+    the same round; if your renderer reads it, stop reading it.
+22. A test asserts `render(vm)` twice over an unchanged plan is byte-identical
+    **across a `plan-check` revision bump**, forcing the bump and asserting it
+    happened rather than assuming it.
+23. `check()` must still return `[]` for the renderer's own output, and your
+    `kind: human` sign-off is void if the page's visible content changed — say
+    in your report whether anything a reader sees moved, so the page can be
+    re-inspected if it did.
+24. Shown failing before passing.
+
 20. No file outside `owns` is modified. If you need `preview.py` or
     `preview_html.py` changed, **stop and report the exact edit**.
+
+## Follow-up: the page must not diff on every plan-check
+Unit 05 tested a claim rather than trusting it and found this: `preview.html`
+re-diffs on **every** `plan-check` run. `view_model` carries `plan.revision`,
+`plan.write_graph` increments that counter on every run, and the number reaches
+the page twice — a footer sentence and the embedded view-model JSON.
+
+That breaks the promise the committed artefact rests on. `preview.html` is
+committed *and* now written on every `plan-check`, so a counter in it means
+every plan-check dirties a committed file forever. The content digest was
+adopted precisely so the page moves only when the plan's substance moves; the
+digest fixed `plain.md` staleness but not this.
+
+**The decision: drop the revision from the page.** It stays in `plan.json` and
+remains reachable through `ctx preview --data`. The digest already identifies
+the plan's substance, and it is what `ctx start` uses for staleness.
 
 ## Return contract
 Report: files changed · each criterion and how it was checked · verbatim verify

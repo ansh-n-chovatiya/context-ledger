@@ -20,8 +20,6 @@ owns:
   - tests/test_advice.py
   - README.md
   - docs/reference.md
-  - tests/test_preview_model.py
-  - tests/test_preview_page.py
 reads:
   - path: ctx/preview.py
     symbols:

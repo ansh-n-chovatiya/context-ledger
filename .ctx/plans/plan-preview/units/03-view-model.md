@@ -9,6 +9,7 @@ depends_on:
 owns:
   - ctx/preview.py
   - tests/test_preview_model.py
+  - tests/test_preview_cli.py
   - tests/test_shared_paths.py
 reads:
   - path: ctx/plan.py
@@ -199,6 +200,29 @@ must not glob `*/units/*.md`.
 20. Shown failing before passing, including the fallback case and a positive
     control proving an authored title actually reaches `steps[].title`.
 
+**The revision must not reach the page** (added after unit 05's finding)
+
+21. `view_model` no longer carries `plan.revision`. Remove the key; do not
+    merely stop rendering it, because it is also embedded verbatim in the page
+    as JSON and would churn from there.
+22. `plan.digest` stays and remains the page's identity. `ctx start` keys its
+    staleness advisory off the digest already embedded in the page, so that
+    path must keep working — do not remove or rename it.
+23. A test asserts that two `plan-check` runs over an unchanged plan leave
+    `view_model` byte-identical under `json.dumps(sort_keys=True)` — including
+    across the revision bump, which the test must force and assert really
+    happened, not assume.
+24. Two existing tests encode the old behaviour and both are yours this round:
+    `test_across_plan_checks_only_the_revision_it_quotes_moves` in
+    `tests/test_preview_cli.py` (unit 05's file, lent to you for exactly this
+    edit — change nothing else in it), and
+    `TestTheStructure.test_the_revision_is_carried_but_nothing_a_reader_sees_uses_it`
+    in your own `tests/test_preview_model.py`. Update or replace both, and **say
+    in your report exactly what each was pinning and why the new assertion is
+    the right one**. The first should become the stronger claim: across a
+    plan-check, *nothing* moves.
+25. Shown failing before passing.
+
 ## Follow-up: prefer the authored step title
 A decision taken after your first pass. Your report flagged that slug-derived
 titles read "Plain source", "Safe html", "Cli wiring", and correctly refused to
@@ -208,6 +232,22 @@ honest`. Unit 01 has been reopened to parse it and its report names the accessor
 
 The numbered criteria are in **Acceptance criteria** below, where the contract
 digest can see them.
+
+## Follow-up: the page must not diff on every plan-check
+Unit 05 tested a claim rather than trusting it and found this: `preview.html`
+re-diffs on **every** `plan-check` run. `view_model` carries `plan.revision`,
+`plan.write_graph` increments that counter on every run, and the number reaches
+the page twice — a footer sentence and the embedded view-model JSON.
+
+That breaks the promise the committed artefact rests on. `preview.html` is
+committed *and* now written on every `plan-check`, so a counter in it means
+every plan-check dirties a committed file forever. The content digest was
+adopted precisely so the page moves only when the plan's substance moves; the
+digest fixed `plain.md` staleness but not this.
+
+**The decision: drop the revision from the page.** It stays in `plan.json` and
+remains reachable through `ctx preview --data`. The digest already identifies
+the plan's substance, and it is what `ctx start` uses for staleness.
 
 ## Return contract
 Report: files changed · each criterion and how it was checked · verbatim verify

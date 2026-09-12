@@ -15,6 +15,8 @@ Spec: `.ctx/specs/plan-preview/spec.md`
 
 
 
+
+
 **Wave 1** — these may run concurrently
 
 - `01-plain-source` (subagent, done) — `ctx/plain.py`: read the authored plain-language file for a plan, say precisely which parts a human has actual
@@ -25,7 +27,7 @@ Spec: `.ctx/specs/plan-preview/spec.md`
 **Wave 2** — these may run concurrently
 
 - `03-view-model` (subagent, done) — `ctx/preview.py`: assemble the one JSON-safe dict that every rendered page is built from, so the HTML never se
-  - owns: ctx/preview.py, tests/test_preview_model.py, tests/test_shared_paths.py
+  - owns: ctx/preview.py, tests/test_preview_model.py, tests/test_preview_cli.py, tests/test_shared_paths.py
 
 **Wave 3** — these may run concurrently
 
@@ -35,7 +37,7 @@ Spec: `.ctx/specs/plan-preview/spec.md`
 **Wave 4** — these may run concurrently
 
 - `05-cli-wiring` (subagent, done) — Wire `ctx preview` into the CLI, make `plan-check` produce the page and the `plain.md` form without anyone ask
-  - owns: ctx/cli.py, ctx/commands.py, commands/preview.md, tests/test_preview_cli.py, tests/test_json_output.py, tests/test_commands_registry.py, tests/test_docs_currency.py, tests/test_command_bodies.py, tests/test_cli_exit_codes.py, tests/test_commands.py, tests/test_advice.py, README.md, docs/reference.md, tests/test_preview_model.py, tests/test_preview_page.py
+  - owns: ctx/cli.py, ctx/commands.py, commands/preview.md, tests/test_preview_cli.py, tests/test_json_output.py, tests/test_commands_registry.py, tests/test_docs_currency.py, tests/test_command_bodies.py, tests/test_cli_exit_codes.py, tests/test_commands.py, tests/test_advice.py, README.md, docs/reference.md
 
 **Wave 5** — these may run concurrently
 

@@ -81,3 +81,14 @@
 23:50 | unit | 05-cli-wiring | done
 23:50 | start | plan-preview | wave 5, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
 23:50 | plan | plan-preview | checked, graph r9
+23:52 | plan | plan-preview | checked, graph r10
+23:52 | plan | plan-preview | checked, graph r11
+23:52 | unit | 03-view-model | running
+23:52 | unit | 04-baseline-page | running
+23:52 | start | 03-view-model | re-sealed deliberately (--reseal): contract changed (owns, acceptance criteria) and the new contract is now the promise the done-gate holds it to (recorded findings ke…
+23:52 | start | plan-preview | wave 2, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+23:52 | start | 04-baseline-page | re-sealed deliberately (--reseal): the contract had not changed; the seal and review baseline were retaken over the current tree (recorded findings kept)
+23:52 | start | plan-preview | wave 3, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+23:54 | gate | 04-baseline-page | manual error
+23:55 | unit | 03-view-model | running
+23:58 | gate | 03-view-model | manual error
