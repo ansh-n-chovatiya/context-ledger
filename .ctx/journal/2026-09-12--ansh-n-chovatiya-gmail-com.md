@@ -41,3 +41,12 @@
 22:21 | start | plan-preview | wave 1, 2 unit(s), 0 worktree(s), 1 snapshot(s), 1 already in flight
 22:24 | unit | 02-safe-html | done
 22:27 | unit | 01-plain-source | done
+22:29 | start | plan-preview | wave 2, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+22:41 | unit | 03-view-model | done
+22:46 | spec | plan-preview | +1 blocking question(s)
+22:46 | spec | plan-preview | resolved: human-readable step title
+23:04 | unit | 04-baseline-page | running
+23:04 | gate | 04-baseline-page | signed off human
+23:04 | unit | 04-baseline-page | done refused (no dispatch seal)
+23:05 | start | plan-preview | wave 3, 1 unit(s), 0 worktree(s), 0 snapshot(s), 1 already in flight
+23:05 | unit | 04-baseline-page | done (--force overrode the gate: no dispatch seal)

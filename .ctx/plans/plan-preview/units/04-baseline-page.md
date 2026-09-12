@@ -32,7 +32,7 @@ forbid:
   - ctx/commands.py
   - ctx/cli.py
 budget_tokens: 70000
-status: pending
+status: done
 verify:
   - kind: diff
   - kind: symbol
@@ -48,6 +48,10 @@ verify:
     run: python3 -m ruff check ctx/preview_page.py tests/test_preview_page.py
   - kind: human
 wave: 3
+verified:
+  - human
+verified_at: 2026-09-12
+verified_note: Opened in Chrome and looked at, not measured from source. Desktop 1440px in light and dark: both themes set explicit background and foreground, headings and body legible throughout. True 400px viewport, forced via a 400px iframe because macOS Chrome floors a real window at 500px: measured documentElement scrollWidth 400 against clientWidth 400, so zero horizontal overflow; text wraps, the toggle chip fits, the diagram fits. Print checked two ways (--print-to-pdf, and forcing @media print): technical regions expand without the toggle, the file-ownership table is visible, toggle chrome is gone, content flows to a complete document. Degraded page with no plain.md: the amber banner says it describes what will happen but not why it matters, and to ask for a summary before approving anything you are unsure of. Correction to my own first reading: I reported a 400px overflow defect from a screenshot with clipped text; that was a crop artifact of Chrome's 500px minimum window width, and the direct measurement disproved it.
 ---
 
 ## Objective
