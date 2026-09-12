@@ -369,6 +369,10 @@ Then, in order:
 
 ```bash
 # 1. a run that actually FAILED. A zero exit reproduces nothing.
+#    --command with --exit-code also files this as a recorded test run, which
+#    is the evidence `kind: test_first` reads:
+#      recorded a failing test run of tests/test_auth.py — this is the
+#      evidence `kind: test_first` reads
 ctx phase 02-expiry-off-by-one reproduce \
     --command "pytest tests/test_auth.py::test_expiring_token" --exit-code 1 \
     --evidence "AssertionError: token accepted 1s after expiry"
@@ -510,10 +514,13 @@ snapshots and packages are scratch — reconstructible and regenerated next roun
 There is **no final whole-plan review pass**: review is per unit, and nothing
 reviews the assembled result of a wave or of a finished plan. There is no
 debugging workflow — `ctx` has nothing to say about narrowing a failure to its
-cause. (`kind: bug` gates the order; it does not help you find the cause.) And
-`test_first` has **no CLI surface**: its evidence is written by
-`ctx.snapshot.record_test_run` from Python, so a unit declaring that kind today
-needs a caller of its own. Gaps, named here rather than papered over.
+cause. (`kind: bug` gates the order; it does not help you find the cause.)
+Gaps, named here rather than papered over.
+
+`test_first` used to be listed here too, as a kind with no CLI surface. It has
+one now: `ctx phase «unit» «phase» --command … --exit-code …` files the run as
+the evidence that kind reads — see [Fixing a bug under phase
+gates](#fixing-a-bug-under-phase-gates) above.
 
 ## Memory that survives sessions
 

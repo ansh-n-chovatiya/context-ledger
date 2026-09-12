@@ -12,7 +12,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import miniyaml, paths
+from . import log, miniyaml, paths
 
 SCHEMA = 1
 
@@ -30,7 +30,16 @@ DEFAULTS = {
     "briefing_chars": {"l0": 220, "l1": 900, "l2": 2600},
     "journal": {
         "digest_lines": 12, "max_line_chars": 200, "enabled": True,
-        # Days of journal history `ctx prune` keeps. 0 means keep everything.
+        # Days of journal history `ctx prune` keeps before folding older days
+        # into one archive per month. 0 — the shipped default — means **never
+        # prune**: every day file is kept for ever.
+        #
+        # It stays 0 because `prune` rewrites committed files, and a default
+        # that rewrites tracked history on a schedule nobody set is a worse
+        # failure than a directory that grows. The growth is not silent: past
+        # `journal.GROWTH_WARN_FILES` day files, `journal.overgrown()` says so
+        # and names this setting. The reasoning is written out in full above
+        # `journal.prune`.
         "keep_days": 0,
     },
     # Hook timings and briefing sizes, written to gitignored `.ctx/runtime/`.
@@ -392,12 +401,22 @@ def _read_policy(path, source):
     """
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except OSError as exc:
+        # A policy file that exists but cannot be read is indistinguishable
+        # from one that does not exist — a control plane silently not applied,
+        # which is precisely what this layer is here to prevent. It still
+        # fails soft (an unreadable *optional* file must not stop every
+        # command), but it no longer does so without saying anything.
+        log.failure("config.policy", exc, source=source, path=path)
         return None
     try:
         parsed = miniyaml.loads(text) or {}
     except miniyaml.MiniYamlError as exc:
-        raise SystemExit(f"{path}: {source} policy is unreadable — {exc}")
+        # `from exc` rather than a bare re-raise: the parse error is the whole
+        # explanation of why the policy could not be applied, and losing its
+        # traceback would leave `CTX_LOG=debug` with nothing to print beyond
+        # the one line already in the message.
+        raise SystemExit(f"{path}: {source} policy is unreadable — {exc}") from exc
     if not isinstance(parsed, dict):
         raise SystemExit(f"{path}: {source} policy must be a mapping")
     return parsed
@@ -583,7 +602,8 @@ def _record_override(layout, config, override):
     line = None
     try:
         line = journal.append(layout, config, "gate", "CTX_GATE", override.note)
-    except Exception:
+    except Exception as exc:
+        log.failure("config.record_override", exc, note=override.note)
         line = None
     override.recorded = line is not None
     if line is None:
@@ -611,8 +631,10 @@ def _report_unrecorded(layout, override):
         stamp = datetime.datetime.now().isoformat(timespec="seconds")
         with layout.errors.open("a", encoding="utf-8") as handle:
             handle.write(f"--- {stamp} gate-override ---\n{override.note}\n")
-    except Exception:
-        pass
+    except Exception as exc:
+        # Both channels for this one are now gone. Nothing else can be done
+        # without failing the session the override exists to keep running.
+        log.failure("config.report_unrecorded", exc, path=layout.errors)
 
 
 # Offending level spellings already reported this process.

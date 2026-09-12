@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ctx import (  # noqa: E402
-    frontmatter, journal, plan as plan_mod, state, trust, work,
+    frontmatter, journal, plan as plan_mod, state, trust,
 )
 from support import Fixture  # noqa: E402
 

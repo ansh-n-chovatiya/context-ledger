@@ -292,10 +292,31 @@ class TestThisLedgerHasAlreadyDoneIt(unittest.TestCase):
             "will conflict on it",
         )
 
-    def test_the_digest_still_exists_on_disk(self):
-        """Untracked, not deleted. It is read by SessionStart on every session;
-        losing it would trade a merge conflict for an empty briefing."""
-        self.assertTrue((REPO / ".ctx" / "journal" / "DIGEST.md").is_file())
+    def test_the_digest_is_not_tracked_but_is_still_ignored_on_purpose(self):
+        """Untracked, not deleted — asserted against git, not against disk.
+
+        This used to assert the file was present in *this checkout*. That
+        passes on a machine where a session has run and regenerated it, and
+        fails in every fresh clone — which is what CI is, so it went red the
+        first time this branch reached a runner. The claim worth making is
+        about the repository's intent, and git is where that lives: the path is
+        ignored, and it is not tracked. Whether it happens to exist right now
+        is a property of the working copy, not of the project.
+
+        That it comes *back* is the other half, and it has its own class
+        below, driven through a fixture rather than through this checkout.
+        """
+        ignore = (REPO / ".ctx" / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("journal/DIGEST.md", ignore.split())
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", ".ctx/journal/DIGEST.md"],
+            cwd=str(REPO), capture_output=True, text=True,
+        )
+        self.assertNotEqual(
+            tracked.returncode, 0,
+            "DIGEST.md is tracked again — untracking it is what stopped two "
+            "agents finishing at once from conflicting on a derived file",
+        )
 
 
 class TestTheDigestRegeneratesOnceUntracked(Fixture):

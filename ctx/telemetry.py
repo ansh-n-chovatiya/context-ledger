@@ -44,7 +44,7 @@ measurement, not project history.
 import json
 import os
 
-from . import atomic, lock
+from . import atomic, lock, log
 
 FILENAME = "telemetry.jsonl"
 
@@ -108,11 +108,18 @@ def record(layout, event, ms, **fields):
         payload = {"event": str(event), "ms": round(float(ms), 1)}
         payload.update({k: v for k, v in fields.items() if v is not None})
         line = json.dumps(payload, sort_keys=True) + "\n"
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        # Not a disk problem: a caller handed us a field that will not
+        # serialise. Reported at `warn` rather than `error` because the
+        # measurement is lost but nothing on disk is wrong.
+        log.warn("telemetry.record", log.describe(exc), event=event)
         return False
+    # Resolved before the `try`, so the handler below can name the file
+    # without calling anything that could raise inside an except block.
+    target = None
     try:
-        layout.runtime.mkdir(parents=True, exist_ok=True)
         target = path_for(layout)
+        layout.runtime.mkdir(parents=True, exist_ok=True)
         # One acquisition, spanning the rotate's read-modify-write *and* this
         # append. Locking them separately would leave exactly the window the
         # lock is here to close: an append that lands after another process has
@@ -124,7 +131,11 @@ def record(layout, event, ms, **fields):
             _rotate(target)
             with target.open("a", encoding="utf-8") as handle:
                 handle.write(line)
-    except (OSError, TypeError, ValueError):
+    except (OSError, TypeError, ValueError) as exc:
+        # The swallow the module's contract requires, no longer indistinguish-
+        # able from success: a read-only mount, a full disk and a permissions
+        # error each say so here, and the hook still returns normally.
+        log.failure("telemetry.record", exc, event=event, path=target)
         return False
     return True
 
@@ -207,8 +218,8 @@ def _rotate(target):
         with target.open("r", encoding="utf-8", errors="replace") as handle:
             lines = handle.readlines()[-KEEP_LINES:]
         atomic.write_text(target, "".join(lines))
-    except OSError:
-        pass
+    except OSError as exc:
+        log.failure("telemetry.rotate", exc, path=target)
 
 
 def read(layout, limit=400):
@@ -223,7 +234,10 @@ def read(layout, limit=400):
                 handle.seek(size - MAX_BYTES, os.SEEK_SET)
                 handle.readline()
             text = handle.read().decode("utf-8", errors="replace")
-    except OSError:
+    except OSError as exc:
+        # An unreadable file and an empty one both render as "no measurements
+        # yet" to every caller. Only the log can tell them apart.
+        log.failure("telemetry.read", exc, path=target)
         return records
     for line in text.splitlines()[-limit:]:
         try:

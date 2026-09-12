@@ -24,6 +24,7 @@ Four properties, and the order they are tested in is the order they break in:
 """
 
 import json
+import os
 import re
 import sys
 import unittest
@@ -85,15 +86,50 @@ class Scenario(Fixture):
     def normalise(self, text):
         """Everything about the output that is about *this* machine, removed.
 
-        The golden text has to survive a different temp directory, a different
-        interpreter path and tomorrow; nothing else about it may move.
+        The golden is shared by Linux, macOS and Windows, so it holds one
+        spelling of everything and this supplies it. Order matters throughout:
+        every literal substitution happens while the text still carries the
+        platform's own separators, and only the last step rewrites those.
         """
-        text = text.replace(str(self.root), "<ROOT>")
-        text = text.replace(str(self.untracked), "<GLOBAL>")
-        text = text.replace(sys.executable, "<PYTHON>")
+        # Per platform: /etc/ctx/policy.yaml, or C:\ProgramData\ctx\...
+        text = re.sub(r"\S*[/\\]ctx[/\\]policy\.yaml", "<SYSTEM-POLICY>", text)
+
+        # Each root gets every spelling the output might use: as handed out,
+        # resolved (macOS hands out /var/... and resolves to /private/var/...),
+        # posix-slashed, and abbreviated against the home directory, which is
+        # what `doctor` prints — on Windows a temp dir sits under the profile,
+        # so the only form that appeared was `~/AppData/Local/Temp/...`.
+        home = Path.home()
+        for root, token in ((self.root, "<ROOT>"), (self.untracked, "<GLOBAL>")):
+            spellings = []
+            for candidate in (Path(root).resolve(), Path(root)):
+                spellings += [str(candidate), candidate.as_posix()]
+                try:
+                    tail = candidate.relative_to(home)
+                except ValueError:
+                    continue
+                spellings += ["~/" + tail.as_posix(), "~" + os.sep + str(tail)]
+            for spelling in sorted(set(spellings), key=len, reverse=True):
+                text = text.replace(spelling, token)
+
+        # The interpreter, in both spellings, before any separator rewriting —
+        # `sys.executable` carries backslashes on Windows and would stop
+        # matching the moment they were converted.
+        for spelling in (sys.executable, Path(sys.executable).as_posix()):
+            text = text.replace(spelling, "<PYTHON>")
+
         text = re.sub(r"\d{4}-\d{2}-\d{2}T[\d:.]+", "<TS>", text)
         text = re.sub(r"\d{4}-\d{2}-\d{2}", "<DATE>", text)
         text = re.sub(r"\b\d{2}:\d{2}\b", "<TIME>", text)
+        # The briefing's size is measured before this runs, so it carries the
+        # length of this machine's interpreter path: 44 characters locally, 61
+        # on a macOS runner. The subject is the prose, not the arithmetic.
+        text = re.sub(r"\b\d+/(\d+) chars \(~\d+ tokens\)",
+                      r"<N>/\1 chars (~<T> tokens)", text)
+
+        # Last, and only now: whatever separators are left below a placeholder.
+        if os.sep != "/":
+            text = text.replace("\\", "/")
         return text
 
     def human(self, argv):
@@ -133,7 +169,7 @@ GOLDEN = {
 level    L2 (planned)   profile code
 task     —
 plan     auth   unit 02-logout
-briefing 239/2600 chars (~66 tokens)
+briefing <N>/2600 chars (~<T> tokens)
 
 wave board — plan auth:
   wave 1
@@ -165,9 +201,9 @@ next: /ctx:verify
   ok   .ctx/runtime
   ok   .ctx/runtime/verify
 ## briefing budget
-  ok   L0 93/220 chars (~26 tokens)
-  ok   L1 83/900 chars (~23 tokens)
-  ok   L2 239/2600 chars (~66 tokens)
+  ok   L0 <N>/220 chars (~<T> tokens)
+  ok   L1 <N>/900 chars (~<T> tokens)
+  ok   L2 <N>/2600 chars (~<T> tokens)
 ## verify commands
   none configured (fine at L0; required for L1/L2 gates)
 ## command trust
@@ -183,9 +219,9 @@ next: /ctx:verify
   the briefing above is the hook cost only; the plugin's own always-on
   context is separate — measure it with: claude plugin details ctx
 ## policy
-  none system     /etc/ctx/policy.yaml  (absent)
+  none system     <SYSTEM-POLICY>  (absent)
   none user       <GLOBAL>/global/policy.yaml  (absent)
-  ok   repo       /private<ROOT>/.ctx/ctx.yaml
+  ok   repo       <ROOT>/.ctx/ctx.yaml
        no policy above the repository — ctx.yaml decides everything
 ## gate
   enabled=True  max_attempts=3

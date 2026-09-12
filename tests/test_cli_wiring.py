@@ -166,7 +166,8 @@ class TestTelemetryReportsSpendPerRole(WiringFixture):
         self.assertIn("runner", out)
         self.assertIn("reviewer", out)
         lines = out.splitlines()
-        dispatch_line = next(i for i, l in enumerate(lines) if l.startswith("dispatch"))
+        dispatch_line = next(i for i, line in enumerate(lines)
+                             if line.startswith("dispatch"))
         # The role breakdown for `dispatch` has to be a role that actually
         # fired under it (`runner`), and it has to sit under that event, not
         # merely appear somewhere in the output — printing every role's name
@@ -228,6 +229,13 @@ class TestPhaseCommand(WiringFixture):
                               "--evidence", "src/x.py:1")
         self.assertEqual(code, 1)
         self.assertIn("exited zero", out)
+        # `unit` was bound above and never read: the ledger assertion its
+        # sibling test makes was missing here. The refused `locate` must leave
+        # nothing behind, so the zero-exit `reproduce` is the only entry — a
+        # `locate` that recorded itself *and* returned 1 would satisfy every
+        # assertion above and unlock `fix` on the next run.
+        ledger = phases_mod.load(self.layout, self.slug, unit.name)
+        self.assertEqual([e.phase for e in ledger.entries], ["reproduce"])
 
     def test_full_bug_flow_advances_through_reproduce_locate_fix_guard(self):
         unit = self.unit("01-bug", kind="bug", reproduction=OK)

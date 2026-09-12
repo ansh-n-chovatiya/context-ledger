@@ -1,0 +1,135 @@
+{
+  "ctx_schema": 1,
+  "plan": "close-the-recorded-backlog",
+  "spec": "close-the-recorded-backlog",
+  "revision": 3,
+  "generated": "2026-09-12",
+  "waves": [
+    [
+      "01-small-correctness",
+      "02-lock-reclaim",
+      "03-logging-and-retention",
+      "04-command-surface-and-wave-gating"
+    ],
+    [
+      "05-lint-debt-and-last-duplication"
+    ]
+  ],
+  "units": {
+    "01-small-correctness": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/bundle.py",
+        "ctx/spec.py",
+        "ctx/briefing.py",
+        "tests/test_input_limits.py",
+        "tests/test_reserved_names.py",
+        "tests/test_briefing_truncation.py"
+      ],
+      "reads": [
+        "ctx/paths.py"
+      ],
+      "forbid": [
+        "ctx/commands.py",
+        "ctx/journal.py",
+        "ctx/lock.py"
+      ],
+      "budget_tokens": 45000
+    },
+    "02-lock-reclaim": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/lock.py",
+        "ctx/state.py",
+        "tests/test_lock_reclaim.py"
+      ],
+      "reads": [],
+      "forbid": [
+        "ctx/commands.py",
+        "ctx/journal.py",
+        "ctx/telemetry.py"
+      ],
+      "budget_tokens": 45000
+    },
+    "03-logging-and-retention": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/log.py",
+        "ctx/telemetry.py",
+        "ctx/journal.py",
+        "ctx/config.py",
+        "ctx/hooks.py",
+        "tests/test_logging.py",
+        "tests/test_journal_retention.py"
+      ],
+      "reads": [
+        "ctx/paths.py"
+      ],
+      "forbid": [
+        "ctx/commands.py",
+        "ctx/cli.py",
+        "ctx/verify.py",
+        "ctx/lock.py"
+      ],
+      "budget_tokens": 70000
+    },
+    "04-command-surface-and-wave-gating": {
+      "tier": "subagent",
+      "wave": 1,
+      "depends_on": [],
+      "owns": [
+        "ctx/commands.py",
+        "ctx/cli.py",
+        "ctx/verify.py",
+        "ctx/snapshot.py",
+        "tests/test_test_first_cli.py",
+        "tests/test_wave_gating.py"
+      ],
+      "reads": [
+        "ctx/plan.py",
+        "ctx/contract.py"
+      ],
+      "forbid": [
+        "ctx/journal.py",
+        "ctx/config.py",
+        "ctx/lock.py",
+        "ctx/plan.py"
+      ],
+      "budget_tokens": 90000
+    },
+    "05-lint-debt-and-last-duplication": {
+      "tier": "subagent",
+      "wave": 2,
+      "depends_on": [
+        "01-small-correctness",
+        "02-lock-reclaim",
+        "03-logging-and-retention",
+        "04-command-surface-and-wave-gating"
+      ],
+      "owns": [
+        "pyproject.toml",
+        "ctx/lock.py",
+        "ctx/paths.py",
+        "ctx/migrate.py",
+        "ctx/trust.py",
+        "ctx/commands.py",
+        "ctx/hooks.py",
+        "ctx/verify.py",
+        "ctx/config.py",
+        "docs/operations.md",
+        "docs/reference.md",
+        "docs/walkthroughs.md",
+        "tests/test_shared_paths.py"
+      ],
+      "reads": [],
+      "forbid": [],
+      "budget_tokens": 75000
+    }
+  }
+}

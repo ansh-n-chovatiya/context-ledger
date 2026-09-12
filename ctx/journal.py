@@ -26,7 +26,7 @@ import hashlib
 import os
 import subprocess
 
-from . import atomic, redact
+from . import atomic, log, redact
 
 SEP = " | "
 # How much of a day file the read path looks at. The digest is a tail, so the
@@ -204,7 +204,12 @@ def append(layout, config, kind, target, note="", when=None):
                 handle.write(f"# {day}\n\n")
             handle.write(line + "\n")
         return line
-    except OSError:
+    except OSError as exc:
+        # Still None, still no exception out of here — journalling may not
+        # break a session. What changed is that a read-only checkout, a full
+        # disk and a permissions error no longer look exactly like "journalling
+        # is disabled" to everyone downstream.
+        log.failure("journal.append", exc, kind=kind, target=target)
         return None
 
 
@@ -216,7 +221,10 @@ def _day_files(layout):
     """`(day, author, path)` for every day file. Oldest first, `""` for legacy."""
     try:
         found = list(layout.journal.glob("*.md"))
-    except OSError:
+    except OSError as exc:
+        # An unlistable journal directory renders as an empty journal to every
+        # reader above — the digest, the tail and `prune` all just see nothing.
+        log.failure("journal.day_files", exc, path=layout.journal)
         return []
     rows = []
     for path in found:
@@ -300,7 +308,8 @@ def _entry_lines(path, limit=TAIL_BYTES):
             text = path.read_text(encoding="utf-8", errors="replace")
         else:
             text = _read_tail_bytes(path, limit)
-    except OSError:
+    except OSError as exc:
+        log.failure("journal.read", exc, path=path)
         return []
     out = []
     for line in text.splitlines():
@@ -338,6 +347,49 @@ def recent_paths(layout, count=6):
 # --------------------------------------------------------------------------- #
 # retiring
 # --------------------------------------------------------------------------- #
+#
+# WHAT `journal.keep_days: 0` MEANS, decided once and stated here because the
+# audit found the code and the documentation each assuming the other said it.
+#
+# 0 means **never prune**: no day file is ever folded, and the committed
+# journal grows by one file per author per active day for ever. That is the
+# shipped default and it is deliberate.
+#
+# The alternative — 0 meaning "use a shipped default of N days" — was
+# rejected. `prune` rewrites *committed* files: it deletes day files and
+# folds them into a monthly archive. A default that does that on a schedule
+# nobody set would rewrite tracked history during an unrelated command, in a
+# repository where the user's only record of what happened is the thing being
+# rewritten, and it would do it the first time anyone ran `ctx prune` for an
+# unrelated reason. History is cheap; a surprising rewrite of it is not.
+#
+# What 0 is *not* allowed to be any more is invisible. Unbounded growth was a
+# real finding, and the answer to it is `overgrown()` below: past a threshold
+# the ledger says so, names the setting, and names the command — so the growth
+# is a choice the user keeps making rather than one nobody told them about.
+
+def keep_days(config):
+    """`journal.keep_days` as a number of days, or 0. Never raises.
+
+    Public because `ctx prune` and `ctx doctor` both report on the setting
+    and must read it the same way this module acts on it — a second
+    `int(... or 0)` at a call site is how a command comes to advise something
+    other than what `prune` will actually do.
+
+    `ctx.yaml` is hand-edited, so `keep_days: ninety` is a thing that happens.
+    It used to reach `int()` unguarded and take `ctx prune` down with a
+    ValueError — a crash on a typo in a setting whose entire purpose is to be
+    optional. Junk resolves to 0, the non-destructive reading, and says so in
+    the log rather than guessing at a number nobody wrote.
+    """
+    raw = (config.get("journal") or {}).get("keep_days", 0) if config else 0
+    try:
+        return int(raw or 0)
+    except (TypeError, ValueError):
+        log.warn("journal.keep_days", f"not a number of days: {raw!r}",
+                 note="treated as 0 — nothing will be pruned")
+        return 0
+
 
 def prune(layout, config, before=None, archive=True):
     """Fold day files older than `before` into one archive per month.
@@ -348,10 +400,17 @@ def prune(layout, config, before=None, archive=True):
     file count. Per-author files and the legacy unattributed ones retire the
     same way, merged into one section per day.
 
+    `before` defaults to `today - journal.keep_days`, and `keep_days: 0` (the
+    shipped default) means *never prune*: this returns `([], [])` without
+    touching anything. An explicit `before` overrides that — `ctx prune
+    --before` is how a user with the default prunes at all, and it is an
+    explicit act each time. See the note above this function for why 0 does
+    not mean "use some other number".
+
     Returns (folded_paths, archive_paths).
     """
     if before is None:
-        keep = int((config.get("journal") or {}).get("keep_days", 0) or 0)
+        keep = keep_days(config)
         if keep <= 0:
             return [], []
         before = datetime.date.today() - datetime.timedelta(days=keep)
@@ -390,7 +449,9 @@ def prune(layout, config, before=None, archive=True):
                 # first, so a crash mid-write destroys history with no source
                 # left to rebuild it from.
                 atomic.write_text(target, "\n".join(lines) + "\n")
-            except OSError:
+            except OSError as exc:
+                log.failure("journal.prune", exc, archive=target,
+                            note="archive not written; day files kept")
                 # The archive did not land. Leave this month's day files alone:
                 # an unwritten archive plus deleted inputs is the total-loss
                 # case, and keeping them means the next run simply retries.
@@ -401,10 +462,62 @@ def prune(layout, config, before=None, archive=True):
             for _author, path in days[day]:
                 try:
                     path.unlink()
-                except OSError:
-                    pass
+                except OSError as exc:
+                    # The archive holds this day, so the entry is not lost —
+                    # but the day file is now a duplicate of archived history
+                    # and the next `prune` will fold it in a second time.
+                    log.failure("journal.prune", exc, path=path)
                 folded.append(path)
     return folded, archives
+
+
+# The day-file count at which the journal stops being free. One file per
+# author per active day: 400 is well over a year of daily solo work, or a few
+# months for a team of four — the point at which `git status`, a clone and
+# every directory listing start paying for it, and comfortably above any
+# project that has simply been used for a while.
+#
+# A module constant rather than a `ctx.yaml` key on purpose. This is a notice,
+# not a policy: nothing behaves differently either side of it, so a knob would
+# only be a second thing to explain, and `keep_days` is already the setting
+# this notice exists to point at.
+GROWTH_WARN_FILES = 400
+
+
+def overgrown(layout, config):
+    """One line about a journal that has grown large, or None. Never raises.
+
+    This is the other half of `keep_days: 0`. Keeping every day file for ever
+    is a defensible default and a bad surprise, so past `GROWTH_WARN_FILES`
+    the ledger says how many files there are, what the current setting is and
+    which command changes it. Advisory only — it never prunes anything, and
+    nothing fails because of it.
+
+    Callers are the reporting surfaces (`ctx doctor`, `ctx prune`). Returning
+    a string rather than printing keeps this testable and keeps the decision
+    about *where* it appears with the command that prints it.
+    """
+    try:
+        files = _day_files(layout)
+        count = len(files)
+        if count < GROWTH_WARN_FILES:
+            return None
+        keep = keep_days(config)
+    except (AttributeError, TypeError, ValueError) as exc:
+        # A malformed config or an unreadable journal is somebody else's
+        # error to report. An advisory notice must not be the thing that
+        # raises out of `ctx doctor`.
+        log.failure("journal.overgrown", exc)
+        return None
+    where = layout.rel(layout.journal)
+    if keep > 0:
+        return (f"{count} journal day files in {where} — "
+                f"journal.keep_days is {keep}; run `ctx prune` to fold days "
+                "older than that into monthly archives.")
+    return (f"{count} journal day files in {where} — journal.keep_days is 0, "
+            "which means keep every day file for ever. Set journal.keep_days "
+            "in ctx.yaml, or run `ctx prune --before YYYY-MM-DD`, to fold old "
+            "days into one archive per month. Entries are kept either way.")
 
 
 def write_digest(layout, config):
@@ -423,5 +536,17 @@ def write_digest(layout, config):
         body.append("_no entries yet_")
     # Atomic for the same reason as the archive, with one more: the digest is
     # read by SessionStart on every session, so a torn one is read immediately.
-    atomic.write_text(layout.digest, "\n".join(body) + "\n")
+    #
+    # Logged *and* re-raised, unlike every other failure in this module. This
+    # is the one journal write that is not on the never-raise path: `ctx
+    # digest` is a command somebody typed and is owed an exit code for, and
+    # the two hook callers are already inside the blanket fail-open in
+    # `hooks.main`. Swallowing here would buy nothing and cost the CLI its
+    # error. The log line is for the hook case, where the exception is caught
+    # somewhere the operator is not looking.
+    try:
+        atomic.write_text(layout.digest, "\n".join(body) + "\n")
+    except OSError as exc:
+        log.failure("journal.write_digest", exc, path=layout.digest)
+        raise
     return layout.digest

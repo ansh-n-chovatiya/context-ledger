@@ -53,16 +53,19 @@ and they live here so that `ctx ci` and the done-gate cannot drift apart on
 what a unit's scope is.
 """
 
+import hashlib
+import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 from types import MappingProxyType, ModuleType
 
-from . import paths, redact, snapshot, trust
+from . import atomic, paths, redact, snapshot, trust
 
 PASS, FAIL, ERROR, PENDING = "pass", "fail", "error", "pending"
 
@@ -146,7 +149,7 @@ def label_of(check):
 
 
 def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False,
-        since=None, wave=()):
+        since=None, wave=(), share=None):
     """Run checks in cost order, stopping at the first blocking failure.
 
     `judged=False` (the hook's mode) does not evaluate `rubric`/`human`; it only
@@ -163,6 +166,11 @@ def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False,
     killed hook returns no decision at all — so an over-long suite silently
     stopped gating anything. Spending one shared budget makes that case an
     explicit ERROR instead.
+
+    `share` is an optional `_SharedCmd` (see `sharing`): a `cmd` result cache
+    keyed on tree state, so a wave's units can be gated against one suite run
+    instead of N identical ones. Defaulted to None, which is exactly today's
+    behaviour — every check runs, every time.
 
     Returns (results, verdict).
     """
@@ -183,7 +191,7 @@ def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False,
         layout=layout, config=config, cwd=cwd, key=key, owns=owns,
         recorded=recorded, judged=judged, since=since, wave=wave,
         deadline=deadline, budget=budget, head=head, tail=tail,
-        patterns=patterns, accepted=accepted,
+        patterns=patterns, accepted=accepted, share=share,
     )
     for check in ordered(checks):
         # `ordered` already dropped every kind the table does not know, so this
@@ -209,10 +217,11 @@ class _Run:
 
     __slots__ = ("layout", "config", "cwd", "key", "owns", "recorded",
                  "judged", "since", "wave", "deadline", "budget", "head",
-                 "tail", "patterns", "accepted")
+                 "tail", "patterns", "accepted", "share")
 
     def __init__(self, *, layout, config, cwd, key, owns, recorded, judged,
-                 since, wave, deadline, budget, head, tail, patterns, accepted):
+                 since, wave, deadline, budget, head, tail, patterns, accepted,
+                 share=None):
         self.layout = layout
         self.config = config
         self.cwd = cwd
@@ -228,6 +237,7 @@ class _Run:
         self.tail = tail
         self.patterns = patterns
         self.accepted = accepted
+        self.share = share
 
 
 def verdict_of(results):
@@ -625,6 +635,203 @@ def _match_within(pattern, body, budget):
     return False, f"could not evaluate pattern: {last}"
 
 
+# --------------------------------------------------------------------------- #
+# one `cmd` run, shared across a wave's gates
+# --------------------------------------------------------------------------- #
+#
+# Every `ctx unit --status done` runs the whole suite. For a wave of three
+# units declaring the same `run:`, that is the same subprocess three times over
+# bytes that did not move between them. Measured on this repository's own suite
+# and its own three-unit wave: 243s gated one unit at a time (82 + 81 + 79),
+# 78s with the result shared (78 + 0 + 0). Three spawns become one.
+#
+# What is *not* shared is everything else the gate does, and that is the point
+# of doing this as a result cache rather than as a batched command: `gate_check`
+# is untouched, so each unit still gets its own `owns`-scoped `diff`, its own
+# contract-seal comparison, its own findings re-seal, its own all-ERROR refusal
+# and its own journal line. The only thing reused is the exit status of a
+# process that has already been observed to produce it, under three conditions
+# that together make the reuse a fact rather than an assumption:
+#
+#   1. **Same question.** The entry key covers the command, where it runs, the
+#      environment overrides on the check, `optional`, and the output-rendering
+#      settings that shaped the stored message. Anything else is a different
+#      check and gets a different entry.
+#   2. **Same tree, to the byte.** `snapshot.tree_token` digests every file's
+#      path, contents and executable bit, excluding the ledger (which ctx
+#      itself writes on every command). A single changed byte anywhere in the
+#      project is a miss.
+#   3. **The command changed nothing.** The token is taken before *and* after
+#      the run, and a command that left the tree different from how it found it
+#      is never cached at all — its second run would start somewhere its first
+#      did not.
+#
+# ERROR is never cached. An ERROR is a verdict about the machine — a missing
+# tool, a timeout, a command this ledger has not accepted — not about the work,
+# and the machine is the one thing the token cannot see.
+#
+# Off unless asked for, by `gate.share_cmd_results: true` in ctx.yaml or
+# `CTX_GATE_SHARE=1` in the environment of the run that gates the wave. A gate
+# that is wrong is worth more than a gate that is fast, so the faster path is
+# the one you opt into.
+
+SHARE_CACHE_NAME = "gate-cache.json"
+SHARE_SCHEMA = 1
+
+# How long an entry may be reused, and how many are kept. Time is not a
+# correctness argument — the token is — but a `cmd` check can depend on
+# something outside the tree (a service, a clock, a lockfile resolved from the
+# network), and an hour-old verdict about that is worth less than a fresh one.
+SHARE_MAX_AGE = 1800
+SHARE_MAX_ENTRIES = 64
+
+# Statuses worth reusing. See above: PASS and FAIL are what the command said
+# about the tree; ERROR is what the machine said about itself.
+SHARE_STATUSES = (PASS, FAIL)
+
+
+def sharing(layout, config):
+    """A `_SharedCmd` when this run may share `cmd` results, else None.
+
+    Asked for by the project (`gate.share_cmd_results: true`) or by the one run
+    that gates a wave (`CTX_GATE_SHARE=1`). Neither is the default: see the
+    comment above for why the faster gate is the one you opt into.
+    """
+    gate = config.get("gate") or {}
+    enabled = gate.get("share_cmd_results")
+    if enabled is None:
+        enabled = str(os.environ.get("CTX_GATE_SHARE", "")).strip().lower() \
+            in ("1", "true", "yes", "on")
+    if not enabled:
+        return None
+    return _SharedCmd(layout, gate)
+
+
+class _SharedCmd:
+    """`cmd` results already established for this exact tree.
+
+    One instance per gate run, or one shared by a whole `ctx verify --plan`.
+    The store is a file under `.ctx/runtime/`, so the saving survives the
+    process boundary between two `ctx unit --status done` calls — which is the
+    shape a wave is actually gated in.
+    """
+
+    def __init__(self, layout, gate=None):
+        self.layout = layout
+        gate = gate or {}
+        self.max_age = max(0, int(gate.get("share_max_age_seconds",
+                                           SHARE_MAX_AGE)))
+
+    # -- the tree, as one value ------------------------------------------- #
+
+    def token(self, root=None):
+        """The current tree token, or None when the tree cannot be described.
+
+        Recomputed on every call rather than memoised: the whole claim is that
+        the tree has not changed, and a cached answer to that question is an
+        assumption wearing the answer's clothes. It costs milliseconds against
+        a check that costs minutes.
+        """
+        try:
+            return snapshot.tree_token(root or self.layout.root.parent)
+        except OSError:
+            return None
+
+    # -- the store --------------------------------------------------------- #
+
+    @property
+    def path(self):
+        return self.layout.runtime / SHARE_CACHE_NAME
+
+    def _load(self):
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict) or data.get("schema") != SHARE_SCHEMA:
+            return {}
+        entries = data.get("entries")
+        return entries if isinstance(entries, dict) else {}
+
+    def _save(self, entries):
+        if len(entries) > SHARE_MAX_ENTRIES:
+            keep = sorted(entries.items(),
+                          key=lambda item: item[1].get("at", 0),
+                          reverse=True)[:SHARE_MAX_ENTRIES]
+            entries = dict(keep)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            atomic.write_text(
+                self.path,
+                json.dumps({"schema": SHARE_SCHEMA, "entries": entries},
+                           indent=2, sort_keys=True),
+            )
+        except OSError:
+            # A cache that cannot be written is a cache that does not exist.
+            pass
+
+    @staticmethod
+    def entry_key(check, cwd, head, tail, patterns):
+        """One identity for "this exact command, asked this exact way"."""
+        shape = json.dumps(
+            [
+                str(check.get("run") or ""),
+                str(check.get("cwd") or ""),
+                str(cwd),
+                {str(k): str(v) for k, v in (check.get("env") or {}).items()}
+                if isinstance(check.get("env"), dict) else {},
+                bool(check.get("optional") is True),
+                int(head), int(tail), [str(p) for p in (patterns or ())],
+            ],
+            sort_keys=True,
+        )
+        return hashlib.sha256(shape.encode("utf-8")).hexdigest()
+
+    # -- the two operations ------------------------------------------------ #
+
+    def lookup(self, key, token):
+        """The result this command already produced against this tree, or None.
+
+        Reused verbatim, message and all, so a unit reading a shared refusal
+        reads exactly what it would have read had the command run for it. The
+        `(full output: …)` pointer names the log the first run wrote — one
+        command, one tree, one output, filed once.
+        """
+        if token is None:
+            return None
+        entry = self._load().get(key)
+        if not isinstance(entry, dict) or entry.get("token") != token:
+            return None
+        if entry.get("status") not in SHARE_STATUSES:
+            return None
+        if self.max_age and (time.time() - float(entry.get("at") or 0)
+                             > self.max_age):
+            return None
+        return Result("cmd", str(entry.get("label") or ""),
+                      str(entry.get("status")), str(entry.get("message") or ""),
+                      entry.get("log_path"))
+
+    def store(self, key, token, result, root=None):
+        """Keep a result, but only if the tree is still exactly what it was.
+
+        The token passed in was taken *before* the command ran; this takes one
+        after. A command that changed the tree is not cacheable at all: it did
+        not answer a question about a tree it left behind.
+        """
+        if token is None or result.status not in SHARE_STATUSES:
+            return False
+        if self.token(root) != token:
+            return False
+        entries = self._load()
+        entries[key] = {
+            "token": token, "at": time.time(), "status": result.status,
+            "label": result.label, "message": result.message,
+            "log_path": str(result.log_path) if result.log_path else None,
+        }
+        self._save(entries)
+        return True
+
+
 def _check_env(check):
     """Extra environment for a check, layered over the session's own."""
     extra = check.get("env")
@@ -666,9 +873,9 @@ def _check_cmd(layout, check, cwd, key, timeout, head, tail, patterns=()):
     output = (completed.stdout or "") + (completed.stderr or "")
     if completed.returncode == 0:
         return Result("cmd", command, PASS)
-    if completed.returncode in _NOT_FOUND_EXITS:
-        # The shell's own verdict, not the child's: 127 from a POSIX shell and
-        # 9009 from cmd.exe both mean nothing was ever launched.
+    if completed.returncode in _NOT_FOUND_EXITS or _never_launched(command,
+                                                                   completed):
+        # The shell's own verdict, not the child's: nothing was ever launched.
         return Result("cmd", command, ERROR,
                       f"command not found (exit {completed.returncode}): "
                       f"{_program(command)}")
@@ -694,9 +901,40 @@ def _check_cmd(layout, check, cwd, key, timeout, head, tail, patterns=()):
     return Result("cmd", command, FAIL, message, log_path)
 
 
-# A POSIX shell reports "not found" as 127; cmd.exe reports it as 9009. Both are
-# the launcher speaking, before any child of ours existed.
+# A POSIX shell reports "not found" as 127; cmd.exe is documented as 9009. Both
+# are the launcher speaking, before any child of ours existed.
 _NOT_FOUND_EXITS = (127, 9009)
+
+# `cmd /c missing-thing` does not actually return 9009 — it returns 1, which is
+# indistinguishable from a test that ran and failed. So on Windows the exit code
+# alone cannot tell "your toolchain is broken" from "your work is broken", and
+# every gate there reported a missing binary as a work failure. CI found it the
+# first time this suite met a Windows runner.
+#
+# PATH is consulted only to *explain a failure that already happened*, never to
+# pre-judge whether a command will run — that distinction is the whole reason
+# `_preflight` refuses `shutil.which`. A shell builtin fails without being on
+# PATH, so the lookup is skipped for anything the shell runs itself, and for any
+# command with shell syntax in it, where `_argv` already declines to guess.
+_CMD_BUILTINS = frozenset("""
+assoc break call cd chdir cls color copy date del dir echo endlocal erase exit
+for goto if md mkdir mklink move path pause popd prompt pushd rd rem ren rename
+rmdir set setlocal shift start time title type ver verify vol
+""".split())
+
+
+def _never_launched(command, completed):
+    """Whether the shell failed to find the program, on a platform whose exit
+    code cannot say so."""
+    if os.name != "nt" or completed.returncode == 0:
+        return False
+    parts = _argv(command)
+    if not parts:
+        return False
+    program = parts[0].strip('"').strip("'")
+    if os.path.basename(program).lower() in _CMD_BUILTINS:
+        return False
+    return shutil.which(program) is None
 
 # Shell syntax we cannot reason about statically. A command containing any of it
 # is left alone: the pre-flight declines to answer rather than answering wrongly,
@@ -897,10 +1135,23 @@ def _run_cmd(check, ctx):
             f"the gate's {ctx.budget}s budget was spent before this check ran "
             "— split the suite or raise gate.timeout_seconds",
         )
-    return _check_cmd(
+    # Everything above is per-run and stays per-run: trust is this machine's
+    # answer and the budget is this gate's. Only the subprocess below is ever
+    # shared, and only with a tree that is byte-identical to the one it ran on.
+    share, entry, token = ctx.share, None, None
+    if share is not None:
+        entry = share.entry_key(check, ctx.cwd, ctx.head, ctx.tail, ctx.patterns)
+        token = share.token()
+        hit = share.lookup(entry, token)
+        if hit is not None:
+            return hit
+    result = _check_cmd(
         ctx.layout, check, ctx.cwd, ctx.key, remaining,
         ctx.head, ctx.tail, ctx.patterns,
     )
+    if share is not None:
+        share.store(entry, token, result)
+    return result
 
 
 def _run_judged(check, ctx):
@@ -1178,6 +1429,11 @@ def verify_plan(layout, config, slug):
         return 1
 
     failed, pending, passed, warned = [], [], [], []
+    # One cache for the whole plan run, when the project asked for one: every
+    # unit of a plan usually declares the same suite, and a CI run that spawns
+    # it once per unit spends most of its wall clock proving the same thing.
+    # Per-unit checks are unaffected — see `_SharedCmd`.
+    share = sharing(layout, config)
     for level in sorted(grouped):
         for unit in grouped[level]:
             # A unit with no usable checks never gets here: plan_mod.check()
@@ -1192,7 +1448,7 @@ def verify_plan(layout, config, slug):
                 key=f"ci-{unit.name}", owns=unit.owns, recorded=unit.recorded,
                 judged=False,
                 since=contract_mod.sealed_commit(layout, slug, unit.name),
-                wave=wave,
+                wave=wave, share=share,
             )
             flag = {
                 PASS: "ok  ", FAIL: "FAIL",
@@ -1326,7 +1582,7 @@ def gate_check(layout, config, slug, unit):
             "",
             "`ctx start` is what records a seal. Dispatch the wave through it "
             "(other units in",
-            f"this plan have one, so this unit was sent out around it), or pass "
+            "this plan have one, so this unit was sent out around it), or pass "
             "--force to accept",
             "a unit nothing can be checked against.",
         ]
@@ -1375,10 +1631,14 @@ def gate_check(layout, config, slug, unit):
             "committed was not checked for scope — /ctx:start records one from now on"
         )
     wave, _siblings = review_mod.wave_scope(layout, slug, unit)
+    # Step 3 is the only part of this gate a sibling can have done already, and
+    # only the `cmd` checks inside it, and only against this exact tree. Steps 0
+    # to 2 above, and the refusals below, are this unit's alone and ran here.
     results, verdict = run(
         layout, config, unit.checks, cwd=layout.root.parent,
         key=f"{slug}/{unit.name}", owns=unit.owns, recorded=unit.recorded,
         judged=False, since=since, wave=wave,
+        share=sharing(layout, config),
     )
     if verdict in (FAIL, PENDING):
         return False, verdict, lines + [

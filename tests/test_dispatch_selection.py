@@ -281,7 +281,7 @@ class TestDispatchLinePrintsTheScore(DispatchLineFixture):
     def test_the_score_and_every_contributing_input_are_on_the_line(self):
         self.unit("01-a", budget_tokens=45000, owns=["src/a.py"])
         out = self.brief()
-        line = next(l for l in out.splitlines() if l.startswith("- `01-a`"))
+        line = next(line for line in out.splitlines() if line.startswith("- `01-a`"))
 
         unit = next(u for u in plan_mod.load_units(self.layout, self.slug)
                     if u.name == "01-a")

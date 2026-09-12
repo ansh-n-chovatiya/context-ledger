@@ -115,11 +115,14 @@ include = [
 # ---------------------------------------------------------------------------
 # A narrow rule set, chosen by measurement rather than by taste: every rule
 # selected here is one the tree passes *today*, so the check starts green and
-# any red is a regression someone introduced. The `ignore` list below is the
-# honest half of that -- codes whose current violations live in `ctx/*.py` or
-# in test files this unit does not own, recorded as follow-up work instead of
-# being made to disappear by widening an exclude list. A configuration that
-# excludes every file that would fail is a check that cannot fail.
+# any red is a regression someone introduced. There is no `ignore` list at all
+# any more: the four codes it used to hold as follow-up work (F401, F841, B007,
+# E741) were live only in `tests/*.py`, and their 25 sites are fixed in the
+# tests rather than suppressed here -- so every selected rule is now live over
+# both trees, with no `# noqa` standing in for the work. What is left out is
+# left *unselected*, with its reason written below; nothing is selected and
+# then waved through. A configuration that excludes every file that would fail
+# is a check that cannot fail.
 #
 # No `target-version`: ruff reads it from `requires-python` above, and the
 # supported-Python floor belongs in exactly one place.
@@ -192,17 +195,6 @@ select = [
     "RSE",
     "ASYNC",
     "RUF200",
-]
-# Follow-up work, not absolution. Each of these has live violations in files
-# outside this unit's `owns`, and the unit contract forbids reaching into
-# `ctx/*.py` to make a rule pass. Delete an entry once its violations are gone.
-ignore = [
-    "F401",  # 9 unused imports: ctx/commands.py, ctx/hooks.py, 6 test modules.
-    "F541",  # 1 f-string with no placeholder: ctx/verify.py:1295.
-    "F841",  # 2 assigned-and-unused locals: ctx/commands.py:507, a test.
-    "E741",  # 13 `l` loop variables, all in tests, all style.
-    "B007",  # 3 unused loop variables: ctx/commands.py:1543 and two tests.
-    "B904",  # 1 `raise` inside `except` without `from`: ctx/config.py:400.
 ]
 
 [tool.ruff.lint.per-file-ignores]

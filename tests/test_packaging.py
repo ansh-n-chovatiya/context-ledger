@@ -293,16 +293,26 @@ class ZeroRuntimeDependencyTests(unittest.TestCase):
     def test_the_runtime_really_is_importable_without_installing_anything(self):
         # The metadata claim, corroborated against the code: every top-level
         # import in the package resolves to the standard library or to ctx.
-        stdlib_ok = set(getattr(sys, "stdlib_module_names", ())) or None
+        # `sys.stdlib_module_names` is 3.10+. The previous form was
+        # `set(getattr(...)) or None`, which on 3.8 and 3.9 collapsed an empty
+        # set to None, skipped the filter entirely, and reported every stdlib
+        # import as a foreign dependency. It never fired because this suite had
+        # not reached a 3.8/3.9 runner since the test was written — the first
+        # push to CI failed on it. `skipTest` is the honest answer: on an
+        # interpreter that cannot enumerate its own stdlib, this check has
+        # nothing to check.
+        stdlib_ok = set(getattr(sys, "stdlib_module_names", ()))
+        if not stdlib_ok:
+            self.skipTest("sys.stdlib_module_names is 3.10+; nothing to "
+                          "compare against on this interpreter")
         imported = set()
         for module in sorted((ROOT / "ctx").glob("*.py")):
             for line in module.read_text(encoding="utf-8").splitlines():
                 match = re.match(r"^(?:from|import)\s+([A-Za-z_][\w.]*)", line)
                 if match:
                     imported.add(match.group(1).split(".")[0])
-        foreign = {name for name in imported if name not in ("ctx",)}
-        if stdlib_ok is not None:
-            foreign = {name for name in foreign if name not in stdlib_ok}
+        foreign = {name for name in imported
+                   if name not in ("ctx",) and name not in stdlib_ok}
         self.assertEqual(foreign, set(), "non-stdlib top-level import in ctx/")
 
 

@@ -30,6 +30,13 @@ import os
 import time
 import uuid
 
+# The one import this module makes from the package, for the one rule it must
+# not re-invent: `spec.avoid_reserved_name`. Top-level and not deferred —
+# `spec` reaches only `config`, `frontmatter`, `log`, `miniyaml` and `paths`,
+# none of which import `lock`, so there is no cycle to break here and
+# `tests/test_no_import_cycles.py` keeps it that way.
+from . import spec
+
 # Five seconds is the general default: long enough to outlast any single
 # read-modify-write in this codebase, short enough that a session never appears
 # to hang on a lock a dead process left behind.
@@ -61,7 +68,7 @@ def limits(name):
 
 
 def slugify(name):
-    """A filename that cannot leave the locks directory.
+    """A filename that cannot leave the locks directory, on any platform.
 
     Callers pass logical keys — `f"plan-{slug}"` — and a plan slug reaches the
     ledger from a filename, a CLI argument or a frontmatter field. Anything
@@ -69,11 +76,31 @@ def slugify(name):
     and a NUL all collapse into something that is only ever a name. Two distinct
     keys can collide into one slug; the cost of that is serialising a little more
     than strictly necessary, which is the safe direction.
+
+    That left one name it could not make into a file. A plan or unit called
+    `con`, `nul`, `aux`, `com1` … is a *device* on Windows, and the `.lock`
+    extension does not help: `con.lock` is still the console. `open(…, O_EXCL)`
+    against it does not fail cleanly either — it either succeeds against a
+    device that is not a file, or raises somewhere the fail-open path reads as
+    "no lock available", which turns a serialised write back into a racing one
+    on exactly the platform whose filesystem made the race worth closing.
+
+    `spec.avoid_reserved_name` holds the list and the reasoning, and is called
+    rather than copied. It is *not* folded in wholesale: `spec.normalise_slug`
+    and `bundle.slugify` both lower-case and both hash a long slug to keep two
+    intents apart, and neither is right here. A lock name is not a name anyone
+    reads back, collisions are harmless (they only over-serialise), and
+    lower-casing would make `plan-Auth` and `plan-auth` one lock — a *silent*
+    behaviour change in the other direction. The character policy stays local;
+    the one rule with a platform in it is shared.
     """
     text = str(name)
     cleaned = "".join(char if char in _SAFE else "-" for char in text)
     cleaned = cleaned.strip("-")[:_MAX_SLUG].strip("-")
-    return cleaned or "unnamed"
+    # After `avoid_reserved_name`, not before: it appends a suffix, and a name
+    # capped at `_MAX_SLUG` first is never a device name anyway (the longest is
+    # seven characters), so the cap still holds.
+    return spec.avoid_reserved_name(cleaned or "unnamed")
 
 
 def path_for(layout, name):
@@ -84,6 +111,69 @@ def path_for(layout, name):
     return layout.runtime / LOCKS_DIRNAME / (slugify(name) + ".lock")
 
 
+def _reclaim(path, stale):
+    """Try to claim a lock file that looks stale, without ever deleting one
+    that was not.
+
+    A stat-then-unlink cannot make that promise: `path.stat()` reads the old
+    holder's mtime, and by the time `path.unlink()` runs — a wholly separate
+    syscall — a reclaimer that got scheduled first may already have removed
+    that file and put a brand new, live one in its place. The unlink names
+    `path`, not a file, so it deletes whatever is there *now*, which is
+    exactly the lock that report.md flagged: reclaimed as a code path, never
+    fixed.
+
+    This closes the window by never trusting a decision made before the
+    delete. The mtime *and* the token bytes are read together, up front; the
+    file is then moved off of `path` with `os.rename` — atomic, so at most one
+    racing reclaimer ever gets a name for what was there, and a second
+    reclaimer's rename fails outright with `FileNotFoundError` rather than
+    touching whatever a winner already put back. Only once it is exclusively
+    ours — nothing else on the filesystem still has a name for it — do we
+    check that its content is still the token we read before the rename. A
+    mismatch means some other holder recreated `path` in the gap between our
+    read and our rename win, so what we are holding is a live lock, not
+    rubble: it is relinked back rather than discarded, and the reclaim is
+    reported as failed. Only a verified match is ever actually deleted.
+    """
+    try:
+        if time.time() - path.stat().st_mtime <= stale:
+            return False
+        seen = path.read_bytes()
+    except OSError:
+        return False  # vanished, unreadable, or raced away under us
+
+    claim = path.with_name(path.name + ".reclaim-%d-%s" % (os.getpid(), uuid.uuid4().hex))
+    try:
+        os.rename(str(path), str(claim))
+    except OSError:
+        return False  # someone else already claimed or removed it first
+
+    try:
+        current = claim.read_bytes()
+    except OSError:
+        current = None
+    if current != seen:
+        # Exclusively ours, but not what we judged stale: a live holder's
+        # lock landed at `path` in the gap between reading `seen` and winning
+        # the rename. Put it back rather than silently erase it.
+        try:
+            os.link(str(claim), str(path))
+        except OSError:
+            pass  # `path` was retaken again already — nothing left to restore
+        try:
+            claim.unlink()
+        except OSError:
+            pass
+        return False
+
+    try:
+        claim.unlink()
+    except OSError:
+        pass  # ours exclusively either way; a leaked temp file costs nothing
+    return True
+
+
 def _acquire(path, timeout, stale):
     """Take the lock, or return `(None, None)` having failed open."""
     deadline = time.monotonic() + timeout
@@ -91,13 +181,7 @@ def _acquire(path, timeout, stale):
         try:
             handle = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         except FileExistsError:
-            reclaimed = False
-            try:
-                if time.time() - path.stat().st_mtime > stale:
-                    path.unlink()
-                    reclaimed = True
-            except OSError:
-                pass  # it vanished or cannot be stat'd — fall through and retry
+            reclaimed = _reclaim(path, stale)
             if time.monotonic() >= deadline:
                 return None, None
             if not reclaimed:

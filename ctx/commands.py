@@ -23,7 +23,6 @@ touched to make this pass.
 
 import copy
 import datetime
-import json
 import os
 import re
 import subprocess
@@ -511,7 +510,7 @@ def cmd_status(args):
         data["board"] = board
         for level, name, tier, status, owns in rows:
             if level != wave:
-                wave, marker = level, ""
+                wave = level
                 say(f"  wave {level}")
             flag = "→" if name == current.get("unit") else " "
             say(f"   {flag} {name:<24} {tier:<9} "
@@ -876,10 +875,18 @@ def cmd_prune(args):
     folded, archives = journal.prune(layout, config, before=before,
                                      archive=not args.discard)
     if not folded:
-        keep = (config.get("journal") or {}).get("keep_days", 0)
+        # `journal.keep_days`, not a second `int(... or 0)` here. The two must
+        # agree about what `keep_days: ninety` means, or this command advises
+        # one thing while `journal.prune` — which read the setting through
+        # that function and got 0 — does another.
+        keep = journal.keep_days(config)
         _echo("nothing to prune"
               + ("" if before or keep else
-                 " — set journal.keep_days in ctx.yaml, or pass --before"))
+                 " — journal.keep_days is 0, which keeps every day file for "
+                 "ever. Set it in ctx.yaml, or pass --before YYYY-MM-DD."))
+        notice = journal.overgrown(layout, config)
+        if notice:
+            _echo(f"  {notice}")
         return 0
     journal.write_digest(layout, config)
     verb = "discarded" if args.discard else "archived"
@@ -901,7 +908,7 @@ def _verify_drift(layout, config):
                if isinstance(c, dict) and c.get("kind") == "cmd"]
     drifted = []
     paths = list(layout.tasks.glob("*.md")) if layout.tasks.is_dir() else []
-    paths += list(layout.plans.glob("*/units/*.md")) if layout.plans.is_dir() else []
+    paths += layout.unit_files()
     for path in sorted(paths):
         doc = frontmatter.read(path)
         if doc is None:
@@ -1221,6 +1228,20 @@ def cmd_doctor(args):
             say(line)
         check("warn", "journal/DIGEST.md is tracked by git")
 
+    section = "journal"
+    # The other half of `keep_days: 0`. The default keeps every day file for
+    # ever, which is the right default — `prune` rewrites committed files, and
+    # folding tracked history on a schedule nobody set is worse than a
+    # directory that grows — but a silent one would be a surprise a year
+    # later. `journal.overgrown` returns a line past `GROWTH_WARN_FILES` and
+    # None below it, so this section only appears when there is something to
+    # say. Advisory: it never prunes and never adds to `problems`.
+    notice = journal.overgrown(layout, config)
+    if notice:
+        say("## journal size")
+        say(f"  note {notice}")
+        check("note", notice, keep_days=journal.keep_days(config))
+
     section = "footprint"
     say("## plugin footprint")
     say("  the briefing above is the hook cost only; the plugin's own always-on")
@@ -1244,6 +1265,13 @@ def cmd_doctor(args):
           max_attempts=(config.get("gate") or {}).get("max_attempts"),
           override=override.value if override.requested else None,
           refused=bool(override.refused))
+    if verify.sharing(layout, config) is not None:
+        # Said out loud, and only when it is on: a gate that may answer a `cmd`
+        # check from a result a sibling's gate produced is a thing an operator
+        # has to be able to see from the outside. Everything else about the
+        # gate is still per unit — see `verify._SharedCmd`.
+        say("  sharing=on   identical `cmd` checks are answered once per tree "
+            "state (gate.share_cmd_results / CTX_GATE_SHARE)")
     if override.requested and not override.recorded:
         # The bypass happened; the journal did not take the line. Reported here
         # as well as on stderr because stderr scrolls away and this does not.
@@ -1547,7 +1575,7 @@ def cmd_plan(args):
     _echo(f"L2 planned · plan {slug}")
     _echo(f"readme {layout.rel(plan_mod.readme_path(layout, slug))}")
     _echo(f"units  {layout.rel(plan_mod.units_dir(layout, slug))}/")
-    for unit_name, fresh, path in created:
+    for _unit_name, fresh, path in created:
         _echo(f"  {'created' if fresh else 'exists '} {layout.rel(path)}")
     if not created:
         _echo("  no units yet — `ctx plan-unit` or write NN-name.md files directly")
@@ -2265,6 +2293,88 @@ def cmd_findings(args):
     return 1 if blocking else 0
 
 
+def _declared_test_paths(unit):
+    """Every path named by a `tests:` on one of this unit's `test_first` checks."""
+    paths_found = []
+    for check in (unit.checks or []):
+        if not isinstance(check, dict) or check.get("kind") != "test_first":
+            continue
+        for entry in (check.get("tests") or []):
+            text = str(entry).strip()
+            if text and text not in paths_found:
+                paths_found.append(text)
+    return paths_found
+
+
+def _run_paths(command, declared, root):
+    """Which test paths a recorded command run counts as covering.
+
+    Three cases, in order, and the first that answers wins:
+
+      * the command names paths the unit declared — `python3 -m unittest
+        tests/test_widget.py` against `tests: [tests/test_widget.py]`. The most
+        specific reading, and the only one that needs no benefit of the doubt;
+      * the command names none of them, but the unit declared some. A whole-suite
+        run (`pytest -q`) does run the declared tests, so it counts for them;
+      * the unit declared no `test_first` at all. Then there is nothing to be
+        specific about, and the run is filed under whatever paths it named that
+        actually exist.
+    """
+    tokens = [t for t in verify._argv(command) if "/" in t or t.endswith(".py")]
+    named = [t for t in tokens if snapshot_mod.covers(t, declared)]
+    if named:
+        return named
+    if declared:
+        return list(declared)
+    return [t for t in tokens if (root / t).exists()]
+
+
+def _test_run_keys(slug, unit_name):
+    """Every snapshot key a `test_first` check for this unit might be read under.
+
+    A recorded run lives beside *a snapshot*, and which snapshot a check reads
+    depends on who is running the gate: the done-gate keys on `slug/unit`,
+    `ctx verify` on the bare unit name, `ctx verify --plan` on `ci-unit`, and a
+    check that names its own `key:` is almost always naming a review capture
+    (`ctx snapshot --phase after`). Recording under one of those would leave the
+    kind feedable in theory and unusable in practice, so a run is filed under
+    all of them — they are a few hundred bytes each, under `.ctx/runtime/`.
+    """
+    keys = [f"{slug}/{unit_name}", unit_name, f"ci-{unit_name}",
+            review_mod.before_key(slug, unit_name)]
+    keys += [review_mod.after_key(slug, unit_name, round_number)
+             for round_number in range(1, findings_mod.MAX_ROUNDS + 1)]
+    return keys
+
+
+def _record_phase_test_run(layout, slug, unit, command, exit_code):
+    """File a phase's `--command`/`--exit-code` as a recorded test run.
+
+    This is the `test_first` kind's CLI surface. The kind asks whether a
+    *failing* run of some test paths predates the implementation snapshot, and
+    it reads that off disk rather than trusting anyone's say-so — but until now
+    nothing but a Python caller could write it, so a unit declaring the kind
+    could not satisfy it from a terminal.
+
+    `ctx phase` is where it belongs rather than a command of its own: recording
+    that a named command exited with a named code, against a named unit, is
+    already exactly what this command does, and for `kind: bug` it is the same
+    fact twice — `reproduce` demands a non-zero exit and `fix` demands the same
+    command exiting zero, which is red-before-green written out phase by phase.
+
+    Returns the paths recorded, empty when there was nothing to record.
+    """
+    if not command or exit_code is None:
+        return []
+    declared = _declared_test_paths(unit)
+    run_paths = _run_paths(command, declared, layout.root.parent)
+    if not run_paths:
+        return []
+    for key in _test_run_keys(slug, unit.name):
+        snapshot_mod.record_test_run(layout, key, run_paths, exit_code)
+    return run_paths
+
+
 def cmd_phase(args):
     """Advance or inspect a unit's phase gate.
 
@@ -2326,6 +2436,13 @@ def cmd_phase(args):
     journal.append(layout, config, "phase", unit.name, f"{args.phase} recorded")
     _echo(f"recorded {args.phase} for {unit.name}"
           + (f" (exit {args.exit_code})" if args.exit_code is not None else ""))
+    recorded_paths = _record_phase_test_run(
+        layout, slug, unit, args.command or "", args.exit_code,
+    )
+    if recorded_paths:
+        outcome = "failing" if int(args.exit_code) != 0 else "passing"
+        _echo(f"  recorded a {outcome} test run of {', '.join(recorded_paths)}"
+              " — this is the evidence `kind: test_first` reads")
     return 0
 
 

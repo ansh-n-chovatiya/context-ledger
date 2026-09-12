@@ -310,6 +310,59 @@ durations; `SessionStart` and `UserPromptSubmit` sit in front of every turn. Che
 to `.ctx/runtime/hook-errors.log` and the hook exits 0, so a bug here can't brick
 your session, including a bug in the gate itself.
 
+## Diagnostics — `CTX_LOG`
+
+**Logging is off by default, and off means nothing happens.** No file is
+created, nothing is printed, and no line is even formatted: with `CTX_LOG`
+unset, every diagnostic call in the package is one environment lookup and a
+return. That is deliberate — the plugin's claim is a small always-on
+footprint, so it does not get to start writing logs nobody asked for.
+
+Turn it on for one command, or one afternoon:
+
+```bash
+CTX_LOG=error ctx doctor                        # diagnostics to stderr
+CTX_LOG=debug CTX_LOG_FILE=/tmp/ctx.log ctx ci  # …to a file instead
+```
+
+| Variable | Effect |
+|---|---|
+| `CTX_LOG` | Sets the level, and by being set at all, turns logging on. `off`, `error`, `warn`, `info`, `debug`, quietest first. `1`/`true`/`yes`/`on` mean `error`; `0`/`false`/`no`/`none`/empty mean off |
+| `CTX_LOG_FILE` | Where lines go. Unset means **stderr**, which is where someone who just typed `CTX_LOG=…` is already looking. The file is capped at 512 KB and trimmed to its last 500 lines, so a destination left on for a week cannot become the full disk it was turned on to diagnose |
+
+A value that is not a level — `CTX_LOG=verbose` — logs at `error` rather than
+silently logging nothing, and says so once per run:
+
+```
+2026-09-12T01:17:28 ctx.error log.level CTX_LOG=verbose is not a level; logging at error expected=off, error, warn, info, debug
+```
+
+**There is no `ctx.yaml` key for this, on purpose.** `ctx.yaml` is committed,
+so a `log:` block would turn one engineer's debugging session into a log file
+on every teammate's machine and in CI — the same "logs nobody asked for"
+failure as logging by default, arriving by a different route. It also could
+not report a failure to read `ctx.yaml` itself, which is one of the failures
+worth reporting. An environment variable is scoped to exactly the session that
+needs it.
+
+**What it reports** is the paths that are forbidden to fail: `telemetry`
+record/read/rotate, `journal` append/prune/digest, the hook error log and its
+rotation, and the policy and override writes in `config`. All of those swallow
+their exceptions by design — a read-only mount must not break your session —
+and this is where the reason for the swallow goes. The guarantee is unchanged:
+they still return normally, and turning logging on does not make any of them
+raise.
+
+**Logging cannot break what it observes.** If the destination is unwritable —
+a read-only disk, a path whose parent does not exist, a closed stderr — the
+line is lost and nothing raises. That is the one place in this codebase where
+swallowing an error is unambiguously right, because the alternative is a
+logger that breaks the thing it exists to report on.
+
+Lines are **not** redacted: they carry exception text and paths, and they only
+exist because an operator asked for them. Read one like a traceback before
+pasting it into a ticket.
+
 ## How it works
 
 Everything durable is on disk. Hooks are the only traffic across the boundary, and

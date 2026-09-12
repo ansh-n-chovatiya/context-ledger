@@ -592,7 +592,10 @@ class TestTheReadmeDocumentsThePathThatExists(unittest.TestCase):
         from ctx import paths
         layout = paths.Layout(Path("/project/.ctx"))
         built = wt.path_for(layout, "auth-rotation", "03-rotate")
-        tail = str(built).split("/.ctx/", 1)[1]
+        # Compare in posix form. `str(built)` uses the platform separator, so
+        # splitting on a literal "/.ctx/" found nothing on Windows and raised
+        # IndexError before it could assert anything.
+        tail = built.as_posix().split("/.ctx/", 1)[1]
         self.assertIn(f".ctx/{tail}", self.readme())
 
 

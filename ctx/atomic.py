@@ -8,8 +8,38 @@ behind if the process dies mid-write — can route through the same path.
 """
 
 import os
+import time
 import tempfile
 
+
+
+def _replace(temp, destination):
+    """`os.replace`, retried briefly on Windows.
+
+    POSIX renames over a file no matter who has it open. Windows refuses with
+    `PermissionError: [WinError 5]` while any other process holds the
+    destination — so two agents writing one ledger file, which is the whole
+    situation this package is built for, turned an atomic write into a raised
+    exception on that platform. CI found it: a findings ledger written from two
+    processes at once failed with Access is denied on the `os.replace` at the
+    end of `frontmatter.Document.write`.
+
+    The retry is short and bounded. A handle held briefly by a reader clears in
+    milliseconds; one held open indefinitely is a real problem and should still
+    surface as the error it is, rather than hanging.
+    """
+    if os.name != "nt":
+        os.replace(temp, destination)
+        return
+    deadline = time.monotonic() + 2.0
+    while True:
+        try:
+            os.replace(temp, destination)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
 
 def write_text(path, text, encoding="utf-8"):
     """Write `text` to `path` atomically. Returns `path`.
@@ -31,7 +61,7 @@ def write_text(path, text, encoding="utf-8"):
         handle.flush()
         os.fsync(handle.fileno())
         handle.close()
-        os.replace(temp, str(path))
+        _replace(temp, str(path))
     except BaseException:
         # Anything that stops the replace leaves the original intact, but a
         # stray temp file next to a committed document would be noise in a

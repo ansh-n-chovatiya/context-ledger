@@ -39,7 +39,7 @@ import os
 import sys
 import unittest
 import unittest.mock as mock
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -236,9 +236,15 @@ class TestWhereThePolicyFilesLive(unittest.TestCase):
     """
 
     def test_the_system_layer_is_where_the_platform_keeps_machine_wide_config(self):
-        with mock.patch.object(config_mod.os, "name", "posix"):
+        # `Path` is swapped here for the same reason it is swapped below, in
+        # the other direction. `config_mod.os` *is* the `os` module, so
+        # patching `name` is a global mutation: pathlib then decides `Path`
+        # means `PosixPath` and refuses to instantiate one on Windows. Without
+        # this the test could only ever pass on the platform it ran on.
+        with mock.patch.object(config_mod.os, "name", "posix"), \
+                mock.patch.object(config_mod, "Path", PurePosixPath):
             self.assertEqual(config_mod.system_policy_path(),
-                             Path("/etc/ctx/policy.yaml"))
+                             PurePosixPath("/etc/ctx/policy.yaml"))
         # `Path` is swapped for its pure Windows flavour as well as `os.name`:
         # `pathlib.Path` refuses to instantiate a `WindowsPath` on POSIX, so
         # without this the test could only ever assert the platform it runs on.

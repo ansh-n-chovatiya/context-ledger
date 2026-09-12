@@ -187,8 +187,8 @@ class _Reader(object):
             body.pop()
         if not body:
             return ""
-        pad = min(len(l) - len(l.lstrip(" ")) for l in body if l.strip())
-        return "\n".join(l[pad:] if l.strip() else "" for l in body) + "\n"
+        pad = min(len(line) - len(line.lstrip(" ")) for line in body if line.strip())
+        return "\n".join(line[pad:] if line.strip() else "" for line in body) + "\n"
 
 
 def load_workflow(text=None):

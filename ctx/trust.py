@@ -142,7 +142,7 @@ def declared(layout, config):
         doc = frontmatter.read(path)
         if doc:
             collect(doc.meta.get("verify"), layout.rel(path))
-    for path in sorted(layout.plans.glob("*/units/*.md")) if layout.plans.is_dir() else []:
+    for path in layout.unit_files():
         doc = frontmatter.read(path)
         if doc:
             collect(doc.meta.get("verify"), layout.rel(path))

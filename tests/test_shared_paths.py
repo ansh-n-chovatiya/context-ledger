@@ -37,7 +37,7 @@ ALL_MODULES = (
     "__init__.py", "__main__.py", "advice.py", "atomic.py", "briefing.py",
     "bundle.py", "cli.py", "commands.py", "complexity.py", "config.py",
     "contract.py", "detect.py", "dispatch.py",
-    "findings.py", "frontmatter.py", "hooks.py", "journal.py", "lock.py",
+    "findings.py", "frontmatter.py", "hooks.py", "journal.py", "lock.py", "log.py",
     "migrate.py", "miniyaml.py", "paths.py", "phases.py", "plan.py",
     "redact.py", "review.py", "snapshot.py", "spec.py", "state.py",
     "telemetry.py", "trust.py", "verify.py", "work.py", "worktree.py",
@@ -52,25 +52,29 @@ ALL_MODULES = (
 # with the other three.
 UNITS_SEGMENT_OWNERS = ("plan.py", "paths.py")
 
-# Three modules pass `"*/units/*.md"` to `Path.glob`. That is a *search* across
-# every plan, not the construction of one unit's path, and there is no accessor
-# to route it through — `Layout.unit_file` needs a plan and a unit, which is
-# exactly what a sweep does not have. They are named here one by one, and the
-# test below is a subset check, so a fourth module cannot join them quietly:
+# Empty, and that is the finished state rather than a disabled check.
 #
-#   commands.py  `ctx check` sweeping every unit file for contract drift
-#   migrate.py   the per-kind migration sweep
-#   trust.py     collecting every declared verify command in the ledger
+# Three modules used to pass `"*/units/*.md"` to `Path.glob` — `commands.py`
+# for `ctx check`'s contract-drift sweep, `migrate.py` for the per-kind
+# migration, `trust.py` for collecting every declared verify command. A sweep
+# is a *search* across every plan rather than the construction of one unit's
+# path, so `Layout.unit_file` could not take it: it needs a plan and a unit,
+# which is exactly what a sweep does not have. The previous entry here
+# recorded that a `Layout.unit_files()` accessor would fold all three in, and
+# that writing it would have meant one unit editing three files it did not
+# own. It now exists, and all three go through it.
 #
-# A `Layout.unit_files()` iterator would fold these in. It would also mean this
-# unit writing three files it does not own, so the sweep sites are left as they
-# are and recorded here rather than silently skipped.
+# The set stays here, empty, rather than being deleted along with its
+# assertion. The assertion below is an equality, so an empty set is the
+# strictest form it can take: the next module to glob the segment fails on a
+# set of one against a set of none. Deleting the check because it currently
+# has nothing to excuse is how the guard that caught these three in the first
+# place stops existing.
 #
-# The sweep used to be recorded against `cli.py`. It did not move house: the
+# (The sweep used to be recorded against `cli.py`. It did not move house: the
 # forty-one command bodies did, out of `cli.py` and into `ctx/commands.py`,
-# and `ctx check` went with them unchanged. `cli.py` is the parser and the
-# registry now and builds no ledger paths at all.
-UNITS_GLOB_SWEEPS = {"commands.py", "migrate.py", "trust.py"}
+# and `ctx check` went with them unchanged.)
+UNITS_GLOB_SWEEPS = set()
 
 # `verify.py` still carries its own `LEDGER_PREFIX`. It belongs to a sibling
 # unit in this plan, which adopts `paths.LEDGER_PREFIX` there; converting it
@@ -337,6 +341,167 @@ class TestNobodyElseBuildsTheUnitsSegment(unittest.TestCase):
         self.assertEqual(units_in_paths('graph = {"units": {}}', "x"), [])
         self.assertEqual(
             units_in_paths('"""Two units in the same wave."""', "x"), [])
+
+
+class TestTheUnitSweepHasOneDefinition(unittest.TestCase):
+    """`Layout.unit_files()` — the search half of `unit_file`.
+
+    Named call sites as well as an aggregate check, for the reason
+    `test_the_four_converted_call_sites_stay_converted` gives: a revert should
+    fail on the module it happened in.
+    """
+
+    def test_the_three_sweepers_go_through_the_accessor(self):
+        for name in ("commands.py", "migrate.py", "trust.py"):
+            self.assertIn("unit_files(", source(name),
+                          f"{name} no longer sweeps through the accessor")
+            self.assertEqual(
+                units_in_paths(source(name), name, include_globs=True), [],
+                f"{name} globs the units segment by hand again")
+
+    def test_it_finds_every_unit_in_every_plan(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = paths.Layout(Path(tmp) / ".ctx")
+            for plan, units in (("b-plan", ["02-b", "01-a"]), ("a-plan", ["01-z"])):
+                directory = plan_mod.units_dir(layout, plan)
+                directory.mkdir(parents=True)
+                for unit in units:
+                    (directory / f"{unit}.md").write_text("x", encoding="utf-8")
+            # Not a unit: beside `units/`, which is where findings and phases
+            # live. The old hand-built glob excluded it and so must this.
+            (layout.plans / "a-plan" / "findings").mkdir()
+            (layout.plans / "a-plan" / "findings" / "01-z.md").write_text(
+                "x", encoding="utf-8")
+            self.assertEqual(
+                [p.name for p in layout.unit_files()],
+                ["01-z.md", "01-a.md", "02-b.md"],
+                "sorted by full path: a-plan before b-plan, then by unit name",
+            )
+
+    def test_it_agrees_with_the_accessor_for_one_unit(self):
+        """The sweep and the single-path accessor must name the same file, or
+        `ctx check` sweeps up a path `ctx unit` cannot open."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = paths.Layout(Path(tmp) / ".ctx")
+            plan_mod.units_dir(layout, "p").mkdir(parents=True)
+            (layout.unit_file("p", "01-a")).write_text("x", encoding="utf-8")
+            self.assertEqual(layout.unit_files(), [layout.unit_file("p", "01-a")])
+
+    def test_a_ledger_with_no_plans_directory_sweeps_to_nothing(self):
+        """Each of the three call sites carried its own `is_dir()` guard. The
+        accessor carries it once, so a ledger `ctx init` has not reached — or
+        one a worktree trimmed — is empty rather than an OSError out of
+        `ctx migrate`."""
+        layout = paths.Layout(Path("/nonexistent-ledger-root/.ctx"))
+        self.assertEqual(layout.unit_files(), [])
+
+
+class TestTheLockPathIsAFileOnWindowsToo(unittest.TestCase):
+    """The third instance of the reserved-device-name hole.
+
+    `bundle.slugify` and `spec.normalise_slug` were fixed when the audit named
+    them; `lock.slugify` is a third, independent slugifier with the same hole,
+    and it was missed because it belonged to another unit at the time. A plan
+    called `con` locked on `.ctx/runtime/locks/con.lock`, which on Windows is
+    the console — and a lock that cannot be a file is a lock the fail-open
+    path reports as "not available", so the writers it exists to serialise
+    stop being serialised, on the one platform whose filesystem made that
+    matter.
+
+    The rule is re-implemented here as an oracle rather than imported from
+    `spec`, so that the fix and the test cannot share one wrong idea of what
+    Windows reserves.
+    """
+
+    #: MS-DOS device names, from the Windows naming rules. Matched
+    #: case-insensitively, against the stem before the first dot, ignoring
+    #: trailing dots and spaces.
+    DEVICES = frozenset(
+        ["con", "prn", "aux", "nul", "conin$", "conout$"]
+        + [f"com{d}" for d in range(1, 10)]
+        + [f"lpt{d}" for d in range(1, 10)]
+    )
+
+    def is_device(self, filename):
+        return str(filename).partition(".")[0].strip(" .").lower() in self.DEVICES
+
+    def test_the_oracle_agrees_with_windows_on_the_cases_that_matter(self):
+        """A guard is only a guard if it can fail."""
+        for name in ("con.lock", "CON.lock", "nul", "com1.lock", "aux. ", "lpt9.x"):
+            self.assertTrue(self.is_device(name), name)
+        for name in ("console.lock", "con-ctx.lock", "com0.lock", "plan-con.lock"):
+            self.assertFalse(self.is_device(name), name)
+
+    def test_a_lock_named_con_is_not_the_console(self):
+        from ctx import lock
+
+        layout = paths.Layout(Path("/repo/.ctx"))
+        self.assertEqual(lock.path_for(layout, "con").name, "con-ctx.lock")
+        self.assertFalse(self.is_device(lock.path_for(layout, "con").name))
+
+    def test_no_device_name_survives_the_lock_path(self):
+        from ctx import lock
+
+        layout = paths.Layout(Path("/repo/.ctx"))
+        for device in sorted(self.DEVICES):
+            for typed in (device, device.upper(), device + ".", device + " "):
+                with self.subTest(typed=typed):
+                    self.assertFalse(
+                        self.is_device(lock.path_for(layout, typed).name),
+                        f"a lock named {typed!r} is still a device",
+                    )
+
+    def test_the_word_the_caller_typed_survives(self):
+        """Suffixed, not hashed: `con-ctx.lock` is still findable by eye in
+        `ls .ctx/runtime/locks`, which is how a stuck lock gets diagnosed."""
+        from ctx import lock
+
+        layout = paths.Layout(Path("/repo/.ctx"))
+        self.assertTrue(lock.path_for(layout, "con").name.startswith("con"))
+
+    def test_it_is_the_shared_rule_and_not_a_fourth_copy(self):
+        """Criterion 6's one-definition rule, applied to the device list: move
+        `spec.RESERVED_SUFFIX` and the lock path moves with it."""
+        from ctx import lock, spec as spec_mod
+
+        self.assertIn("avoid_reserved_name", source("lock.py"))
+        original = spec_mod.RESERVED_SUFFIX
+        try:
+            spec_mod.RESERVED_SUFFIX = "-dev"
+            self.assertEqual(lock.slugify("con"), "con-dev")
+        finally:
+            spec_mod.RESERVED_SUFFIX = original
+        self.assertEqual(lock.slugify("con"), "con-ctx")
+
+    def test_ordinary_names_are_untouched(self):
+        """The fix may not change any lock name that was already a file — a
+        different name is a different lock, and two ctx versions disagreeing
+        about it serialise against nobody."""
+        from ctx import lock
+
+        for name in ("state", "plan-auth", "plan-Auth", "findings-01-a", "x/../y"):
+            with self.subTest(name=name):
+                self.assertNotIn("-ctx", lock.slugify(name))
+
+    def test_a_lock_named_con_can_actually_be_taken(self):
+        """The behavioural half. On POSIX this passes either way; it is here
+        because it is the assertion that would have gone red on Windows, and
+        it costs one temporary directory."""
+        import tempfile
+
+        from ctx import lock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = paths.Layout(Path(tmp) / ".ctx")
+            (layout.runtime / "locks").mkdir(parents=True)
+            with lock.held(layout, "con") as got:
+                self.assertTrue(got)
+                self.assertTrue(lock.path_for(layout, "con").is_file())
+            self.assertFalse(lock.path_for(layout, "con").exists())
 
 
 class TestDeadCodeIsGone(unittest.TestCase):

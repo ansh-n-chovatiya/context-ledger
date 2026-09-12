@@ -170,7 +170,7 @@ class PinnedActionsTests(unittest.TestCase):
         """Two SHAs for `actions/checkout` in one workflow means one of them
         was missed by a bump."""
         by_action = {}
-        for name, index, ref in all_uses(self.workflow):
+        for _name, _index, ref in all_uses(self.workflow):
             action, _, digest = str(ref).partition("@")
             by_action.setdefault(action, set()).add(digest)
         for action, digests in sorted(by_action.items()):

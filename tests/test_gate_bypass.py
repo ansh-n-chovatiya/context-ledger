@@ -354,13 +354,13 @@ class TestUnsealedIsVisibleOnTheBoard(GateBypassFixture):
         self.dispatched_pair()
         code, out = self.cli("status")
         self.assertEqual(code, 0, out)
-        line = next(l for l in out.splitlines() if "02-store" in l)
+        line = next(line for line in out.splitlines() if "02-store" in line)
         self.assertIn("unsealed", line)
 
     def test_the_sealed_sibling_reads_normally(self):
         self.dispatched_pair()
         _code, out = self.cli("status")
-        line = next(l for l in out.splitlines() if "01-api" in l)
+        line = next(line for line in out.splitlines() if "01-api" in line)
         self.assertNotIn("unsealed", line)
         self.assertIn("in flight", line)
 
@@ -559,14 +559,27 @@ class TestConcurrentSiblings(GateBypassFixture):
         self.assertIn("src/nobody.py", out)
         self.assertNotIn("src/store.py", out, "the sibling is not the complaint")
 
-    def test_a_done_siblings_path_is_not_excused(self):
-        """Criterion 8. A sibling that has been gated is finished: its writes
-        were reviewed and landed, so a change to its paths afterwards is
-        somebody else's and belongs in a report, not in an exemption."""
+    def test_a_done_siblings_path_is_not_excused_once_it_is_actually_committed(self):
+        """Criterion 8, narrowed by `07-wave-scope-after-done`.
+
+        The original claim was that a gated sibling is finished, so a later
+        change to its paths belongs in a report. Half of that was wrong in
+        practice: `ctx unit --status done` runs well before anyone commits, so
+        the sibling's own reviewed writes are still sitting dirty in the shared
+        tree, and every later unit in the wave failed its `diff` check on them.
+        A wave gated one unit at a time deadlocked on itself.
+
+        So the exemption now tracks the work rather than the status: a `done`
+        sibling's `owns` stays excused only while it is uncommitted. Once the
+        work has landed, this test's original claim holds again exactly as it
+        did — which is what is asserted here.
+        """
         self.wave_of_two()
         self.write("src/store.py", "b = 1\n")
         self.assertEqual(self.done("02-store")[0], 0, "gated first")
         self.assertEqual(self.status_of("02-store"), "done")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "land 02-store's work")
 
         self.write("src/api.py", "a = 1\n")
         code, out = self.done("01-api")

@@ -34,8 +34,12 @@ journal:
   digest_lines: 12            # entries kept in DIGEST.md
   max_line_chars: 200         # per-entry truncation
   enabled: true               # false disables journalling entirely
-  keep_days: 0                # `ctx prune` folds older days into a monthly
-                              # archive. 0 keeps everything.
+  keep_days: 0                # days of history `ctx prune` keeps before
+                              # folding older days into one archive per month.
+                              # 0 — the shipped default — means **never
+                              # prune**: every day file is kept for ever. See
+                              # below for why that is the default and how the
+                              # growth is made visible rather than silent.
 
 telemetry:
   enabled: true               # hook timings, briefing sizes and reported spend,
@@ -50,6 +54,11 @@ gate:
   timeout_seconds: 240        # budget for the whole gate, not per command
   # allow_override: true      # not written by `init`; when a policy sets it
                               # false and locks it, CTX_GATE=off is refused
+  # share_cmd_results: true   # not written by `init`; one suite run for a
+                              # whole wave instead of one per unit. Off unless
+                              # asked for — see Wave gating below
+  # share_max_age_seconds: 1800  # not written by `init`; how long a shared
+                              # `cmd` result may be reused. Default 1800
 
 plan:
   wave_budget_tokens: 250000  # a wave costing more than this refuses to dispatch
@@ -136,6 +145,33 @@ cap recreates the problem the ledger exists to solve.
 without an `L`) falls *down* to L0, because the level buys a briefing budget and
 an unreadable one must buy the smallest. It is not silent: the fallback prints
 one line on stderr naming the value it could not read.
+
+**On `journal.keep_days: 0` — the journal grows, and that is the decision.**
+0 means *never prune*, it is the shipped default, and it stays the default.
+`ctx prune` rewrites files that are **committed**: a default that folded
+tracked history on a schedule nobody set would change the team's record of
+what happened, during some unrelated command, on whichever machine happened to
+run it first. A directory that grows is the cheaper failure.
+
+What is not acceptable is growth nobody can see, so it is announced rather
+than acted on. Past **400 day files**, `ctx doctor` and `ctx prune` both print
+the count, the current `keep_days`, and the command that changes it:
+
+```
+$ ctx prune
+nothing to prune — journal.keep_days is 0, which keeps every day file for ever.
+Set it in ctx.yaml, or pass --before YYYY-MM-DD.
+  401 journal day files in .ctx/journal — journal.keep_days is 0, which means
+  keep every day file for ever. Set journal.keep_days in ctx.yaml, or run
+  `ctx prune --before YYYY-MM-DD`, to fold old days into one archive per month.
+  Entries are kept either way.
+```
+
+Advisory only: nothing fails, nothing is deleted, and `ctx doctor`'s problem
+count is unchanged. Folding is not losing — a pruned day's entries live on in
+`journal/archive-YYYY-MM.md` unless you pass `--discard`. A hand-edited
+`keep_days: ninety` is read as 0 (the non-destructive reading) and says so
+under `CTX_LOG`; it used to take `ctx prune` down with a `ValueError`.
 
 ## Policy: system, user, repository
 
@@ -253,13 +289,31 @@ verify:
 ```
 
 **`test_first` reads recorded runs, it does not run anything.** The evidence is
-written beside the snapshot by `ctx.snapshot.record_test_run`, so nothing here
-trusts a caller's say-so. It fails three ways on purpose: no snapshot captured
-yet is a setup error; no recorded run touching those paths is a **fail**, because
-an unrun test is not evidence; and a run recorded only *after* the implementation
-snapshot is also a fail, because the failing test never came first. There is no
-CLI flag that writes these runs yet — see [what this does not do
-yet](walkthroughs.md#what-this-does-not-do-yet).
+written beside the snapshot, so nothing here trusts a caller's say-so. It fails
+three ways on purpose: no snapshot captured yet is a setup error; no recorded
+run touching those paths is a **fail**, because an unrun test is not evidence;
+and a run recorded only *after* the implementation snapshot is also a fail,
+because the failing test never came first.
+
+**Feeding it from a terminal: `ctx phase … --command … --exit-code …`.** A
+phase recorded with both of those flags also files a test run, which is the
+evidence this kind reads:
+
+```bash
+ctx phase 02-expiry reproduce --command "pytest tests/test_auth.py" --exit-code 1
+#   recorded a failing test run of tests/test_auth.py — this is the evidence
+#   `kind: test_first` reads
+```
+
+`ctx phase` rather than a subcommand of its own, because recording that a
+named command exited with a named code against a named unit is already exactly
+what it does — and for `kind: bug` it is the same fact twice: `reproduce`
+demands a non-zero exit and `fix` demands the same command exiting zero, which
+is red-before-green written out phase by phase. The command's paths are matched
+against the check's `tests:`; a whole-suite run counts for the paths the unit
+declared, since it ran them. A phase recorded with no `--command`, or with no
+`--exit-code`, records nothing. `ctx.snapshot.record_test_run` remains the
+Python entry point.
 
 **`review` takes no arguments.** It passes when no `critical` or `important`
 finding is open and fails while any is; `minor` never blocks, because a review
@@ -559,6 +613,59 @@ obey it: it prints what it refused and journals `done (--force overrode the gate
 «reason»)`, or `done (--force; the gate passed anyway)`. `ctx merge --skip-gate`
 journals `ok (--skip-gate overrode the gate: …)` with the checks it did not run.
 One `grep` for "overrode the gate" finds every override, whichever door it used.
+
+### Wave gating — one suite run instead of one per unit
+
+Every `ctx unit --status done` runs that unit's whole `verify` block, and a
+wave's units nearly always declare the *same* `cmd` check. That is one suite,
+spawned once per unit, over bytes that did not move in between. Measured on
+this repository's own suite and its own three-unit wave: **243s** gating one
+unit at a time (82 + 81 + 79) against **78s** with the result shared
+(78 + 0 + 0).
+
+It is **off unless you ask for it**, by either of:
+
+```yaml
+gate:
+  share_cmd_results: true     # the project asks, for everyone
+```
+
+```bash
+CTX_GATE_SHARE=1 ctx unit 01-api --status done   # one run asks, for itself
+```
+
+Neither is written by `ctx init`. A gate that is right is worth more than a
+gate that is fast, so the faster path is the one you opt into. The config key
+wins where it is set; the environment variable is consulted only when it is
+absent, which is what lets a single wave turn sharing on without committing
+anything. `ctx doctor` prints `sharing=on` under `## gate` when it is active,
+because a gate that may answer from a sibling's result is a thing an operator
+should be able to see from outside.
+
+There is no new subcommand and no batch flag: you still gate each unit with
+`ctx unit «name» --status done`. What changes is that an identical `cmd` check
+is *answered* once per tree state instead of re-run. The reuse needs all three
+of:
+
+| Condition | Why |
+|---|---|
+| **Same question** | The cache key covers the command, its `cwd`, its `env`, `optional`, and the output-rendering settings that shaped the stored message. Anything else is a different check |
+| **Same tree, to the byte** | `snapshot.tree_token` digests every file's path, contents and executable bit, excluding `.ctx/` (which ctx writes on every command). One changed byte anywhere is a miss |
+| **The command changed nothing** | The token is taken before *and* after the run. A command that left the tree different from how it found it is never cached — its second run would not start where its first did |
+
+**ERROR is never reused.** An ERROR is a verdict about the *machine* — a
+missing tool, a timeout, a command this ledger has not accepted — and the
+machine is the one thing a tree token cannot see. Entries also expire
+(`gate.share_max_age_seconds`, default 1800) and the store keeps the 64 most
+recent, in gitignored `.ctx/runtime/gate-cache.json`.
+
+**Nothing else about the gate is shared, and that ordering is deliberate.**
+Command trust is checked *before* the cache, so a cached `pass` cannot launder
+a command this machine has never accepted. Each unit still gets its own
+`owns`-scoped `diff` against its own dispatch commit, its own contract-seal
+comparison, its own findings re-seal, its own all-ERROR refusal and its own
+journal line. Batching changes *when* a shared command runs, never *what* a
+unit is held to.
 
 ## Exit codes
 
