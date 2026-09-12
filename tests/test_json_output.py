@@ -88,8 +88,15 @@ class Scenario(Fixture):
         The golden text has to survive a different temp directory, a different
         interpreter path and tomorrow; nothing else about it may move.
         """
-        text = text.replace(str(self.root), "<ROOT>")
-        text = text.replace(str(self.untracked), "<GLOBAL>")
+        # The resolved form goes first, and on macOS that matters: a temp dir
+        # is handed out as /var/folders/... and resolves to /private/var/...,
+        # so replacing only the unresolved string leaves a bare `/private`
+        # in front of the placeholder. That artifact was captured into the
+        # golden, which then could not match on Linux, where there is no such
+        # prefix — the first thing this branch hit on a non-macOS runner.
+        for root, token in ((self.root, "<ROOT>"), (self.untracked, "<GLOBAL>")):
+            text = text.replace(str(Path(root).resolve()), token)
+            text = text.replace(str(root), token)
         text = text.replace(sys.executable, "<PYTHON>")
         text = re.sub(r"\d{4}-\d{2}-\d{2}T[\d:.]+", "<TS>", text)
         text = re.sub(r"\d{4}-\d{2}-\d{2}", "<DATE>", text)
@@ -192,7 +199,7 @@ next: /ctx:verify
 ## policy
   none system     /etc/ctx/policy.yaml  (absent)
   none user       <GLOBAL>/global/policy.yaml  (absent)
-  ok   repo       /private<ROOT>/.ctx/ctx.yaml
+  ok   repo       <ROOT>/.ctx/ctx.yaml
        no policy above the repository — ctx.yaml decides everything
 ## gate
   enabled=True  max_attempts=3
