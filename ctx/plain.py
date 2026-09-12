@@ -21,7 +21,7 @@ parses it.
     ## What could go wrong
     ## Out of scope
 
-    ## Unit: 01-verify-kinds
+    ## Unit: 01-verify-kinds — Make the safety check honest
     **What it does:** Makes the safety check report a real breakage as a real
     breakage, instead of quietly filing it as a setup problem.
     **Why it matters:** Right now the one failure the check exists to catch is
@@ -30,7 +30,16 @@ parses it.
     **Risk:** Low — it makes an existing check stricter; nothing new runs.
     **How we'll know:** New tests deliberately break something.
 
-Three decisions worth keeping.
+The title after the unit name is optional, and authored like everything else
+here. Without it a page has to name each step after its slug — "Plain source",
+"Safe html" — which is the least readable line on a page that exists to be
+readable, and the objective cannot stand in for it because it is written in
+file paths. So `Plain.title(name)` returns what a human wrote or `None`, and
+never manufactures one: an em dash or a plain hyphen separates it, a separator
+with nothing after it counts as unwritten, and a step with no title is the
+ordinary case.
+
+Four decisions worth keeping.
 
 **A field that exists but is empty is not authored.** `plan-check` scaffolds
 this form automatically, so the common state on disk is headings and labels
@@ -96,6 +105,24 @@ _FIELD = re.compile(r"^\s*\*\*\s*(?P<label>[^*]+?)\s*\*\*\s*:?\s*(?P<value>.*)$"
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 _UNWRITTEN = "Nobody has written this down yet."
 
+# `## Unit: 01-plain-source — Make the safety check honest`.
+_UNIT_HEADING = re.compile(r"^\s*unit\s*:\s*(?P<rest>.*)$", re.I)
+# An em dash or en dash anywhere splits the name from the title. A plain
+# hyphen only does so surrounded by whitespace: unit names are full of hyphens
+# themselves, and `01-a-long-hyphenated-name` must not lose its own tail.
+_DASH = re.compile(r"[—–]")
+_SPACED_HYPHEN = re.compile(r"\s+-+\s+")
+_SEPARATORS = "—–- \t"
+# Mirrors `frontmatter._HEADING`. `Document.sections()` lowercases its keys,
+# which is right for looking a section up and wrong for a title a human
+# capitalised on purpose — so bodies still come from `sections()` and only the
+# heading's original text is recovered here.
+_MD_HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*$")
+# What `scaffold` writes after the separator. A comment, so the rule in
+# `_split_heading` reads it as no title at all: an author sees that a title is
+# invited without the form having answered for them.
+TITLE_PLACEHOLDER = "<!-- a short title, in plain words -->"
+
 
 # --------------------------------------------------------------------------- #
 # small text helpers
@@ -150,6 +177,49 @@ def _steps(numbers):
 def _display(name):
     """`what it does` -> `What it does`, for the form on disk."""
     return name[:1].upper() + name[1:]
+
+
+def _headings(doc):
+    """`{lowercased heading: the heading as written}` for one document."""
+    out = {}
+    for line in (doc.body if doc is not None else "").splitlines():
+        match = _MD_HEADING.match(line)
+        if match:
+            text = match.group(2).strip()
+            out[text.lower()] = text
+    return out
+
+
+def _split_heading(text):
+    """`Unit: 01-alpha — A title` -> `("01-alpha", "A title")`.
+
+    The title is optional and absent is the common case; a separator with
+    nothing usable after it — including the scaffolded placeholder, which is an
+    HTML comment — is absent too, by the same rule criterion 4 applies to the
+    five fields. Nothing is invented here: a unit with no authored title
+    reports `None`, and deriving something readable from the slug is the
+    caller's decision to make, not this module's.
+    """
+    text = _HTML_COMMENT.sub("", str(text or ""))
+    match = _UNIT_HEADING.match(text)
+    rest = (match.group("rest") if match else text).strip()
+    if not rest:
+        return "", None
+
+    for pattern in (_DASH, _SPACED_HYPHEN):
+        parts = pattern.split(rest, 1)
+        if len(parts) == 2:
+            name, title = parts
+            break
+    else:
+        # No separator. The name is the first token and anything after it is
+        # taken as the title anyway: a human who wrote one meant it, and
+        # silently dropping authored words is the worse failure.
+        parts = rest.split(None, 1)
+        name, title = parts[0], (parts[1] if len(parts) > 1 else "")
+
+    title = re.sub(r"\s+", " ", title.strip(_SEPARATORS)).strip()
+    return name.strip(_SEPARATORS), title or None
 
 
 # --------------------------------------------------------------------------- #
@@ -209,16 +279,20 @@ def _parse_block(text):
 
 
 def _parse(doc, names):
-    """`(plan sections, unit blocks, unknown unit names)` for one document."""
+    """`(plan sections, unit blocks, titles, unknown unit names)`."""
     plan_text = dict((section, "") for section in PLAN_SECTIONS)
-    units, unknown = {}, []
+    units, titles, unknown = {}, {}, []
     known = dict((name.lower(), name) for name in names)
+    written = _headings(doc)
     for heading, body in (doc.sections() if doc is not None else {}).items():
         key = _label(heading)
         if key in plan_text:
             plan_text[key] = _body(body)
         elif key.startswith(_UNIT_PREFIX):
-            raw = key[len(_UNIT_PREFIX):].strip()
+            # From the heading as the author capitalised it, not the lowercased
+            # key `sections()` hands back — a title is prose.
+            raw_name, title = _split_heading(written.get(heading, heading))
+            raw = _label(raw_name)
             if not raw:
                 continue
             name = known.get(raw)
@@ -230,7 +304,9 @@ def _parse(doc, names):
                     unknown.append(raw)
             else:
                 units[name] = _parse_block(body)
-    return plan_text, units, unknown
+                if title:
+                    titles[name] = title
+    return plan_text, units, titles, unknown
 
 
 class Plain:
@@ -239,11 +315,12 @@ class Plain:
     `plan` always has all five `PLAN_SECTIONS` keys; `units` holds only the
     blocks the file actually carries, keyed by the plan's own unit name. Use
     `unit(name, facts)` to render one — it falls back to generated sentences
-    for every field nobody filled in.
+    for every field nobody filled in, and `title(name)` for the step's
+    authored title, which never falls back to anything.
     """
 
-    def __init__(self, slug, names, exists=False, stamped=None,
-                 current=None, plan=None, units=None, unknown=None):
+    def __init__(self, slug, names, exists=False, stamped=None, current=None,
+                 plan=None, units=None, titles=None, unknown=None):
         self.slug = slug
         self.names = list(names or [])
         self.exists = bool(exists)
@@ -252,6 +329,7 @@ class Plain:
         self.plan = plan if plan is not None else dict(
             (section, "") for section in PLAN_SECTIONS)
         self.units = units if units is not None else {}
+        self.titles = dict(titles or {})
         self.unknown = list(unknown or [])
         self.missing_fields = dict(
             (name, [field for field in UNIT_FIELDS
@@ -265,6 +343,16 @@ class Plain:
         self.missing = [name for name in self.names
                         if len(self.missing_fields[name]) == len(UNIT_FIELDS)]
 
+    def title(self, name):
+        """The step's authored title, or `None` when nobody wrote one.
+
+        `None` is the whole answer. A page that wants a heading for an
+        untitled step derives one from the slug itself — that is the caller's
+        call, and inventing one here would make an authored title and a
+        machine-made one indistinguishable to everything downstream.
+        """
+        return self.titles.get(name) or None
+
     @property
     def stale(self):
         """True when the stamped digest is absent or no longer matches."""
@@ -275,13 +363,15 @@ class Plain:
     def unit(self, name, facts=None):
         """Render one unit: authored text where there is any, facts elsewhere.
 
-        Returns the five `UNIT_FIELDS` as keys, plus `name`, `generated`
-        (`{field: bool}` — True where the text below was generated) and
-        `authored` (True when a human wrote at least one field).
+        Returns the five `UNIT_FIELDS` as keys, plus `name`, `title` (the
+        authored title or `None` — never generated, so it is not in
+        `generated`), `generated` (`{field: bool}` — True where the text below
+        was generated) and `authored` (True when a human wrote at least one
+        field).
         """
         authored = self.units.get(name) or {}
         fallback = _generate(facts or {})
-        out = {"name": name}
+        out = {"name": name, "title": self.title(name)}
         flags = {}
         for field in UNIT_FIELDS:
             written = _body(authored.get(field, ""))
@@ -304,10 +394,10 @@ def load(layout, slug):
     stamped = ""
     if doc is not None:
         stamped = str(doc.meta.get("digest") or "").strip()
-    plan_text, units, unknown = _parse(doc, names)
+    plan_text, units, titles, unknown = _parse(doc, names)
     return Plain(slug, names, exists=doc is not None, stamped=stamped,
                  current=digest(layout, slug), plan=plan_text,
-                 units=units, unknown=unknown)
+                 units=units, titles=titles, unknown=unknown)
 
 
 # --------------------------------------------------------------------------- #
@@ -365,7 +455,7 @@ def _plan_form():
 
 
 def _unit_form(name):
-    lines = ["## Unit: %s" % name]
+    lines = ["## Unit: %s — %s" % (name, TITLE_PLACEHOLDER)]
     lines.extend("**%s:**" % _display(field) for field in UNIT_FIELDS)
     return "\n".join(lines)
 
@@ -403,7 +493,7 @@ def scaffold(layout, slug, units, force=False):
         return atomic.write_text(target, frontmatter.Document(meta, body).render())
 
     doc = frontmatter.read(target)
-    _, present, unknown = _parse(doc, names)
+    _, present, _titles, unknown = _parse(doc, names)
     seen = set(present) | set(unknown)
     pending = [name for name in names if name not in seen]
     if not pending:

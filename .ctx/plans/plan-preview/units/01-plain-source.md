@@ -209,6 +209,48 @@ glob `*/units/*.md`.
 17. `ALL_MODULES` in `tests/test_shared_paths.py` lists both new wave-1
     modules, and `python3 -m unittest discover -s tests -q` is green.
 
+**The authored step title** (added after the first pass — see the section below)
+
+18. The separator is an em dash `—`, and a plain hyphen `-` is accepted too,
+    because people type what their keyboard offers. Surrounding whitespace is
+    stripped. `## Unit: 01-plain-source` with no title stays valid and is the
+    common case.
+19. The parsed title is exposed on the `Plain` object per unit — pick the
+    spelling (`Plain.title(name)` or a `title` key from `unit()`) and state it
+    in your report, because unit 03 codes against it. An absent or empty title
+    reports as `None`/`""` so the caller can fall back; **`plain.py` does not
+    invent a fallback title itself** — deriving from the slug is the caller's
+    job and it already does it.
+20. A title that is present but empty (`## Unit: 01-plain-source —`) counts as
+    absent, consistent with criterion 4's rule for the five fields.
+21. `scaffold` writes the heading with the separator and a short placeholder, so
+    an author can see that a title is invited. The placeholder must be
+    recognised as *unwritten* by criterion 20's rule — do not emit something
+    that would parse as a real title.
+22. The unit name still parses exactly as before when a title is present: a
+    `## Unit:` naming a unit not in the plan still lands in `unknown`, and the
+    five fields still parse beneath it. Test both with and without a title.
+23. Shown failing before passing, as before, including a case proving a title is
+    actually read rather than the slug being reformatted.
+
+## Follow-up: the authored step title
+A decision taken after your first pass. Step titles are currently derived from
+the unit slug, so the page reads "Plain source", "Safe html", "Cli wiring". For a
+page whose whole purpose is that a non-technical person can read it, that is the
+least readable text on each step. Deriving from the objective was considered and
+rejected — it injects `.py` paths into the default view and fails the vocabulary
+rule. So the title becomes authored substance, and it belongs in `plain.md`
+beside the five sentences that already explain the step.
+
+**The format.** The block heading gains an optional title after the unit name:
+
+```markdown
+## Unit: 01-plain-source — Make the safety check honest
+```
+
+The numbered criteria for this are in **Acceptance criteria** below, where the
+contract digest can see them.
+
 ## Return contract
 Report: files changed · each criterion and how it was checked · verbatim verify
 output · the exact `facts` dict keys you settled on, because `03-view-model`

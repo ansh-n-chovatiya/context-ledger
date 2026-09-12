@@ -50,3 +50,21 @@
 23:04 | unit | 04-baseline-page | done refused (no dispatch seal)
 23:05 | start | plan-preview | wave 3, 1 unit(s), 0 worktree(s), 0 snapshot(s), 1 already in flight
 23:05 | unit | 04-baseline-page | done (--force overrode the gate: no dispatch seal)
+23:09 | unit | 01-plain-source | running
+23:09 | unit | 03-view-model | running
+23:09 | plan | plan-preview | checked, graph r7
+23:09 | start | 01-plain-source | re-sealed deliberately (--reseal): the contract had not changed; the seal and review baseline were retaken over the current tree (recorded findings kept)
+23:09 | start | plan-preview | wave 1, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+23:09 | start | 01-plain-source | re-sealed deliberately (--reseal): contract changed (acceptance criteria) and the new contract is now the promise the done-gate holds it to (recorded findings kept)
+23:09 | start | plan-preview | wave 1, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+23:09 | start | 03-view-model | re-sealed deliberately (--reseal): contract changed (acceptance criteria) and the new contract is now the promise the done-gate holds it to (recorded findings kept)
+23:09 | start | plan-preview | wave 2, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+23:09 | start | 01-plain-source | re-sealed deliberately (--reseal): the contract had not changed; the seal and review baseline were retaken over the current tree (recorded findings kept)
+23:09 | start | plan-preview | wave 1, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+23:09 | start | 03-view-model | re-sealed deliberately (--reseal): the contract had not changed; the seal and review baseline were retaken over the current tree (recorded findings kept)
+23:09 | start | plan-preview | wave 2, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+23:10 | unit | 03-view-model | pending
+23:10 | unit | 01-plain-source | running
+23:12 | gate | 01-plain-source | manual fail
+23:15 | unit | 01-plain-source | done refused (contract edited after dispatch)
+23:17 | unit | 01-plain-source | done

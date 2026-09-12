@@ -97,8 +97,8 @@ class PlainCase(Fixture):
         self.assertNotIn("/", text, f"path separator in: {text}")
         self.assertNotIn("\\", text, f"path separator in: {text}")
 
-    def unit_block(self, name, **fields):
-        lines = [f"## Unit: {name}"]
+    def unit_block(self, name, heading=None, **fields):
+        lines = [f"## Unit: {heading or name}"]
         for field in plain.UNIT_FIELDS:
             label = field[:1].upper() + field[1:]
             lines.append(f"**{label}:** {fields.get(field, '')}".rstrip())
@@ -453,6 +453,135 @@ class Scaffolding(PlainCase):
                         wraps=atomic.write_text) as spy:
             plain.scaffold(self.layout, self.SLUG, self.names() + ["03-gamma"])
         self.assertTrue(spy.called)
+
+
+# --------------------------------------------------------------------------- #
+# the authored step title
+# --------------------------------------------------------------------------- #
+
+class Titles(PlainCase):
+    """`## Unit: 01-alpha — Make the safety check honest`.
+
+    The title is authored substance, not decoration: without it the page names
+    each step after its slug, and "Plain source" is the least readable line on
+    a page whose entire job is to be readable. So it is parsed here, and only
+    here — nothing in this module invents one.
+    """
+
+    HONEST = "Make the Safety Check Honest"
+
+    def test_em_dash_title_is_read_verbatim(self):
+        """Criteria 18, 19 and 23 — genuinely read, not manufactured.
+
+        The asserted string shares no word with the slug and keeps interior
+        capitals, so it cannot be produced by reformatting `01-alpha`; and the
+        untitled sibling proves nothing is manufacturing one either.
+        """
+        self.write_plain(
+            f"## Unit: 01-alpha — {self.HONEST}\n"
+            "**What it does:** Renames a column.\n\n"
+            "## Unit: 02-beta\n"
+            "**What it does:** Drops a column.\n"
+        )
+        doc = plain.load(self.layout, self.SLUG)
+        self.assertEqual(doc.title("01-alpha"), self.HONEST)
+        self.assertNotIn("alpha", doc.title("01-alpha").lower())
+        self.assertIsNone(doc.title("02-beta"))
+
+    def test_plain_hyphen_is_accepted_and_slug_hyphens_are_not_separators(self):
+        """Criterion 18 — people type what their keyboard offers, and unit
+        names are full of hyphens themselves."""
+        self.write_unit("03-a-long-hyphenated-name", ["02-beta"])
+        self.write_plain(
+            "## Unit: 01-alpha - Tidy the invoice screen\n"
+            "**What it does:** Renames a column.\n\n"
+            "## Unit: 03-a-long-hyphenated-name - Send fewer emails\n"
+            "**What it does:** Batches the digest.\n"
+        )
+        doc = plain.load(self.layout, self.SLUG)
+        self.assertEqual(doc.title("01-alpha"), "Tidy the invoice screen")
+        self.assertEqual(doc.title("03-a-long-hyphenated-name"),
+                         "Send fewer emails")
+        self.assertEqual(doc.unknown, [])
+        self.assertEqual(doc.units["03-a-long-hyphenated-name"]["what it does"],
+                         "Batches the digest.")
+
+    def test_title_whitespace_is_stripped(self):
+        """Criterion 18."""
+        self.write_plain("## Unit: 01-alpha —    Tidy the screen   \n"
+                         "**What it does:** Renames a column.\n")
+        self.assertEqual(plain.load(self.layout, self.SLUG).title("01-alpha"),
+                         "Tidy the screen")
+
+    def test_absent_title_reports_none_and_is_never_invented(self):
+        """Criterion 19 — deriving from the slug is unit 03's job, not ours."""
+        self.write_plain(self.unit_block("01-alpha"))
+        doc = plain.load(self.layout, self.SLUG)
+        self.assertIsNone(doc.title("01-alpha"))
+        self.assertIsNone(doc.title("02-beta"))
+        self.assertIsNone(doc.title("99-not-in-the-plan"))
+        self.assertIsNone(plain.load(self.layout, "no-such-plan").title("01-alpha"))
+
+    def test_a_separator_with_nothing_after_it_counts_as_absent(self):
+        """Criterion 20 — the same rule criterion 4 applies to the five fields."""
+        for heading in ("01-alpha —", "01-alpha -", "01-alpha —   "):
+            self.write_plain(self.unit_block("01-alpha", heading=heading))
+            doc = plain.load(self.layout, self.SLUG)
+            self.assertIsNone(doc.title("01-alpha"), heading)
+            self.assertEqual(doc.unknown, [], heading)
+
+    def test_scaffold_invites_a_title_without_writing_one(self):
+        """Criterion 21 — the placeholder must read as unwritten, and must not
+        break the name parsing it now shares a line with."""
+        target = plain.scaffold(self.layout, self.SLUG, ["01-alpha", "02-beta"])
+        text = target.read_text(encoding="utf-8")
+        self.assertIn("—", text)  # the separator is offered
+
+        doc = plain.load(self.layout, self.SLUG)
+        self.assertIsNone(doc.title("01-alpha"))
+        self.assertIsNone(doc.title("02-beta"))
+        # The names still parse: neither unknown, both still unwritten.
+        self.assertEqual(doc.unknown, [])
+        self.assertEqual(doc.missing, ["01-alpha", "02-beta"])
+
+    def test_the_unit_name_parses_identically_with_a_title(self):
+        """Criterion 22 — both shapes, in one file."""
+        titled = (
+            "## Unit: 01-alpha — Tidy the invoice screen\n"
+            "**What it does:** Renames a column.\n"
+            "**Why it matters:** The old name misleads everyone.\n"
+            "**What changes:** One screen.\n"
+            "**Risk:** Small, one table.\n"
+            "**How we'll know:** The old name is gone.\n\n"
+            "## Unit: 02-beta\n"
+            "**What it does:** Drops a column.\n\n"
+            "## Unit: 09-ghost — Something deleted last week\n"
+            "**What it does:** Nothing any more.\n"
+        )
+        self.write_plain(titled)
+        doc = plain.load(self.layout, self.SLUG)
+
+        self.assertEqual(doc.unknown, ["09-ghost"])
+        self.assertNotIn("09-ghost", doc.units)
+        self.assertEqual(doc.missing, [])
+        fields = doc.units["01-alpha"]
+        for field in plain.UNIT_FIELDS:
+            self.assertTrue(fields[field], field)
+        self.assertEqual(fields["risk"], "Small, one table.")
+        self.assertEqual(doc.units["02-beta"]["what it does"], "Drops a column.")
+
+    def test_unit_carries_the_same_title(self):
+        """Criterion 19 — the other half of the published accessor."""
+        self.write_plain(self.unit_block(
+            "01-alpha", heading=f"01-alpha — {self.HONEST}",
+            **{"risk": "Small, one table."}))
+        doc = plain.load(self.layout, self.SLUG)
+        rendered = doc.unit("01-alpha", self.facts())
+        self.assertEqual(rendered["title"], self.HONEST)
+        self.assertEqual(rendered["title"], doc.title("01-alpha"))
+        # Never generated, so it is not one of the flagged fields.
+        self.assertEqual(sorted(rendered["generated"]), sorted(plain.UNIT_FIELDS))
+        self.assertIsNone(doc.unit("02-beta", self.facts())["title"])
 
 
 if __name__ == "__main__":

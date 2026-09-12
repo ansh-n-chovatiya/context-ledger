@@ -12,21 +12,22 @@ Spec: `.ctx/specs/plan-preview/spec.md`
 
 
 
+
 **Wave 1** — these may run concurrently
 
 - `01-plain-source` (subagent, running) — `ctx/plain.py`: read the authored plain-language file for a plan, say precisely which parts a human has actual
   - owns: ctx/plain.py, tests/test_plain_source.py, tests/test_shared_paths.py
-- `02-safe-html` (subagent, running) — `ctx/preview_html.py`: the security-critical primitives that turn untrusted prose into HTML that is safe to do
+- `02-safe-html` (subagent, done) — `ctx/preview_html.py`: the security-critical primitives that turn untrusted prose into HTML that is safe to do
   - owns: ctx/preview_html.py, tests/test_preview_html_safety.py
 
 **Wave 2** — these may run concurrently
 
-- `03-view-model` (subagent, pending) — `ctx/preview.py`: assemble the one JSON-safe dict that every rendered page is built from, so the HTML never se
+- `03-view-model` (subagent, running) — `ctx/preview.py`: assemble the one JSON-safe dict that every rendered page is built from, so the HTML never se
   - owns: ctx/preview.py, tests/test_preview_model.py, tests/test_shared_paths.py
 
 **Wave 3** — these may run concurrently
 
-- `04-baseline-page` (subagent, pending) — `ctx/preview_page.py`: render the view-model into one self-contained HTML page that a non-technical person can
+- `04-baseline-page` (subagent, done) — `ctx/preview_page.py`: render the view-model into one self-contained HTML page that a non-technical person can
   - owns: ctx/preview_page.py, tests/test_preview_page.py, tests/test_shared_paths.py
 
 **Wave 4** — these may run concurrently

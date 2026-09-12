@@ -43,7 +43,7 @@ forbid:
   - ctx/commands.py
   - ctx/cli.py
 budget_tokens: 60000
-status: done
+status: pending
 verify:
   - kind: diff
   - kind: symbol
@@ -182,6 +182,32 @@ must not glob `*/units/*.md`.
 15. No file outside `owns` is modified. If you find yourself needing to edit
     `commands.py`, `cli.py`, `plain.py` or `preview_html.py`, **stop and report
     the exact edit** — do not widen scope.
+
+**The authored step title** (added after the first pass — see the section below)
+
+16. `steps[].title` uses the authored title when `plain.md` supplies one, and
+    falls back to the existing slug-derived title when it does not. The fallback
+    is unchanged — do not alter what it produces.
+17. The authored title is prose from a file a human edits, so it goes through
+    `preview_html.markup`'s inline path exactly as the derived title does.
+    A title carrying `<script>` or a secret is escaped and redacted like any
+    other prose; assert it.
+18. The model says which it used, so the page and `check()` can tell an authored
+    title from a generated one — follow the `generated` flag convention you
+    already use for the five fields.
+19. Determinism and the plan-check agreement tests still hold unchanged.
+20. Shown failing before passing, including the fallback case and a positive
+    control proving an authored title actually reaches `steps[].title`.
+
+## Follow-up: prefer the authored step title
+A decision taken after your first pass. Your report flagged that slug-derived
+titles read "Plain source", "Safe html", "Cli wiring", and correctly refused to
+derive them from the objective. The fix agreed: the title is authored in
+`plain.md`'s block heading, `## Unit: 01-plain-source — Make the safety check
+honest`. Unit 01 has been reopened to parse it and its report names the accessor.
+
+The numbered criteria are in **Acceptance criteria** below, where the contract
+digest can see them.
 
 ## Return contract
 Report: files changed · each criterion and how it was checked · verbatim verify
