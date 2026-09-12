@@ -125,7 +125,25 @@ def _read_payload(stream):
 
 
 def _measure(layout, event, started, config=None, **fields):
-    if config is not None and not telemetry.enabled(config):
+    """Record one hook's duration, if and only if telemetry is switched on.
+
+    `config=None` used to mean "no opinion, record it", and the two failure
+    paths in `main` pass no config — so a project with `telemetry.enabled:
+    false` still had every hook failure written to disk. An off switch that
+    holds on the success path and not the failure path is not an off switch.
+
+    When the config is not to hand, it is read here. If that read fails too —
+    which is the case on the refusal path, where the config is precisely what
+    could not be loaded — nothing is recorded. Telemetry is opt-*out*, so an
+    unknown preference is not consent: the honest cost is losing a data point
+    about a session whose configuration we could not read.
+    """
+    if config is None:
+        try:
+            config = config_mod.load(layout)
+        except BaseException:  # noqa: BLE001 - including the SystemExit refusal
+            return
+    if not telemetry.enabled(config):
         return
     telemetry.record(layout, event, (time.perf_counter() - started) * 1000, **fields)
 
