@@ -129,6 +129,7 @@ class TestBareInvocation(Fixture):
         # Nothing tracked yet, so these have nothing to act on. "Nothing to do"
         # is an answer, not a failure.
         ("verify",), ("start",), ("plan-check",), ("digest",), ("briefing",),
+        ("preview",),
     ]
 
     def test_bare_commands_exit_zero(self):
@@ -161,7 +162,8 @@ class TestNoActiveWork(Fixture):
 
     def test_plan_commands_report_no_active_plan(self):
         for argv in (("start",), ("plan-check",), ("merge", "01-thing"),
-                     ("unit", "01-thing"), ("plan-unit", "01-thing")):
+                     ("unit", "01-thing"), ("plan-unit", "01-thing"),
+                     ("preview",)):
             with self.subTest(command=argv[0]):
                 code, out = self.cli(*argv)
                 self.assertEqual(code, 0, out)

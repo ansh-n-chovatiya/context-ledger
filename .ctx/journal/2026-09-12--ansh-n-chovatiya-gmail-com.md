@@ -72,3 +72,12 @@
 23:26 | start | 03-view-model | re-sealed deliberately (--reseal): the contract had not changed; the seal and review baseline were retaken over the current tree (recorded findings kept)
 23:26 | start | plan-preview | wave 2, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
 23:27 | unit | 03-view-model | done
+23:29 | start | plan-preview | wave 4, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+23:43 | plan | plan-preview | checked, graph r8
+23:43 | start | 05-cli-wiring | re-sealed deliberately (--reseal): contract changed (owns) and the new contract is now the promise the done-gate holds it to (recorded findings kept)
+23:43 | start | plan-preview | wave 4, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+23:45 | spec | plan-preview | +1 blocking question(s)
+23:45 | spec | plan-preview | resolved: re-diffs on every plan-check
+23:50 | unit | 05-cli-wiring | done
+23:50 | start | plan-preview | wave 5, 1 unit(s), 0 worktree(s), 1 snapshot(s), 0 already in flight
+23:50 | plan | plan-preview | checked, graph r9

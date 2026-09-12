@@ -3,8 +3,8 @@
 `cli.py` was 3,328 lines and imported twenty-one of the package's twenty-six
 modules — the audit's "a quarter of the codebase" finding. Four earlier
 extractions moved every *module-shaped* piece out of it and it still grew,
-because what was left was the forty-one command bodies themselves. They are in
-`ctx/commands.py` now and `cli.py` is 538 lines: argument parsing, the
+because what was left was the command bodies themselves. They are in
+`ctx/commands.py` now and `cli.py` is 551 lines: argument parsing, the
 registry, `_finish` and `main`.
 
 Nothing else about this repository changed. That claim is not this file's to
@@ -42,7 +42,10 @@ PACKAGE = Path(__file__).resolve().parent.parent / "ctx"
 CLI_PATH = PACKAGE / "cli.py"
 COMMANDS_PATH = PACKAGE / "commands.py"
 
-EXPECTED_BODIES = 41
+# Forty-one when the bodies moved; forty-two since `ctx preview` was added, in
+# the same change as its registry row. This constant is what makes "one row,
+# one body" checkable, so it moves with the count and never ahead of it.
+EXPECTED_BODIES = 42
 
 
 def function_names(path):
@@ -70,7 +73,7 @@ def re_exported_names():
 
 class TestTheBodiesMoved(unittest.TestCase):
 
-    def test_all_forty_one_are_defined_in_commands(self):
+    def test_all_of_them_are_defined_in_commands(self):
         bodies = {name for name in function_names(COMMANDS_PATH)
                   if name.startswith("cmd_")}
         self.assertEqual(len(bodies), EXPECTED_BODIES, sorted(bodies))
@@ -84,7 +87,7 @@ class TestTheBodiesMoved(unittest.TestCase):
                          f"ctx/cli.py defines command bodies again: {sorted(left)}")
 
     def test_the_registry_names_exactly_those_bodies(self):
-        """The registry is the other half: forty-one rows, forty-one bodies,
+        """The registry is the other half: one row per body, one body per row,
         and no function stranded in `commands.py` that nothing dispatches to."""
         rows = {entry.func.__name__ for entry in cli.commands()}
         bodies = {name for name in function_names(COMMANDS_PATH)
@@ -199,7 +202,7 @@ class TestTheEntryPointHasACeiling(unittest.TestCase):
     scope, because what was left to move was the command bodies and neither
     `ctx/commands.py` nor the module registry in `tests/test_shared_paths.py`
     was its to write. That move is this unit, and the target is met with room
-    to spare: 538 lines, of which the registry is most.
+    to spare: 551 lines, of which the registry is most.
 
     The number below is the file as it is, plus enough slack for a comment.
     Lowering it as code leaves is the cheap win; raising it is the thing this

@@ -179,6 +179,7 @@ both, end to end: [Walkthroughs](docs/walkthroughs.md).
 | `/ctx:spec «name» [— intent]` | **L2** — intent → checkable criteria → blocking questions |
 | `/ctx:ask [name]` | **L2** — show and ask what's still blocking a spec |
 | `/ctx:plan «name»` | **L2** — decompose a ready spec into dispatchable units |
+| `/ctx:preview [plan]` | **L2** — the plan as one page a non-technical reviewer can read and approve |
 | `/ctx:start [--wave N] [--worktree] [--rebaseline UNIT] [--reseal UNIT]` | **L2** — dispatch brief for the next wave |
 | `/ctx:phase «unit» [phase]` | **L2** — inspect or advance a unit's phase gate |
 | `/ctx:review «unit» [--round N]` | **L2** — adversarial review of a completed unit, from a snapshot diff |
@@ -234,7 +235,8 @@ every slash command costs always-on context.
 | `ctx verify [--plan X] [--sign-off rubric\|human]` | Run the done-gate for the active work, or every unit's gate in a plan | `/ctx:verify` |
 | `ctx plan «name» [--spec S] [--no-spec]` | Scaffold a plan; refuses while the spec is ambiguous | `/ctx:plan` |
 | `ctx plan-unit «name»` | Scaffold one unit file | |
-| `ctx plan-check [name]` | Compute waves and check for collisions | |
+| `ctx plan-check [name]` | Compute waves and check for collisions; writes the preview page | |
+| `ctx preview [name]` | Render the plan as a page a non-technical reviewer can read | `/ctx:preview` |
 | `ctx start [--wave N] [--worktree]` | Dispatch brief for the next wave; `--rebaseline`/`--reseal` a single unit | `/ctx:start` |
 | `ctx snapshot «unit» [--phase P]` | Capture a content snapshot by hand; `ctx start` takes the `before` phase itself | |
 | `ctx review «unit» [--round N]` | Build the review package: diff, scope violations, stat summary | `/ctx:review` |
@@ -254,7 +256,7 @@ every slash command costs always-on context.
 
 Global flags: `--cwd PATH` resolves the ledger from elsewhere; `--version`;
 `--strict` escalates the three advisory conditions to exit 1; `--json` on the
-seven commands that answer in a document.
+eight commands that answer in a document.
 
 **Driving a `session`-tier unit yourself.** Those run in this tree by default.
 `ctx start --worktree` opts into a checkout and branch per unit instead, under

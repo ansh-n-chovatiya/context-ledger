@@ -99,6 +99,10 @@ class PageCase(Fixture):
             self.write_unit(name, deps, owns, budget)
         code, out = self.cli("plan-check", self.SLUG)
         self.assertEqual(code, 0, out)
+        # `plan-check` scaffolds `plain.md` itself now, so "nobody has written
+        # any of this" — the state the degradation cases below are about — has
+        # to be asked for rather than assumed. `write_plain` opts back in.
+        plain_mod.path(self.layout, self.SLUG).unlink(missing_ok=True)
 
     # ------------------------------------------------------------------ #
     # helpers

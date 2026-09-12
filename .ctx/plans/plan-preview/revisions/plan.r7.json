@@ -2,7 +2,7 @@
   "ctx_schema": 1,
   "plan": "plan-preview",
   "spec": "plan-preview",
-  "revision": 9,
+  "revision": 7,
   "generated": "2026-09-12",
   "waves": [
     [
@@ -142,11 +142,7 @@
         "tests/test_command_bodies.py",
         "tests/test_cli_exit_codes.py",
         "tests/test_commands.py",
-        "tests/test_advice.py",
-        "README.md",
-        "docs/reference.md",
-        "tests/test_preview_model.py",
-        "tests/test_preview_page.py"
+        "tests/test_advice.py"
       ],
       "reads": [
         "ctx/preview.py",

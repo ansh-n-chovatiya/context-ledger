@@ -694,8 +694,8 @@ before it can ask you for the name.
 
 ## `--json`
 
-Seven commands answer in a document instead of prose: `ci`, `doctor`, `findings`,
-`next`, `plan-check`, `status` and `verify`. The flag changes **rendering and
+Eight commands answer in a document instead of prose: `ci`, `doctor`, `findings`,
+`next`, `plan-check`, `preview`, `status` and `verify`. The flag changes **rendering and
 nothing else** — the same work happens, the same refusals refuse, and the exit
 code is identical with the flag and without it. Prose the command would have
 printed is captured into `lines` rather than interleaved, so stdout carries one
@@ -703,7 +703,7 @@ document and never prose beside one. The document is pure ASCII: `json.dumps`
 escapes every non-ASCII character, which is the only way a `→` survives a Windows
 pipe.
 
-The envelope is the same for all seven:
+The envelope is the same for all eight:
 
 ```json
 {
@@ -730,8 +730,9 @@ carries the message that also went to stderr, and `data` is `null`.
 | `doctor` | `problems`, `ok`, `checks[]` — each row naming its `section`, `status` and `detail`, plus whatever that section checks |
 | `ci` | `ok`, `failures[]`, `checks[]` (`section`, `name`, `ok`, `detail`) |
 | `verify` | `mode`, `plan`, `key`, `verdict`, `checks[]` (`kind`, `label`, `status`, `message`), `pending[]` |
-| `plan-check` | `plan`, `problems[]`, `units`, `revision`, `graph`, `waves[]` (each with its `units[]`), `session_units[]`, `parallelism` (`units`/`waves`/`ratio`), `bottlenecks[]` (`path`, `units[]`), `critical_path` (`estimate_tokens`, `total_tokens`, `waves[]`, `basis`), `ownership_gaps` (`files[]`, `truncated`) |
+| `plan-check` | `plan`, `problems[]`, `units`, `revision`, `graph`, `waves[]` (each with its `units[]`), `session_units[]`, `parallelism` (`units`/`waves`/`ratio`), `bottlenecks[]` (`path`, `units[]`), `critical_path` (`estimate_tokens`, `total_tokens`, `waves[]`, `basis`), `ownership_gaps` (`files[]`, `truncated`), `preview` |
 | `findings` | `mode`, `plan`, `unit`, `round`, `summary`, `findings[]`, `escalations[]`, `blocking`, `ok`, `problem` |
+| `preview` | `plan`, `page`, `data`, `plain`, `problems[]`, `checked`, `opened` |
 
 A command without the flag still refuses it, rather than accepting it and
 printing prose.

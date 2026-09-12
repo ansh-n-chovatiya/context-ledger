@@ -18,6 +18,10 @@ owns:
   - tests/test_cli_exit_codes.py
   - tests/test_commands.py
   - tests/test_advice.py
+  - README.md
+  - docs/reference.md
+  - tests/test_preview_model.py
+  - tests/test_preview_page.py
 reads:
   - path: ctx/preview.py
     symbols:
@@ -42,7 +46,7 @@ forbid:
   - ctx/preview_html.py
   - ctx/plain.py
 budget_tokens: 70000
-status: pending
+status: done
 verify:
   - kind: diff
   - kind: review
@@ -144,6 +148,31 @@ registry entry plus one body**. Follow that shape; do not grow `cli.py`.
     report the exact edit** — do not widen scope. Those units are done and
     their interfaces are frozen.
 21. Every test is shown failing before it passes. Report the failure output.
+
+## Four files added mid-wave, and exactly what to do in them
+You reported a deadlock and you were right: you own `test_docs_currency.py`,
+which demands every registered command appear in the README tables and in
+`docs/reference.md`, but those belong to unit 06 — which `depends_on` you. The
+plan could not close. That is an orchestrator error, not yours. Four files are
+now in your `owns`; make the **minimum** edit in each and nothing more.
+
+22. `README.md`: one CLI-table row beginning `` `ctx preview [name]` `` and one
+    slash-table row beginning `` `/ctx:preview` ``. Match the surrounding rows'
+    voice and column shape. **Nothing else** — README is 299 lines by deliberate
+    decision and unit 06 adds the prose.
+23. `docs/reference.md`: the literal `` `preview` `` must appear in the `--json`
+    section, because `preview` is now in `cli.JSON_COMMANDS`. One list entry or
+    sentence is enough. Unit 06 writes the full flag documentation; do not
+    pre-empt it.
+24. `tests/test_preview_model.py` and `tests/test_preview_page.py`: apply the
+    one-line fix you identified. Their fixtures assume `plain.md` is absent
+    after `plan-check`, which stopped being true when you made `plan-check`
+    scaffold it. Delete the scaffolded file at the end of each `setUp` so the
+    un-written state those cases test is asked for explicitly. Do not weaken
+    either assertion — the degradation path is the point of both tests, and a
+    test that stops testing it is worse than a failing one.
+25. Every other test in those two files must still pass untouched, and the full
+    suite must be green. Report the diff you made to each of the four.
 
 ## Return contract
 Report: files changed · each criterion and how it was checked · verbatim verify

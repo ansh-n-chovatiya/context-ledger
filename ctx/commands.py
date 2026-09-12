@@ -1,4 +1,4 @@
-"""The forty-one subcommands — everything `ctx <verb>` actually *does*.
+"""The forty-two subcommands — everything `ctx <verb>` actually *does*.
 
 `cli.py` was a quarter of the package and imported twenty-one of its twenty-six
 modules, which is what the audit objected to. Four extractions moved every
@@ -27,12 +27,14 @@ import os
 import re
 import subprocess
 import sys
+import webbrowser
 
 from . import (
     advice, atomic, briefing, bundle, complexity as complexity_mod,
     config as config_mod, contract as contract_mod, detect, dispatch,
     frontmatter, journal, lock, migrate as migrate_mod, paths,
-    phases as phases_mod, plan as plan_mod, spec as spec_mod,
+    phases as phases_mod, plain as plain_mod, plan as plan_mod,
+    preview, preview_page, spec as spec_mod,
     findings as findings_mod, review as review_mod, snapshot as snapshot_mod,
     state, telemetry, trust as trust_mod, verify, work, worktree,
 )
@@ -285,6 +287,10 @@ def _emit(data, human_fn):
 _PLAN_ARGUMENT = {
     "plan-unit": "plan",
     "plan-check": "name",
+    # `ctx preview 01-api` must not go looking for a plan called `01-api`: the
+    # page is a view of a *plan*, so the positional is the plan, spelled the
+    # way `plan-check` and `start` spell it. There is no `--plan` on it.
+    "preview": "name",
     "start": "name",
     "merge": "plan",
     "unit": "plan",
@@ -1707,7 +1713,8 @@ def cmd_plan_check(args):
              "bottlenecks": [],
              "critical_path": {"estimate_tokens": 0, "total_tokens": 0,
                                "waves": [], "basis": ""},
-             "ownership_gaps": {"files": [], "truncated": False}},
+             "ownership_gaps": {"files": [], "truncated": False},
+             "preview": None},
             [f"plan {slug}: {len(problems)} problem(s) — nothing was written"]
             + [f"  - {problem}" for problem in problems]
             + ["",
@@ -1719,6 +1726,9 @@ def cmd_plan_check(args):
     plan_mod.apply_waves(grouped)
     path, revision = plan_mod.write_graph(layout, slug, grouped)
     plan_mod.render_readme_units(layout, slug, grouped)
+    # After the graph and the README, and on every run: see `_plan_check_preview`
+    # for why it is not a flag.
+    page, note = _plan_check_preview(layout, slug, grouped)
     journal.append(layout, config, "plan", slug, f"checked, graph r{revision}")
 
     out = []
@@ -1745,9 +1755,10 @@ def cmd_plan_check(args):
                 + " in the main tree unless you dispatch with `ctx start --worktree`"
             )
     out.append(f"wrote {layout.rel(path)}")
+    out.append(f"wrote {page}" if page else note)
     document = {
         "plan": slug, "problems": [], "units": total, "revision": revision,
-        "graph": layout.rel(path),
+        "graph": layout.rel(path), "preview": page,
         "waves": [{"wave": level,
                    "units": [{"name": u.name, "tier": u.tier}
                              for u in grouped[level]]}
@@ -1761,6 +1772,165 @@ def cmd_plan_check(args):
     # script asks to hear about it. A serial plan is sometimes the right plan.
     if notable:
         return _advise("plan-slow")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# the plan, as a page somebody outside the work can read
+# --------------------------------------------------------------------------- #
+
+def _plan_check_preview(layout, slug, grouped):
+    """`(relative page path, None)`, or `(None, one note line)`.
+
+    Called by `plan-check` on every run, with no flag to turn it on. That is
+    the point of it: the page exists for the person who does not know the
+    command, and an artefact you have to know about is not available to them.
+    Two things happen, in this order — `plain.md` is topped up so every unit
+    has a block to fill in, then the page is rendered from whatever is written
+    there. `plain.scaffold` in append mode adds blocks only for units that have
+    none and never touches authored text, so this cannot edit anybody's prose.
+
+    **Nothing here may fail the command.** A preview that will not render is a
+    fact about the preview; the plan has already been validated and written by
+    the time this runs, and refusing to plan because a page would not draw
+    would be the tail wagging the dog. So every exception becomes one `note:`
+    line and the caller keeps its own exit code.
+    """
+    units = [unit for level in sorted(grouped) for unit in grouped[level]]
+    try:
+        plain_mod.scaffold(layout, slug, units)
+        return layout.rel(preview_page.write(layout, slug)), None
+    except Exception as exc:  # noqa: BLE001 — a preview never blocks planning
+        return None, ("note: the plan is written and valid; its preview page "
+                      "could not be rendered (%s: %s)"
+                      % (type(exc).__name__, exc))
+
+
+def _preview_advice(layout, slug):
+    """The one line `ctx start` adds: where the page is, or why to look again.
+
+    Staleness is measured with `plain.digest` — a hash of what the units
+    *promise* — and not with `plan.json`'s revision, which moves on every
+    `plan-check` and would call a page stale the moment it was written. The
+    digest is embedded in the page by `preview.view_model`, so "is this page
+    current" is a substring test over the file and costs no re-render.
+
+    Returns exactly one line, always, and never raises: this runs at the foot
+    of a dispatch, and nothing about a preview is worth failing one over.
+    """
+    try:
+        page = preview.html_path(layout, slug)
+        try:
+            text = page.read_text(encoding="utf-8")
+        except OSError:
+            return ("preview: none yet for this plan — `ctx preview %s` writes "
+                    "a page a non-technical reviewer can approve" % slug)
+        if plain_mod.digest(layout, slug) not in text:
+            return ("preview: %s is behind the plan — re-run `ctx plan-check %s`"
+                    % (layout.rel(page), slug))
+        return "preview: %s" % layout.rel(page)
+    except Exception as exc:  # noqa: BLE001 — advisory, at the foot of a dispatch
+        return "preview: could not be checked (%s)" % type(exc).__name__
+
+
+def _preview_document(slug, **fields):
+    """One `--json` shape for all three modes of `ctx preview`.
+
+    Written out in full every time rather than built up per mode: a consumer
+    reading `problems` should not have to branch on which flag was typed to
+    know the key is there.
+    """
+    document = {"plan": slug, "page": None, "data": None, "plain": None,
+                "problems": [], "checked": False, "opened": False}
+    document.update(fields)
+    return document
+
+
+def _open_in_browser(path):
+    """Did a browser take it? Never raises.
+
+    A container with no display is the normal case for this tool, not an error
+    in it: `webbrowser.open` returns False there, and on some platforms raises
+    instead. Either way the caller prints the path and the user opens it.
+    """
+    try:
+        return bool(webbrowser.open(path.resolve().as_uri()))
+    except Exception:  # noqa: BLE001 — headless is not a failure
+        return False
+
+
+def _preview_scaffold(layout, slug, args):
+    """`--scaffold-plain`: write the form a human fills in."""
+    target = plain_mod.path(layout, slug)
+    if target.is_file() and not args.force:
+        raise SystemExit(
+            "%s already exists — nothing was written.\n"
+            "  `ctx preview %s --scaffold-plain --force` rewrites it, and loses "
+            "every word now in it.\n"
+            "  `ctx plan-check %s` adds a blank block for any new unit without "
+            "touching what is written."
+            % (layout.rel(target), slug, slug))
+    written = plain_mod.scaffold(layout, slug, plan_mod.load_units(layout, slug),
+                                 force=bool(args.force))
+    _emit(
+        _preview_document(slug, plain=layout.rel(written)),
+        [f"wrote {layout.rel(written)}",
+         "Answer the questions in it in plain words. The preview reads this "
+         "file; a field left empty reads as `Nobody has written this down yet.`"],
+    )
+    return 0
+
+
+def _preview_check(layout, slug):
+    """`--check`: hold the page *on disk* against the plan it claims to show.
+
+    Deliberately renders nothing. Checking a page this command just produced
+    would only ever prove that `render` agrees with itself; what is worth
+    knowing is whether the committed file still carries the whole plan.
+    """
+    page = preview.html_path(layout, slug)
+    try:
+        html = page.read_text(encoding="utf-8")
+    except OSError:
+        raise SystemExit(
+            "no page at %s — `ctx preview %s` writes one.\n"
+            "  --check reads the file on disk; it does not render one to check."
+            % (layout.rel(page), slug)) from None
+    problems = preview_page.check(html, preview.view_model(layout, slug))
+    lines = [f"{layout.rel(page)}: {len(problems)} problem(s) — the page does "
+             "not carry the whole plan"] + [f"  - {problem}" for problem in problems]
+    if not problems:
+        lines = [f"{layout.rel(page)}: carries the whole plan"]
+    _emit(_preview_document(slug, page=layout.rel(page), checked=True,
+                            problems=list(problems)),
+          lines)
+    return 1 if problems else 0
+
+
+def cmd_preview(args):
+    """Render the plan as a page somebody outside the work can approve."""
+    layout, _config = _loaded(args)
+    slug, code = _plan_or_report(layout, args, "preview")
+    if slug is None:
+        return code
+
+    if args.scaffold_plain:
+        return _preview_scaffold(layout, slug, args)
+    if args.check:
+        return _preview_check(layout, slug)
+
+    page = preview_page.write(layout, slug)
+    document = _preview_document(slug, page=layout.rel(page))
+    lines = [f"wrote {layout.rel(page)}"]
+    if args.data:
+        data = preview.write_data(layout, slug)
+        document["data"] = layout.rel(data)
+        lines.append(f"wrote {layout.rel(data)}")
+    if args.open:
+        document["opened"] = _open_in_browser(page)
+        lines.append("opened it in your browser" if document["opened"] else
+                     f"no browser on this machine — open it yourself: {page}")
+    _emit(document, lines)
     return 0
 
 
@@ -2050,6 +2220,11 @@ def cmd_start(args):
         layout, config, slug, level, units, budget, worktrees,
         worktree_requested=bool(args.worktree),
     ))
+    # One line, and only ever one: where the page a reviewer reads is, or that
+    # it is missing or behind. Dispatch behaviour and the exit code are
+    # untouched — this is a pointer at an artefact, printed where the person
+    # who would want it is already looking.
+    _echo(_preview_advice(layout, slug))
     return 0
 
 

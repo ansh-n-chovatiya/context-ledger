@@ -101,8 +101,20 @@ class ModelCase(Fixture):
         return path
 
     def check(self):
+        """`ctx plan-check`, leaving `plain.md` exactly as it found it.
+
+        `plan-check` scaffolds the form itself now, so running it is no longer
+        a way of getting a plan on disk without one. These cases are about the
+        *model*, and several of them are about what it says when nobody has
+        written any prose at all — so the form is whatever the case asked for:
+        absent unless `write_plain` was called, and untouched when it was.
+        """
+        form = plain_mod.path(self.layout, self.SLUG)
+        existed = form.is_file()
         code, out = self.cli("plan-check", self.SLUG)
         self.assertEqual(code, 0, out)
+        if not existed:
+            form.unlink(missing_ok=True)
 
     def model(self):
         return preview.view_model(self.layout, self.SLUG)

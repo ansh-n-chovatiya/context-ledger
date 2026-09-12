@@ -1,4 +1,4 @@
-"""`ctx/cli.py`'s command registry — forty-one subcommands, one table.
+"""`ctx/cli.py`'s command registry — forty-two subcommands, one table.
 
 `build_parser` was forty-one hand-written blocks of `add_parser` /
 `add_argument` / `set_defaults`. Adding a command meant three coordinated
@@ -6,11 +6,14 @@ edits in three places, and giving every command a shared flag meant a loop
 over `sub.choices` after the fact — which is how `--strict` was already done,
 and the admission that the blocks were data pretending to be code.
 
+Forty-two now: `preview` was added as one row and one body, which is the whole
+claim the conversion made. Its fixture entry is marked where it sits.
+
 This file is the guard on that conversion. `SURFACE` below was *generated from
 the hand-written parser* and committed: every subcommand, every flag, every
 default, choice list, metavar, argparse action class and help string as they
 were before the registry existed. `test_the_surface_is_unchanged` rebuilds the
-same rows from the live parser and compares. Forty-one commands' worth of flags
+same rows from the live parser and compares. Forty-odd commands' worth of flags
 is too many to re-read by eye, so nobody re-reads them: the fixture does.
 
 The one deliberate difference is `--json`, which this same unit added to seven
@@ -541,6 +544,41 @@ SURFACE = {
              'escalate advisory conditions to exit 1'),
         ),
     ),
+    # The one row in this fixture that was not generated from the hand-written
+    # parser, because `ctx preview` postdates it. It was captured from the live
+    # parser in the same change that added the registry row, which makes this
+    # entry a record of what that change shipped rather than a proof that the
+    # conversion preserved anything — the other forty-one carry that.
+    'preview': (
+        'render the plan as a page a non-technical reviewer can read',
+        'cmd_preview',
+        (
+            ('-h/--help', 'help', 0, None, '<SUPPRESS>', None, None, False,
+             None, '_HelpAction',
+             'show this help message and exit'),
+            ('<positional>', 'name', '?', None, None, None, None, False, None,
+             '_StoreAction',
+             None),
+            ('--data', 'data', 0, True, False, None, None, False, None,
+             '_StoreTrueAction',
+             'also write preview.data.json'),
+            ('--check', 'check', 0, True, False, None, None, False, None,
+             '_StoreTrueAction',
+             'check the page on disk against the plan; renders nothing'),
+            ('--open', 'open', 0, True, False, None, None, False, None,
+             '_StoreTrueAction',
+             'open it in a browser'),
+            ('--scaffold-plain', 'scaffold_plain', 0, True, False, None, None,
+             False, None, '_StoreTrueAction',
+             'write the plain-language form a human fills in'),
+            ('--force', 'force', 0, True, False, None, None, False, None,
+             '_StoreTrueAction',
+             'let --scaffold-plain rewrite an existing plain.md'),
+            ('--strict', 'strict', 0, True, '<SUPPRESS>', None, None, False,
+             None, '_StoreTrueAction',
+             'escalate advisory conditions to exit 1'),
+        ),
+    ),
     'start': (
         'dispatch brief for the next (or given) wave',
         'cmd_start',
@@ -950,12 +988,12 @@ def _portable(entry):
 
 
 class TestTheSurfaceIsUnchanged(unittest.TestCase):
-    """Forty-one subcommands still parse exactly as they did."""
+    """Every subcommand still parses exactly as it did."""
 
     def test_the_same_commands_in_the_same_order(self):
         live = _live()
         self.assertEqual(list(live), list(SURFACE))
-        self.assertEqual(len(live), 41)
+        self.assertEqual(len(live), 42)
 
     def test_every_command_is_unchanged(self):
         live = _live()

@@ -1,4 +1,4 @@
-"""`--json` on the seven commands a pipeline reads: one flag, one helper.
+"""`--json` on the eight commands a pipeline reads: one flag, one helper.
 
 The audit's complaint was that everything ctx knows is prose, so a pipeline
 that wants an answer has to regex a status board. The fix is not seven
@@ -6,16 +6,21 @@ serialisers — that is the same forty-one-copies problem the registry was for �
 it is one `_emit(data, human_fn)`, one envelope, and one place that writes it:
 `cli._finish`, after the exit code is known.
 
+Seven when it landed; eight since `ctx preview` was registered with
+`emits_json=True`, which is the single keyword that gives a command the flag.
+
 Four properties, and the order they are tested in is the order they break in:
 
 1. **The prose is untouched.** `GOLDEN` below was captured from the command
-   layer *before* `--json` existed and committed verbatim. Every line of it is
+   layer *before* `--json` existed and committed verbatim — every line but the
+   `preview` entry and `plan-check`'s last line, which postdate it and were
+   captured when the preview page was wired in. Every line of it is
    asserted, per command. A `--json` that quietly reworded `ctx status` would
    be a rewrite of every command wearing a flag's clothes.
 2. **The flag only changes rendering.** Same exit code, and the prose that
    would have been printed is in the document's `lines` instead — because
    `main` captures stdout for the whole call rather than trusting each printer.
-3. **The shapes are a contract.** Each of the seven is pinned key by key. A
+3. **The shapes are a contract.** Each of them is pinned key by key. A
    consumer that cannot rely on the shape is back to regexing, only now
    against JSON.
 4. **Refusals compose.** `--json` with `--strict`, and `--json` against a
@@ -39,7 +44,7 @@ from support import OK, Fixture  # noqa: E402
 
 CRITERIA = "## Objective\nDo the thing.\n\n## Acceptance criteria\n1. it works\n"
 
-# The seven, and the argv each is exercised with. One ledger, built by
+# The eight, and the argv each is exercised with. One ledger, built by
 # `Scenario.build`, run in this order — the goldens were captured in it.
 COMMANDS = [
     ("status", ["status"]),
@@ -49,11 +54,12 @@ COMMANDS = [
     ("verify", ["verify"]),
     ("plan-check", ["plan-check", "auth"]),
     ("findings", ["findings", "02-logout", "--plan", "auth"]),
+    ("preview", ["preview", "auth"]),
 ]
 
 
 class Scenario(Fixture):
-    """A ledger with enough in it that all seven commands have work to do:
+    """A ledger with enough in it that every one of them has work to do:
     a plan, two units in a wave, one of them focused and gated, one finding,
     and a `verify` block on disk that has drifted from ctx.yaml."""
 
@@ -264,11 +270,16 @@ concurrency: 2.0 unit(s) per wave (2 unit(s), 1 wave(s))
 estimated critical path ~1,000 tokens of 2,000 stated
   an estimate, not a measurement: the widest unit's `budget_tokens` in each wave, summed
 wrote .ctx/plans/auth/plan.json
+wrote .ctx/plans/auth/preview.html
 """.split("\n")[:-1]),
     'findings': (0, 
         """\
 round 1/3 — 1 minor open
   [1] minor: a nit (src/02-logout.py)
+""".split("\n")[:-1]),
+    'preview': (0, 
+        """\
+wrote .ctx/plans/auth/preview.html
 """.split("\n")[:-1]),
 }
 
@@ -362,6 +373,9 @@ SHAPES = {
                           "basis": str},
         "ownership_gaps": {"files": [{"path": str, "tests": [str]}],
                            "truncated": bool},
+        # Where the reviewable page was written, or None when rendering failed
+        # — which never fails the command. Additive, so JSON_SCHEMA stays at 1.
+        "preview": (str, NONE),
     },
     "findings": {
         "mode": str,
@@ -376,6 +390,18 @@ SHAPES = {
         "blocking": int,
         "ok": bool,
         "problem": (str, NONE),
+    },
+    # One shape for all three modes of `ctx preview`, filled in full every
+    # time: a consumer reading `problems` should not have to branch on which
+    # flag was typed to know the key is there.
+    "preview": {
+        "plan": str,
+        "page": (str, NONE),
+        "data": (str, NONE),
+        "plain": (str, NONE),
+        "problems": [str],
+        "checked": bool,
+        "opened": bool,
     },
 }
 
@@ -421,7 +447,7 @@ class TestHumanOutputIsByteIdentical(Scenario):
 
     def test_the_golden_covers_every_command_that_gained_the_flag(self):
         self.assertEqual(set(GOLDEN), set(cli.JSON_COMMANDS))
-        self.assertEqual(len(cli.JSON_COMMANDS), 7)
+        self.assertEqual(len(cli.JSON_COMMANDS), 8)
 
 
 # --------------------------------------------------------------------------- #
@@ -459,7 +485,7 @@ class TestTheFlagOnlyChangesRendering(Scenario):
         self.assertEqual(document["data"]["blocking"], 1)
 
     def test_a_command_without_the_flag_still_refuses_it(self):
-        """`--json` is on the seven that answer in it, and nowhere else.
+        """`--json` is on the commands that answer in it, and nowhere else.
 
         Rejected by argparse, before anything runs — which is why this is a
         raised `SystemExit` rather than a return code.

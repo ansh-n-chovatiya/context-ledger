@@ -106,8 +106,13 @@ class TestRefusalsAreDetectable(Fixture):
 
     # Not gates, and not previously in the `HARD_FAIL` allowlist: every one of
     # these exited 0 with the refusal on stdout.
+    # `preview` joins them rather than the gates below: it is not a gate, it
+    # is a renderer, and "there is no .ctx/ here" is a refusal to run it like
+    # any other. Nothing about it exited 0 on a refusal first, so there is no
+    # previously-allowlisted code to preserve.
     ORDINARY = ("status", "list", "resume", "briefing", "load", "task", "ask",
-                "save", "journal", "level", "start", "unit", "handoff", "next")
+                "save", "journal", "level", "start", "unit", "handoff", "next",
+                "preview")
     # The seven that already exited 2. Their code must not move.
     GATES = ("verify", "ci", "spec-ready", "plan-check", "doctor", "migrate",
              "trust")

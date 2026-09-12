@@ -289,6 +289,11 @@ class TestWaveInFlight(AdviceFixture):
 READ_BEFORE = {
     "plan-unit": "plan",    # cmd_plan_unit:    _active_slug(layout, args.plan, ...)
     "plan-check": "name",   # cmd_plan_check:   _active_slug(layout, args.name, ...)
+    # Added with `ctx preview`. The page is a view of a *plan*, so the plan is
+    # the positional, spelled as `plan-check` and `start` spell it — and there
+    # is no `--plan` on the subparser to read instead. Reading `--plan` here
+    # would make `ctx preview 01-api` hunt for a plan called `01-api`.
+    "preview": "name",      # cmd_preview:      _active_slug(layout, args.name, ...)
     "start": "name",        # cmd_start:        _active_slug(layout, args.name, ...)
     "merge": "plan",        # cmd_merge:        _active_slug(layout, args.plan, ...)
     "unit": "plan",         # cmd_unit:         _active_slug(layout, args.plan, ...)
