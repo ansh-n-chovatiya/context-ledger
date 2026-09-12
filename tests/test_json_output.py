@@ -86,39 +86,50 @@ class Scenario(Fixture):
     def normalise(self, text):
         """Everything about the output that is about *this* machine, removed.
 
-        The golden text has to survive a different temp directory, a different
-        interpreter path and tomorrow; nothing else about it may move.
+        The golden is shared by Linux, macOS and Windows, so it holds one
+        spelling of everything and this supplies it. Order matters throughout:
+        every literal substitution happens while the text still carries the
+        platform's own separators, and only the last step rewrites those.
         """
-        # The resolved form goes first, and on macOS that matters: a temp dir
-        # is handed out as /var/folders/... and resolves to /private/var/...,
-        # so replacing only the unresolved string leaves a bare `/private`
-        # in front of the placeholder. That artifact was captured into the
-        # golden, which then could not match on Linux, where there is no such
-        # prefix — the first thing this branch hit on a non-macOS runner.
-        # The system policy path is chosen per platform — /etc/ctx/policy.yaml
-        # on POSIX, C:\\ProgramData\\ctx\\policy.yaml on Windows — so the
-        # concrete path cannot live in a golden shared by both.
+        # Per platform: /etc/ctx/policy.yaml, or C:\ProgramData\ctx\...
         text = re.sub(r"\S*[/\\]ctx[/\\]policy\.yaml", "<SYSTEM-POLICY>", text)
+
+        # Each root gets every spelling the output might use: as handed out,
+        # resolved (macOS hands out /var/... and resolves to /private/var/...),
+        # posix-slashed, and abbreviated against the home directory, which is
+        # what `doctor` prints — on Windows a temp dir sits under the profile,
+        # so the only form that appeared was `~/AppData/Local/Temp/...`.
+        home = Path.home()
         for root, token in ((self.root, "<ROOT>"), (self.untracked, "<GLOBAL>")):
-            text = text.replace(str(Path(root).resolve()), token)
-            text = text.replace(str(root), token)
-        if os.sep != "/":
-            # Paths below a placeholder are still spelled with the platform
-            # separator: `<GLOBAL>\global\policy.yaml` against the golden's
-            # `<GLOBAL>/global/policy.yaml`. The golden is shared by three
-            # platforms, so it holds one spelling and this supplies it.
-            text = text.replace("\\", "/")
-        text = text.replace(sys.executable, "<PYTHON>")
+            spellings = []
+            for candidate in (Path(root).resolve(), Path(root)):
+                spellings += [str(candidate), candidate.as_posix()]
+                try:
+                    tail = candidate.relative_to(home)
+                except ValueError:
+                    continue
+                spellings += ["~/" + tail.as_posix(), "~" + os.sep + str(tail)]
+            for spelling in sorted(set(spellings), key=len, reverse=True):
+                text = text.replace(spelling, token)
+
+        # The interpreter, in both spellings, before any separator rewriting —
+        # `sys.executable` carries backslashes on Windows and would stop
+        # matching the moment they were converted.
+        for spelling in (sys.executable, Path(sys.executable).as_posix()):
+            text = text.replace(spelling, "<PYTHON>")
+
         text = re.sub(r"\d{4}-\d{2}-\d{2}T[\d:.]+", "<TS>", text)
         text = re.sub(r"\d{4}-\d{2}-\d{2}", "<DATE>", text)
         text = re.sub(r"\b\d{2}:\d{2}\b", "<TIME>", text)
-        # The briefing's own size is measured before this normalisation runs,
-        # so it carries the length of *this* machine's interpreter path — the
-        # verify command embeds it. Locally that path is 44 characters and on a
-        # macOS runner it is 61, which moved the count from 239 to 256 and
-        # failed a test whose subject is the prose, not the arithmetic.
+        # The briefing's size is measured before this runs, so it carries the
+        # length of this machine's interpreter path: 44 characters locally, 61
+        # on a macOS runner. The subject is the prose, not the arithmetic.
         text = re.sub(r"\b\d+/(\d+) chars \(~\d+ tokens\)",
                       r"<N>/\1 chars (~<T> tokens)", text)
+
+        # Last, and only now: whatever separators are left below a placeholder.
+        if os.sep != "/":
+            text = text.replace("\\", "/")
         return text
 
     def human(self, argv):
