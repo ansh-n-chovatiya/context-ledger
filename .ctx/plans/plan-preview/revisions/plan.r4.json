@@ -2,7 +2,7 @@
   "ctx_schema": 1,
   "plan": "plan-preview",
   "spec": "plan-preview",
-  "revision": 6,
+  "revision": 4,
   "generated": "2026-09-12",
   "waves": [
     [
@@ -29,8 +29,7 @@
       "depends_on": [],
       "owns": [
         "ctx/plain.py",
-        "tests/test_plain_source.py",
-        "tests/test_shared_paths.py"
+        "tests/test_plain_source.py"
       ],
       "reads": [
         "ctx/frontmatter.py",
@@ -78,8 +77,7 @@
       ],
       "owns": [
         "ctx/preview.py",
-        "tests/test_preview_model.py",
-        "tests/test_shared_paths.py"
+        "tests/test_preview_model.py"
       ],
       "reads": [
         "ctx/plan.py",
@@ -106,8 +104,7 @@
       ],
       "owns": [
         "ctx/preview_page.py",
-        "tests/test_preview_page.py",
-        "tests/test_shared_paths.py"
+        "tests/test_preview_page.py"
       ],
       "reads": [
         "ctx/preview.py",

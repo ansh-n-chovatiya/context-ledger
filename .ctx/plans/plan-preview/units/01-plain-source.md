@@ -7,6 +7,7 @@ depends_on: []
 owns:
   - ctx/plain.py
   - tests/test_plain_source.py
+  - tests/test_shared_paths.py
 reads:
   - path: ctx/frontmatter.py
     symbols:
@@ -33,7 +34,7 @@ forbid:
   - ctx/commands.py
   - ctx/cli.py
 budget_tokens: 55000
-status: pending
+status: done
 verify:
   - kind: diff
   - kind: symbol
@@ -129,6 +130,22 @@ class Plain:
 your generator never reaches into a plan itself. Define the exact keys you need
 and document them in the module docstring; `03` will fill them.
 
+## The module enumeration — added mid-wave, and why
+`tests/test_shared_paths.py` holds `ALL_MODULES`, a hand-written tuple of every
+module in `ctx/`, asserted equal to `ctx/*.py` in **both directions**. It is
+deliberately not a glob: a new module is either listed or the suite goes red.
+
+Wave 1 adds two modules — your `ctx/plain.py` and sibling `02-safe-html`'s
+`ctx/preview_html.py`, which is now on disk and finished. This file was in no
+unit's `owns`, which is an orchestrator error, not yours. It is yours now, and
+you add **both** names because you are the wave's second finisher.
+
+Add `"plain.py"` and `"preview_html.py"` to the tuple, keeping its existing
+alphabetical order and line shape. Change nothing else in that file. Then
+confirm the per-module rules there still hold for `ctx/plain.py`: it must not
+build a `units` path segment (only `plan.py` and `paths.py` may) and must not
+glob `*/units/*.md`.
+
 ## Acceptance criteria
 
 **Parsing and absence**
@@ -189,6 +206,8 @@ and document them in the module docstring; `03` will fill them.
 15. Every test is shown failing before it passes. Say so in your report, with
     the failure output — not "I wrote tests and they pass".
 16. No file outside `owns` is modified.
+17. `ALL_MODULES` in `tests/test_shared_paths.py` lists both new wave-1
+    modules, and `python3 -m unittest discover -s tests -q` is green.
 
 ## Return contract
 Report: files changed · each criterion and how it was checked · verbatim verify

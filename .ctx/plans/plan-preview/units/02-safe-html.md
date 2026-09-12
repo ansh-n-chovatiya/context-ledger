@@ -20,7 +20,7 @@ forbid:
   - ctx/commands.py
   - ctx/cli.py
 budget_tokens: 55000
-status: pending
+status: done
 verify:
   - kind: diff
   - kind: symbol
@@ -105,6 +105,22 @@ preview_html.attr(value) -> str         # attribute-context escaping
     clean.
 11. Every test is shown failing before it passes. Report the failure output.
 12. No file outside `owns` is modified.
+
+## Orchestrator rulings on this unit's report
+
+**Criterion 1's wording was wrong; the unit's reading is accepted.** "Contains no
+`onerror`" and "renders visibly as that literal string" cannot both hold — the
+visible text *is* the payload, and the payload contains the word `onerror`. The
+security-meaningful assertion is the one that shipped: no `onerror` in *tag*
+context, an `HTMLParser` walk proving the output carries no attributes anywhere,
+and `visible(out) == payload`. That is stronger than what was asked for. The
+defect was in this contract, not in the implementation.
+
+**`markup(text, extra_patterns=())` is accepted as an additive interface.** The
+published form `markup(text)` is unchanged, so units 03 and 04 code against
+exactly what they were promised and the wave is not stopped. The seam exists so
+`config["redact"]` house patterns can reach `redact.scrub`, which this repo's
+recorded redaction note asks for. Keep it.
 
 ## Return contract
 Report: files changed · each criterion and how it was checked · verbatim verify

@@ -38,7 +38,8 @@ ALL_MODULES = (
     "bundle.py", "cli.py", "commands.py", "complexity.py", "config.py",
     "contract.py", "detect.py", "dispatch.py",
     "findings.py", "frontmatter.py", "hooks.py", "journal.py", "lock.py", "log.py",
-    "migrate.py", "miniyaml.py", "paths.py", "phases.py", "plan.py",
+    "migrate.py", "miniyaml.py", "paths.py", "phases.py", "plain.py",
+    "plan.py", "preview_html.py",
     "redact.py", "review.py", "snapshot.py", "spec.py", "state.py",
     "telemetry.py", "trust.py", "verify.py", "work.py", "worktree.py",
 )

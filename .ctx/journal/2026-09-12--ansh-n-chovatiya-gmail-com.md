@@ -34,3 +34,10 @@
 22:09 | plan | plan-preview | checked, graph r2
 22:10 | plan | plan-preview | checked, graph r3
 22:10 | plan | plan-preview | checked, graph r4
+22:11 | start | plan-preview | wave 1, 2 unit(s), 0 worktree(s), 2 snapshot(s), 0 already in flight
+22:20 | plan | plan-preview | checked, graph r5
+22:21 | plan | plan-preview | checked, graph r6
+22:21 | start | 01-plain-source | re-sealed deliberately (--reseal): contract changed (owns, acceptance criteria) and the new contract is now the promise the done-gate holds it to (recorded findings …
+22:21 | start | plan-preview | wave 1, 2 unit(s), 0 worktree(s), 1 snapshot(s), 1 already in flight
+22:24 | unit | 02-safe-html | done
+22:27 | unit | 01-plain-source | done

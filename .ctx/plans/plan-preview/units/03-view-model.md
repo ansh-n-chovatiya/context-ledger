@@ -9,6 +9,7 @@ depends_on:
 owns:
   - ctx/preview.py
   - tests/test_preview_model.py
+  - tests/test_shared_paths.py
 reads:
   - path: ctx/plan.py
     symbols:
@@ -116,6 +117,21 @@ Shape (additive changes only once your wave ends):
 
 Consume `plain.Plain.unit(name, facts)` from unit `01` for every step's prose.
 Its report names the exact `facts` keys — read it before writing the caller.
+
+## The module enumeration — read before you finish
+`tests/test_shared_paths.py` holds `ALL_MODULES`, a hand-written tuple of every
+module in `ctx/`, and asserts `sorted(ALL_MODULES) == sorted(ctx/*.py)` by
+**exact equality in both directions**. It is deliberately not a glob: a new
+module is either listed there or the completeness test goes red.
+
+You create a new module, so **you must add its name to `ALL_MODULES` in the same
+change**. The file is in your `owns` for that reason. Add only the module you
+created — a name listed before its file exists fails the same assertion from the
+other side.
+
+Check the other per-module rules in that file still hold for your module: it
+must not build a `units` path segment (only `plan.py` and `paths.py` may) and
+must not glob `*/units/*.md`.
 
 ## Acceptance criteria
 
