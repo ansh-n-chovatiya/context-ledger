@@ -322,7 +322,7 @@ class TestTheTierActuallyMoves(ScoringFixture):
         """End to end, through the command that actually spends the money."""
         code, out = self.cli("start")
         self.assertEqual(code, 0, out)
-        line = next(l for l in out.splitlines() if l.startswith("- `01-move`"))
+        line = next(line for line in out.splitlines() if line.startswith("- `01-move`"))
         self.assertIn("sonnet", line)
         self.assertNotIn("opus", line)
         self.assertNotIn("interface", line)

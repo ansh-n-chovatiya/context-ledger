@@ -60,15 +60,16 @@ class TestModelSelection(DispatchFixture):
         out = self.brief()
         default = config_mod.DEFAULTS["models"]["runner"]
         for name in ("01-a", "02-b"):
-            line = next(l for l in out.splitlines() if l.startswith(f"- `{name}`"))
+            line = next(line for line in out.splitlines()
+                        if line.startswith(f"- `{name}`"))
             self.assertIn(default, line, line)
 
     def test_a_unit_may_override_the_model_for_its_own_work(self):
         self.unit("01-cheap", owns=["src/a.py"])
         self.unit("02-hard", owns=["src/b.py"], model="opus")
         out = self.brief()
-        cheap = next(l for l in out.splitlines() if l.startswith("- `01-cheap`"))
-        hard = next(l for l in out.splitlines() if l.startswith("- `02-hard`"))
+        cheap = next(line for line in out.splitlines() if line.startswith("- `01-cheap`"))
+        hard = next(line for line in out.splitlines() if line.startswith("- `02-hard`"))
         self.assertIn(config_mod.DEFAULTS["models"]["runner"], cheap)
         self.assertIn("opus", hard)
 

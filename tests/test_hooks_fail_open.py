@@ -196,6 +196,11 @@ class TestTheRestOfFailOpenIsUnchanged(NewerLedgerFixture):
         )
 
     def test_a_garbage_payload_is_still_survivable(self):
+        # A garbage payload parses to {}, so hooks.main falls back to
+        # paths.project_root(None) -> CLAUDE_PROJECT_DIR or cwd. The fixture
+        # clears that variable, so without this line the hook resolves to the
+        # real checkout and writes telemetry into this repository's own .ctx/.
+        os.environ["CLAUDE_PROJECT_DIR"] = str(self.root)
         out = io.StringIO()
         self.assertEqual(hooks.main("SessionStart", io.StringIO("not json"), out), 0)
         self.assertEqual(hooks.main("SessionStart", io.StringIO(""), out), 0)

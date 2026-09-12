@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ctx import (  # noqa: E402
-    bundle, dispatch, frontmatter, plan as plan_mod, spec as spec_mod, state,
+    bundle, dispatch, frontmatter, plan as plan_mod, state,
 )
 from support import OK, Fixture  # noqa: E402
 

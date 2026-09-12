@@ -1,5 +1,6 @@
 """Shared test fixture: a throwaway project with an initialised ledger."""
 
+import builtins
 import contextlib
 import io
 import json
@@ -24,6 +25,111 @@ from ctx.cli import main as cli_main  # noqa: E402
 # asserts nothing on a plain Windows box — it just happened to work on CI.
 OK = '"%s" -c pass' % sys.executable
 FAILS = '"%s" -c "import sys; sys.exit(1)"' % sys.executable
+
+
+# --------------------------------------------------------------------------- #
+# The isolation guard
+# --------------------------------------------------------------------------- #
+#
+# A test once escaped its fixture and overwrote this repository's own
+# `.ctx/.gitignore` with a single `*` and no trailing newline. Committed, that
+# one character would have gitignored the entire `.ctx/` tree — plans, specs,
+# journal, decisions — and the ledger would have silently stopped being
+# tracked, with nothing failing anywhere. A human noticed the file looked
+# wrong; the suite had no way to say so.
+#
+# Every test is supposed to work inside its own `TemporaryDirectory` (see
+# `Fixture.setUp` below). This patches the filesystem calls the ledger's own
+# write path actually uses — `atomic.write_text` and `frontmatter.Document`
+# both funnel through a temp file next to the destination and finish with
+# `os.replace`; direct callers reach for `Path.write_text`/`write_bytes`,
+# plain `open`, or `os.mkdir`/`os.makedirs` — and fails loudly, by path, the
+# moment one of them targets this checkout's own `.ctx/` rather than a
+# fixture's. It is installed at import time, below, so importing this module
+# is enough to arm it: `unittest discover` imports every `test_*.py` file
+# before running any test, and most of them import this one, so by the time
+# the first test runs the guard is already live for the whole process —
+# including the handful of files that never import `support` at all.
+
+
+class RealLedgerWriteError(AssertionError):
+    """A test (or the code it drove) wrote inside this checkout's own `.ctx/`
+    instead of a fixture's `TemporaryDirectory`."""
+
+
+# This checkout's own ledger — never a fixture's, which lives under the OS
+# temp root and so can never resolve inside this path.
+_REAL_CTX = (Path(__file__).resolve().parent.parent / paths.CTX_DIRNAME).resolve()
+
+
+def _inside_real_ctx(candidate):
+    try:
+        resolved = Path(os.fspath(candidate)).resolve()
+    except (OSError, TypeError, ValueError):
+        return False
+    return resolved == _REAL_CTX or _REAL_CTX in resolved.parents
+
+
+def _guard(path, verb):
+    if path is None or isinstance(path, int):  # an fd: nothing to resolve
+        return
+    if _inside_real_ctx(path):
+        raise RealLedgerWriteError(
+            f"a test tried to {verb} {os.fspath(path)!r}, inside this "
+            f"checkout's own ledger at {_REAL_CTX} — every test must write "
+            f"through its own fixture (support.Fixture.setUp), never here"
+        )
+
+
+def _install_isolation_guard():
+    real_replace = os.replace
+    real_rename = os.rename
+    real_mkdir = os.mkdir
+    real_makedirs = os.makedirs
+    real_open = builtins.open
+    real_io_open = io.open
+
+    def guarded_replace(src, dst, *a, **kw):
+        _guard(dst, "replace")
+        return real_replace(src, dst, *a, **kw)
+
+    def guarded_rename(src, dst, *a, **kw):
+        _guard(dst, "rename")
+        return real_rename(src, dst, *a, **kw)
+
+    def guarded_mkdir(path, *a, **kw):
+        _guard(path, "mkdir")
+        return real_mkdir(path, *a, **kw)
+
+    def guarded_makedirs(path, *a, **kw):
+        _guard(path, "makedirs")
+        return real_makedirs(path, *a, **kw)
+
+    write_flags = ("w", "a", "x", "+")
+
+    def guarded_open(file, mode="r", *a, **kw):
+        if any(flag in mode for flag in write_flags):
+            _guard(file, "open(mode=%r)" % mode)
+        return real_open(file, mode, *a, **kw)
+
+    def guarded_io_open(file, mode="r", *a, **kw):
+        if any(flag in mode for flag in write_flags):
+            _guard(file, "open(mode=%r)" % mode)
+        return real_io_open(file, mode, *a, **kw)
+
+    # `pathlib.Path.write_text`/`write_bytes`/`open` call `io.open` directly —
+    # not the `open` builtin, which is a separate attribute that merely
+    # started out equal to it — so both have to be patched, or every write
+    # made through a `Path` would sail past a guard on `builtins.open` alone.
+    os.replace = guarded_replace
+    os.rename = guarded_rename
+    os.mkdir = guarded_mkdir
+    os.makedirs = guarded_makedirs
+    builtins.open = guarded_open
+    io.open = guarded_io_open
+
+
+_install_isolation_guard()
 
 
 def _cleanup(tmp, attempts=5):

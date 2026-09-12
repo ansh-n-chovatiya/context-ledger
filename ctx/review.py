@@ -19,6 +19,7 @@ context, which is what keeps a twenty-unit plan affordable.
 """
 
 import difflib
+import subprocess
 
 from . import plan, redact, snapshot
 
@@ -85,11 +86,37 @@ def wave_scope(layout, slug, unit):
     which keeps the one mechanical protection this project has against a unit
     writing wherever it likes.
 
-    Two exclusions are deliberate. A unit in a *different* wave is not running
-    now — its `owns` is not an excuse for a path changing, or the check would
-    degrade to "anything any unit in the plan ever claimed". A `done` unit has
-    already been reviewed and its writes already landed; a later change to its
-    paths is somebody else's, and belongs in a report.
+    Two exclusions are deliberate, with one qualification on the second. A unit
+    in a *different* wave is not running now — its `owns` is not an excuse for
+    a path changing, or the check would degrade to "anything any unit in the
+    plan ever claimed". A `done` unit has been reviewed, and once its writes
+    have actually *landed* — committed — a later change to its paths is
+    somebody else's and belongs in a report, so it stays excluded.
+
+    The qualification: `ctx unit --status done` marks a unit done the moment
+    its own gate passes, which is well before anyone commits. A wave gated one
+    unit at a time can run three of those in a row with no commit between any
+    of them — the realistic case, since the work is written by a runner *after*
+    dispatch, not staged and committed ahead of it. The first unit's `owns` are
+    then still sitting uncommitted in the one shared tree while the *next*
+    unit's gate runs, and excluding them outright reproduces the exact failure
+    this function exists to prevent — a sibling's legitimate, finished write
+    reported as this unit's scope violation — just moved from "running" to
+    "done but not yet committed". So a `done` sibling is excused for exactly as
+    long as its own `owns` paths are still uncommitted (`_uncommitted_paths`
+    below), and reverts to fully excluded the moment those paths are committed
+    — which is exactly where the exclusion was already correct. This is
+    narrower than treating a `done` sibling as still running: a *fresh*
+    uncommitted write to its `owns` after it was reviewed — nobody else's, its
+    own — would also show up as uncommitted and would also, correctly, still
+    not be this unit's problem to report; it is the done unit's contract that
+    answers for it, and the done-gate already refuses a contract that changes
+    after dispatch.
+
+    When git itself cannot answer whether a path is committed — no repository,
+    or the command failed — nothing is excused on its account. Failing towards
+    reporting too much is the same choice `wave_scope` already makes when the
+    wave cannot be determined at all, below.
 
     When the wave cannot be determined — no plan on disk, no `wave` field and
     no derivable one — this returns the unit's own `owns` unchanged. That is
@@ -104,7 +131,10 @@ def wave_scope(layout, slug, unit):
 
 
 def _concurrent_siblings(layout, slug, unit):
-    """[(name, owns)] for the wave's other not-done units, sorted by name.
+    """[(name, owns)] for the wave's other units that are still writing to this
+    tree, sorted by name — "still writing" meaning not `done`, or `done` with
+    its `owns` still uncommitted. See `wave_scope`'s docstring for why the
+    second half exists.
 
     The wave is read from the unit's own `wave:` field where it has one, which
     is what `ctx plan-check` writes back to disk and what the board and the
@@ -126,11 +156,57 @@ def _concurrent_siblings(layout, slug, unit):
                 break
     if not members:
         return []
-    return [
-        (u.name, list(u.owns))
-        for u in sorted(members, key=lambda u: u.name)
-        if u.name != unit.name and u.status != "done" and u.owns
-    ]
+
+    # Computed at most once, and only if a `done` sibling is in the wave at
+    # all — most gates have none, and this is a subprocess call.
+    dirty = None
+    out = []
+    for u in sorted(members, key=lambda u: u.name):
+        if u.name == unit.name or not u.owns:
+            continue
+        if u.status != "done":
+            out.append((u.name, list(u.owns)))
+            continue
+        if dirty is None:
+            dirty = _uncommitted_paths(layout) or []
+        if any(snapshot.covers(path, u.owns) for path in dirty):
+            out.append((u.name, list(u.owns)))
+    return out
+
+
+def _uncommitted_paths(layout):
+    """Repo-relative paths with uncommitted changes in the shared working
+    tree, or `None` when git itself cannot answer — no repository at this
+    root, or the command failed.
+
+    `None` is not the same as "nothing is uncommitted": a caller that treated
+    them alike would excuse a `done` sibling's `owns` forever rather than only
+    while it is genuinely dirty, on the strength of a question git never
+    actually answered. Every caller here does the safer thing with `None` —
+    excuses nothing — which is the same "report too much, excuse nothing
+    silently" choice `wave_scope` makes when it cannot determine the wave.
+
+    Untracked files count, same as `_check_diff`'s and `gate_check`'s own
+    `git status` reads: a unit's first write to a path it owns has nothing
+    tracked to be "modified" yet, and skipping untracked entries would treat
+    that as clean when it is exactly the uncommitted work this exists to spot.
+    """
+    root = layout.root.parent
+    try:
+        completed = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=str(root), capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    paths = []
+    for line in completed.stdout.splitlines():
+        entry = line[3:].strip().strip('"')
+        if entry:
+            paths.append(entry)
+    return paths
 
 
 def build(layout, config, unit, slug, root, round_number=1, previous=None):

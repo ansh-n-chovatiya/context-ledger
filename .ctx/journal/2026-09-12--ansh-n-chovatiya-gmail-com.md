@@ -14,3 +14,7 @@
 01:12 | plan | close-the-recorded-backlog | checked, graph r4
 01:29 | plan | close-the-recorded-backlog | checked, graph r5
 01:45 | unit | 05-lint-debt-and-last-duplication | done
+11:40 | start | close-the-recorded-backlog | wave 3, 3 unit(s), 0 worktree(s), 3 snapshot(s), 0 already in flight
+12:18 | unit | 06-test-isolation-guard | done
+12:20 | unit | 07-wave-scope-after-done | done
+12:21 | unit | 08-test-lint-debt | done

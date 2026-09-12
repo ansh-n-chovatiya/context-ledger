@@ -163,7 +163,8 @@ class PruneDurability(Fixture):
         self.assertEqual(len(folded), 1)
         self.assertEqual(archives, [archive])
         text = archive.read_text(encoding="utf-8")
-        self.assertEqual(len([l for l in text.splitlines() if "| edit |" in l]), 240)
+        self.assertEqual(
+            len([line for line in text.splitlines() if "| edit |" in line]), 240)
 
     def test_the_digest_survives_a_failed_write(self):
         """Criterion 1 for `write_digest`. The digest is read by SessionStart on
@@ -357,8 +358,9 @@ class MergedStream(Fixture):
         legacy, _ada, _grace = self.seed_interleaved()
         before = legacy.read_bytes()
         journal.write_digest(self.layout, self.config)
-        body = [l[2:] for l in self.layout.digest.read_text(encoding="utf-8").splitlines()
-                if l.startswith("- ")]
+        body = [line[2:]
+                for line in self.layout.digest.read_text(encoding="utf-8").splitlines()
+                if line.startswith("- ")]
         self.assertEqual(self.targets(body), self.ORDER)
         self.assertEqual(legacy.read_bytes(), before)
 
@@ -414,7 +416,7 @@ class MergedStream(Fixture):
         text = archives[0].read_text(encoding="utf-8")
         self.assertEqual(text.count("## %s" % self.DAY), 1,
                          "one section per day, not one per author")
-        body = [l for l in text.splitlines() if "| edit |" in l]
+        body = [line for line in text.splitlines() if "| edit |" in line]
         self.assertEqual(self.targets(body), self.ORDER)
 
     def test_an_archive_is_never_read_back_as_a_day_file(self):

@@ -165,7 +165,7 @@ class WaveFixture(Fixture):
             )
 
         self.concurrently(work, units)
-        for name, (built, _stats, problem) in packages.items():
+        for name, (_built, _stats, problem) in packages.items():
             self.assertEqual(problem, "", f"{name} failed to build a package")
         return {name: (built, stats, built.read_text(encoding="utf-8"))
                 for name, (built, stats, _problem) in packages.items()}

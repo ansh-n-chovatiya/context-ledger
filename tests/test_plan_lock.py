@@ -17,7 +17,6 @@ import json
 import os
 import subprocess
 import sys
-import time
 import unittest
 import unittest.mock
 from pathlib import Path

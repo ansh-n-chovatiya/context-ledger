@@ -10,7 +10,6 @@ import io
 import json
 import os
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -108,7 +107,7 @@ class TestJournalCost(Fixture):
             journal.append(self.layout, self.config, "edit", f"src/file{index}.py")
         journal.write_digest(self.layout, self.config)
         text = self.layout.digest.read_text(encoding="utf-8")
-        lines = [l for l in text.splitlines() if l.startswith("- ")]
+        lines = [line for line in text.splitlines() if line.startswith("- ")]
         self.assertEqual(len(lines), self.config["journal"]["digest_lines"])
         self.assertIn("earlier entries", text)
         self.assertLess(len(text), 2500)
@@ -370,6 +369,11 @@ class TestHooks(Fixture):
         self.assertIn("boom", self.layout.errors.read_text(encoding="utf-8"))
 
     def test_garbage_payload_is_survivable(self):
+        # A garbage payload parses to {}, so hooks.main falls back to
+        # paths.project_root(None) -> CLAUDE_PROJECT_DIR or cwd. The fixture
+        # clears that variable, so without this line the hook resolves to the
+        # real checkout and writes telemetry into this repository's own .ctx/.
+        os.environ["CLAUDE_PROJECT_DIR"] = str(self.root)
         out = io.StringIO()
         self.assertEqual(hooks.main("SessionStart", io.StringIO("not json"), out), 0)
         self.assertEqual(hooks.main("SessionStart", io.StringIO(""), out), 0)

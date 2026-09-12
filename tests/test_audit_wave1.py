@@ -5,9 +5,7 @@ future refactor is free to move the code but not to reintroduce the defect.
 """
 
 import datetime
-import io
 import json
-import os
 import sys
 import unittest
 import warnings
