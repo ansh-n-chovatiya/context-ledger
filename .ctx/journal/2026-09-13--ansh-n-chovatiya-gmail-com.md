@@ -22,3 +22,7 @@
 01:24 | shell | tests
 01:24 | shell | 2>/dev/null
 01:24 | shell | >/dev/null
+01:24 | shell | Claude-Session:
+08:57 | shell | ctx/hooks.py
+08:57 | handoff | .ctx/contexts/handoff.ctx.md
+08:58 | shell | .ctx/contexts/handoff.ctx.md
