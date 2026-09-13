@@ -6,7 +6,7 @@ having proved nothing, and every later remediation wave is validated against
 that signal. `.github/workflows/ci.yml` now parses the suite's own count and
 holds it to a floor; this file is what keeps that check honest.
 
-The assertions here are deliberately not substring greps. `report.md:179`
+The assertions here are deliberately not substring greps. `docs/history/report.md:179`
 records that several existing meta-tests grep `ci.yml` for plain substrings
 that a prose comment in the file would satisfy, so this file does two things
 instead:

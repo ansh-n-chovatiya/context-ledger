@@ -95,7 +95,7 @@ include = [
     "/README.md",
     # The README is now a hub: it links to docs/reference.md,
     # docs/walkthroughs.md, docs/operations.md, and to GUIDE.md, SECURITY.md
-    # and report.md beside them. Shipping the README without those puts an
+    # and docs/history/report.md beside them. Shipping the README without those puts an
     # artefact on an index whose front page points at files it does not
     # contain. The rule this list now follows is simply "if the shipped README
     # links to it, it ships", and
@@ -105,7 +105,7 @@ include = [
     "/docs",
     "/GUIDE.md",
     "/SECURITY.md",
-    "/report.md",
+    "/docs/history/report.md",
     "/CHANGELOG.md",
     "/pyproject.toml",
 ]

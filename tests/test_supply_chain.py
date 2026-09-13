@@ -14,7 +14,7 @@ rather than against text:
   * **Governance.** `SECURITY.md`, `CODEOWNERS` and `.github/dependabot.yml`
     exist and say something a reader can act on.
 
-**How these assertions avoid being comment-satisfiable.** `report.md:179`
+**How these assertions avoid being comment-satisfiable.** `docs/history/report.md:179`
 records the failure mode this file is written against: a meta-test that greps a
 workflow for a substring passes when someone writes that substring in a prose
 comment, so the test measures the file's vocabulary rather than its behaviour.

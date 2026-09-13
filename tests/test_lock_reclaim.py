@@ -1,6 +1,6 @@
 """The stale-lock reclaim's double-holder path: reproduced, then closed.
 
-`report.md` §3.3 recorded this as code-path only — "can theoretically hand the
+`docs/history/report.md` §3.3 recorded this as code-path only — "can theoretically hand the
 lock to two holders and unlinks locks it does not own" — explicitly not
 reproduced under 4-way timing contention. A race that only shows up if the
 scheduler happens to pause a process between two adjacent syscalls does not
@@ -20,7 +20,7 @@ uses to widen `_rotate`'s replace window — a seam the code under test already
 calls through, not a rewrite of the code under test.
 
 * `ReclaimRaceTests.test_the_shipped_stat_then_unlink_hands_the_lock_to_two_holders`
-  is the positive control: a faithful reconstruction of the code `report.md`
+  is the positive control: a faithful reconstruction of the code `docs/history/report.md`
   cited (`stat` then `unlink`, no verification), run under the forced
   interleaving. It reproduces both halves of the claim — two processes each
   believe, at overlapping moments, that they are the lock's sole holder, and
@@ -73,7 +73,7 @@ def wait_for(*paths):
 # `role="c"` is the delayed reclaimer. It reads the original file's mtime
 # first — genuinely stale, genuinely true at that instant — and is then held
 # by a patched `Path.stat` until `b` has provably become the holder, before
-# it is allowed to act on what it read. That is the exact gap `report.md`
+# it is allowed to act on what it read. That is the exact gap `docs/history/report.md`
 # named: a decision made before the delete, acted on after the world moved.
 _WORKER = '''
 import os, sys, time
@@ -89,7 +89,7 @@ mode = sys.argv[2]  # "shipped" or "fixed"
 
 
 def old_reclaim(path, stale):
-    """The reconstruction: `report.md`'s own description, stat then unlink,
+    """The reconstruction: `docs/history/report.md`'s own description, stat then unlink,
     with no verification that what is deleted is what was inspected."""
     try:
         if time.time() - path.stat().st_mtime > stale:
@@ -123,7 +123,7 @@ if role == "c":
     # held at exactly the point immediately after that last pristine read
     # until `b` has finished its whole reclaim-and-recreate cycle, so what it
     # acts on next is stale information about a file that has since changed
-    # underneath it — the exact gap `report.md` named. Which call is "the
+    # underneath it — the exact gap `docs/history/report.md` named. Which call is "the
     # last pristine read" differs by shape: the shipped code reads only
     # `stat()` before its unlink; the fixed one reads `stat()` and then the
     # token bytes before its rename. Both are calls the code under test
@@ -217,7 +217,7 @@ class ReclaimRaceTests(Fixture):
         self.assertTrue(
             result["became_holder_c"],
             "c did not become a second holder — the shipped shape resisted "
-            "the exact interleaving report.md described",
+            "the exact interleaving docs/history/report.md described",
         )
 
     def test_the_fixed_reclaim_never_hands_the_lock_to_two_holders(self):
@@ -240,7 +240,7 @@ class ReclaimRaceTests(Fixture):
         )
         self.assertFalse(
             result["became_holder_c"],
-            "c became a second holder — the exact double-holder report.md "
+            "c became a second holder — the exact double-holder docs/history/report.md "
             "described",
         )
         path = lock.path_for(self.layout, NAME)

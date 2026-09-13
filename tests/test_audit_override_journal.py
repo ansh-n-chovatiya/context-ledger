@@ -6,7 +6,7 @@ door to the same place — a unit reaches `done` with its checks unrun — and i
 journalled `ok`. The override text existed, but only as a merge *message*: it
 printed to the terminal and scrolled away.
 
-That is the objection `report.md` raises against `CTX_GATE=off` at line 123 —
+That is the objection `docs/history/report.md` raises against `CTX_GATE=off` at line 123 —
 an escape hatch with "no audit record" is not meaningfully different from no
 gate, because nobody can find it afterwards. The fix is not a second vocabulary:
 one grep over the journal has to find both overrides, so `--skip-gate` writes

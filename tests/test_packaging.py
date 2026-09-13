@@ -25,7 +25,7 @@ Two notes on method:
   * the workflow assertions parse the file and read *structure*, and where they
     do look at text they look at text with comments removed. This file's own
     subject matter is full of the words it forbids ("twine", "id-token"), and
-    `report.md:179` records meta-tests in this repository that a prose comment
+    `docs/history/report.md:179` records meta-tests in this repository that a prose comment
     would have satisfied. `strip_comments` is imported from
     `tests/test_ci_floor.py` along with the workflow reader: duplicating a YAML
     parser to avoid a test-to-test import would be the worse trade.

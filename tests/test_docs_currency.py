@@ -286,7 +286,7 @@ class LinkTests(unittest.TestCase):
 
 
 class ArchivedDocumentTests(unittest.TestCase):
-    """`AUDIT.md`, `PRODUCTION-AUDIT.md` and `PREVIEW-PLAN.md` moved to `docs/history/`.
+    """The closed audits and plans moved to `docs/history/`.
 
     Both described releases four and two minors old while sitting at the root
     where a reader takes them as current — `PRODUCTION-AUDIT.md`'s "snapshot.py
@@ -295,7 +295,8 @@ class ArchivedDocumentTests(unittest.TestCase):
     nothing living may point at where they used to be.
     """
 
-    MOVED = ("AUDIT.md", "PRODUCTION-AUDIT.md", "PREVIEW-PLAN.md")
+    MOVED = ("AUDIT.md", "PRODUCTION-AUDIT.md", "PREVIEW-PLAN.md",
+             "report.md")
 
     # Dated records of a past state. Rewriting a changelog entry or an audit to
     # use a path that did not exist when it was written would falsify it, so
@@ -303,7 +304,6 @@ class ArchivedDocumentTests(unittest.TestCase):
     EXEMPT = (
         ".ctx",                              # the project's own ledger
         "CHANGELOG.md",                      # release notes, dated
-        "report.md",                         # the current audit, dated
         "docs/history",                      # the archived documents themselves
         "tests/test_audit_merge_preflight.py",  # cites the audit that flagged it
         "tests/test_docs_currency.py",       # this file names them to check them

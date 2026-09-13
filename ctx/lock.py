@@ -120,7 +120,7 @@ def _reclaim(path, stale):
     syscall — a reclaimer that got scheduled first may already have removed
     that file and put a brand new, live one in its place. The unlink names
     `path`, not a file, so it deletes whatever is there *now*, which is
-    exactly the lock that report.md flagged: reclaimed as a code path, never
+    exactly the lock that docs/history/report.md flagged: reclaimed as a code path, never
     fixed.
 
     This closes the window by never trusting a decision made before the

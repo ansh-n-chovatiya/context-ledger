@@ -1,3 +1,5 @@
+> **Historical.** This is the enterprise-readiness audit of **v0.8.0**, archived. All ten P0 blockers it raised are closed: nine over the remediation waves it proposed, and the tenth — "no release artifact: zero tags" — by the **v1.0.0** tag. It is kept for the decisions it records, not as a description of the tool today; line numbers in it refer to a 0.8.0 tree where `cli.py` was 3,399 lines rather than the entry point it is now. Several test files cite it by section as the source of the finding they pin, and those citations remain accurate.
+
 # Context Ledger — Enterprise Readiness Audit
 
 **Target:** `context-ledger` v0.8.0 (`ctx`) — durable specs, plans, decisions and memory on disk for Claude Code

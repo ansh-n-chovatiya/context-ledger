@@ -286,7 +286,7 @@ ctx unit 03-rotate          # arms the done-gate for this unit
 | [docs/reference.md](docs/reference.md) | Every `ctx.yaml` key, policy layering, the eight verify kinds, phase gates, profiles, command trust, failure policy, the preview page and `plain.md`, exit codes and `--json`. |
 | [docs/operations.md](docs/operations.md) | What lives on disk, CI, measurement, cost, troubleshooting, how it works, security, uninstalling, development and releasing. |
 | [GUIDE.md](GUIDE.md) | The plain-language guide. |
-| [report.md](report.md) | The current audit. Earlier ones are archived under [docs/history/](docs/history/). |
+| [docs/history/](docs/history/) | Closed audits and plans, archived: the v0.8.0 readiness audit, two earlier audits, and the preview plan. |
 
 ## Security
 
