@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.0.0
+
+The first tagged release. Everything before this was installed from a branch,
+which is what the enterprise-readiness audit meant by "we run 0.8.0 is
+unverifiable": there was no artefact to pin, no checksum to compare, and no way
+to tell one clone from another.
+
+This tag closes the last of that audit's ten P0 blockers. The other nine were
+closed over the preceding waves — the code-execution path in the availability
+probe, the five routes to `done` with nothing verified, regressions laundered
+into "missing tool" errors, the overwritable review baseline, the missing policy
+layer, and the thirty-four commands that exited 0 on failure.
+
+1.0.0 is a statement about the CLI contract rather than about ambition: the
+command surface, the `--json` envelope and the ledger layout are now things a
+change has to justify breaking. It is not a claim that the tool is finished.
+
+### Added
+
+- A release artefact: wheel, sdist, CycloneDX SBOM and SHA256SUMS, built from
+  the tag and attached to a GitHub Release. The workflow refuses to build unless
+  the tag, `ctx.__version__` and `plugin.json` describe one release, and it
+  deliberately does not publish to a registry — that needs credentials only a
+  maintainer can configure, and a half-wired publish step fails on tag day in
+  the one workflow nobody rehearses.
+
 ## 0.9.2
 
 ### Fixed
