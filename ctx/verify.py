@@ -433,7 +433,20 @@ def _check_symbol(check, cwd):
     per language, and it costs one file read.
     """
     raw = str(check.get("path") or "")
-    names = [str(n) for n in (check.get("contains") or []) if str(n).strip()]
+    # A bare string is one name, not a sequence of characters. Iterating it
+    # looked each character up on its own, and `d`, `e`, `f` are in every source
+    # file, so `missing` came back empty and the check passed whatever the file
+    # held. Two ways in, neither exotic: `contains: "def render("` is the
+    # obvious spelling for a single symbol, and a writer that cannot represent a
+    # nested sequence flattens the list into one string — which is how two unit
+    # contracts ended up with a vacuous interface freeze that still reported
+    # `ok symbol:`. This check is what stops a renamed signature reaching a
+    # sibling coding against it, so failing open is the one direction it must
+    # never fail in.
+    declared = check.get("contains") or []
+    if isinstance(declared, str):
+        declared = [declared]
+    names = [str(n) for n in declared if str(n).strip()]
     if not raw or not names:
         return Result("symbol", label_of(check), ERROR, "needs `path` and `contains`")
     target, refusal = _confined(raw, check, cwd)

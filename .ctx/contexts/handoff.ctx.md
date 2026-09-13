@@ -102,6 +102,6 @@ ignored with a one-line `!` note.
    with `2>/dev/null` records a "write" to `/dev/null`, and heredoc bodies
    contribute fragments like `Claude-Session:`. Noise in the audit trail, and
    the same function backs the scope guard.
-5. **`PREVIEW-PLAN.md` is still at the repository root** and is now fully
-   implemented. `docs/history/` is where `AUDIT.md` and `PRODUCTION-AUDIT.md`
-   went when they were closed.
+5. *(closed)* `PREVIEW-PLAN.md` was archived to `docs/history/` with a
+   historical header, alongside `AUDIT.md` and `PRODUCTION-AUDIT.md`, and
+   `test_docs_currency` now holds it to the same rule.

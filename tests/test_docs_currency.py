@@ -286,7 +286,7 @@ class LinkTests(unittest.TestCase):
 
 
 class ArchivedDocumentTests(unittest.TestCase):
-    """`AUDIT.md` and `PRODUCTION-AUDIT.md` moved to `docs/history/`.
+    """`AUDIT.md`, `PRODUCTION-AUDIT.md` and `PREVIEW-PLAN.md` moved to `docs/history/`.
 
     Both described releases four and two minors old while sitting at the root
     where a reader takes them as current — `PRODUCTION-AUDIT.md`'s "snapshot.py
@@ -295,7 +295,7 @@ class ArchivedDocumentTests(unittest.TestCase):
     nothing living may point at where they used to be.
     """
 
-    MOVED = ("AUDIT.md", "PRODUCTION-AUDIT.md")
+    MOVED = ("AUDIT.md", "PRODUCTION-AUDIT.md", "PREVIEW-PLAN.md")
 
     # Dated records of a past state. Rewriting a changelog entry or an audit to
     # use a path that did not exist when it was written would falsify it, so

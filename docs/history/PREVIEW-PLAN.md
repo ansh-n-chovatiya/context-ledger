@@ -1,3 +1,5 @@
+> **Historical.** This is the plan for the preview page, archived. Every unit in it shipped in **v0.9.0**; it is kept for the decisions it records, not as a description of work still to do. Four of its positions were overturned while it was being built and the code is the authority where they disagree: the page is written on every `plan-check` rather than on demand, staleness rides a content digest rather than `plan.json`'s revision, the revision is not quoted on the page at all, and step titles are authored in `plain.md` rather than derived. What the feature does now is in [`docs/reference.md`](../reference.md); a rendered example is in [`docs/examples/`](../examples/preview-password-reset.html).
+
 # Plan Preview — a shareable page a non-technical reviewer can approve
 
 **Status:** proposed, not dispatched

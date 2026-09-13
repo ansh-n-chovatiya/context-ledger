@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.2
+
+### Fixed
+
+- `kind: symbol` passed whatever the file contained when `contains` was written
+  as a string rather than a list. The check iterated the string, so it looked up
+  `d`, `e`, `f` one character at a time, and every source file has those.
+  `contains: "def render("` is the obvious spelling for a single symbol, so this
+  was reachable by ordinary authoring — and it failed *open*, on the one check
+  that stops a renamed signature reaching a sibling unit coding against it. A
+  bare string is now taken as one name.
+
+### Changed
+
+- `PREVIEW-PLAN.md` is archived to `docs/history/` with a historical header, the
+  same treatment `AUDIT.md` and `PRODUCTION-AUDIT.md` had when they closed.
+  Every unit in it shipped in 0.9.0, and four of its positions were overturned
+  during the build, so leaving it at the root invited a reader to take it as
+  current. `test_docs_currency` now holds it to the archive rule.
+
 ## 0.9.1
 
 ### Fixed
