@@ -941,6 +941,8 @@ class TestThePlanLevelIntakeTier(Fixture):
         super().setUp()
         self.trust([{"kind": "cmd", "run": OK}])
         spec_mod.create(self.layout, self.SLUG)
+        for category in spec_mod.INTAKE_CATEGORIES:
+            spec_mod.record_inferred(self.layout, self.SLUG, category, "a", "b")
         self.assertEqual(self.cli("plan", self.SLUG, "--no-spec")[0], 0)
         directory = plan_mod.units_dir(self.layout, self.SLUG)
         directory.mkdir(parents=True, exist_ok=True)

@@ -38,6 +38,8 @@ class SpendFixture(Fixture):
     def setUp(self):
         super().setUp()
         self.cli("spec", self.slug, "--intent", "Rotate keys without downtime.")
+        for category in ("why now", "what could go wrong", "what changes for you"):
+            self.cli("infer", self.slug, category, "a", "--because", "b")
 
     def unit(self, name, *, owns=(), depends_on=(), budget=45000):
         plan_mod.units_dir(self.layout, self.slug).mkdir(parents=True, exist_ok=True)

@@ -1586,6 +1586,14 @@ def cmd_plan(args):
             for item in blocking:
                 _echo(f"  - {item}")
             return 1
+        intake_ready, missing = spec_mod.intake_ready(layout, spec_slug)
+        if not intake_ready:
+            _echo(f"refusing to plan: spec {spec_slug} has unaddressed intake: "
+                 + ", ".join(missing))
+            _echo("  `ctx infer <name> <category> <answer> --because <why>` "
+                 "records a confident guess; `ctx question`/`ctx resolve` ask "
+                 "and answer instead.")
+            return 1
     elif not args.no_spec:
         _echo(f"no spec at {layout.rel(spec_mod.spec_path(layout, spec_slug))}")
         _echo("run /ctx:spec first, or pass --no-spec to plan without one")

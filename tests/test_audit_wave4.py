@@ -51,6 +51,8 @@ class TestNext(Fixture):
 
     def test_a_dispatchable_plan_points_at_start(self):
         self.cli("spec", "auth", "--intent", "Rotate keys")
+        for category in ("why now", "what could go wrong", "what changes for you"):
+            self.cli("infer", "auth", category, "a", "--because", "b")
         directory = plan_mod.units_dir(self.layout, "auth")
         directory.mkdir(parents=True, exist_ok=True)
         frontmatter.Document(

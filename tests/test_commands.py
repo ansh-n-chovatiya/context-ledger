@@ -231,6 +231,8 @@ class TestPlanResolvesTheActiveSpec(Fixture):
 
     def test_plan_uses_the_active_spec_when_names_differ(self):
         self.cli("spec", "search-api", "--intent", "add search")
+        for category in ("why now", "what could go wrong", "what changes for you"):
+            self.cli("infer", "search-api", category, "a", "--because", "b")
         code, out = self.cli("plan", "search-v1")
         self.assertEqual(code, 0, out)
         self.assertTrue((self.layout.plans / "search-v1").is_dir())

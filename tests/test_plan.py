@@ -29,6 +29,8 @@ class PlanFixture(Fixture):
 
     def ready_spec(self):
         self.cli("spec", self.slug, "--intent", "Rotate keys without downtime.")
+        for category in ("why now", "what could go wrong", "what changes for you"):
+            self.cli("infer", self.slug, category, "a", "--because", "b")
         return self.slug
 
     def unit(self, name, *, tier="subagent", owns=(), reads=(), depends_on=(),
@@ -242,6 +244,18 @@ class TestGateOnePlansOnlyReadySpecs(PlanFixture):
         self.assertFalse(plan_mod.readme_path(self.layout, "no-such-plan").exists())
         self.assertEqual(self.cli("plan", "no-such-plan", "--no-spec")[0], 0)
         self.assertTrue(plan_mod.readme_path(self.layout, "no-such-plan").exists())
+
+    def test_planning_is_refused_while_intake_is_unaddressed(self):
+        self.cli("spec", self.slug, "--intent", "Rotate keys without downtime.")
+        code, out = self.cli("plan", self.slug)
+        self.assertEqual(code, 1)
+        self.assertIn("intake", out.lower())
+        self.assertFalse(plan_mod.readme_path(self.layout, self.slug).exists())
+
+    def test_planning_proceeds_once_intake_is_addressed(self):
+        self.ready_spec()
+        code, _out = self.cli("plan", self.slug)
+        self.assertEqual(code, 0)
 
 
 class TestDispatch(PlanFixture):
