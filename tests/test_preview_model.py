@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ctx import (atomic, frontmatter, plain as plain_mod,  # noqa: E402
-                 plan as plan_mod, preview, verify)
+                 plan as plan_mod, preview, spec as spec_mod, verify)
 from support import OK, Fixture  # noqa: E402
 
 
@@ -669,6 +669,252 @@ class TestTheCheckPhrasingsReachTheStep(ModelCase):
         # No path separator in what the reader actually sees. The `</p>` the
         # renderer wraps it in is markup, not text, so tags come off first.
         self.assertNotIn("/", re.sub(r"</?[a-z]+>", "", how))
+
+
+# --------------------------------------------------------------------------- #
+# 17-19 — the better fallbacks: the unit's own words, then real facts
+# --------------------------------------------------------------------------- #
+
+class TestTierThreeFromObjective(Fixture):
+    """A unit's own Objective/Background fills 'what it does'/'why it matters'
+    when plain.md has nothing, instead of the generic step-position sentence."""
+
+    SLUG = "tier-three"
+
+    def setUp(self):
+        super().setUp()
+        self.trust([{"kind": "cmd", "run": OK}])
+        self.assertEqual(self.cli("plan", self.SLUG, "--no-spec")[0], 0)
+        directory = plan_mod.units_dir(self.layout, self.SLUG)
+        directory.mkdir(parents=True, exist_ok=True)
+        frontmatter.Document(
+            {"ctx_schema": 1, "unit": "01-a", "plan": self.SLUG,
+             "tier": "subagent", "owns": ["src/a.py"], "depends_on": [],
+             "reads": [], "forbid": [], "status": "pending",
+             "verify": [{"kind": "cmd", "run": OK}]},
+            "## Objective\nStop the probe from executing a repo-shipped binary.\n\n"
+            "## Background\nA cloned repo could ship a fake interpreter and have "
+            "it run before the trust prompt ever shows.\n",
+        ).write(directory / "01-a.md")
+        self.assertEqual(self.cli("plan-check", self.SLUG)[0], 0)
+
+    def test_what_it_does_comes_from_the_objective_not_the_position_sentence(self):
+        vm = preview.view_model(self.layout, self.SLUG)
+        step = vm["steps"][0]
+        self.assertIn("execut", step["plain"]["what"].lower())
+        self.assertEqual(step["plain"]["provenance"]["what"], "inferred")
+
+    def test_why_it_matters_comes_from_the_background(self):
+        vm = preview.view_model(self.layout, self.SLUG)
+        step = vm["steps"][0]
+        self.assertIn("trust prompt", step["plain"]["why"])
+        self.assertEqual(step["plain"]["provenance"]["why"], "inferred")
+
+    def test_generated_flag_still_true_for_backward_compatibility(self):
+        vm = preview.view_model(self.layout, self.SLUG)
+        step = vm["steps"][0]
+        self.assertTrue(step["plain"]["generated"]["what"])
+
+    def test_authored_text_still_wins_over_the_units_own_objective(self):
+        """The whole point of `plain.md` is that a human's words are final."""
+        meta = {"ctx_schema": 1, "plan": self.SLUG,
+                "digest": plain_mod.digest(self.layout, self.SLUG)}
+        atomic.write_text(
+            plain_mod.path(self.layout, self.SLUG),
+            frontmatter.Document(
+                meta,
+                "## Unit: 01-a\n**What it does:** It stops a nasty surprise.\n",
+            ).render(),
+        )
+        step = preview.view_model(self.layout, self.SLUG)["steps"][0]
+        self.assertIn("nasty surprise", step["plain"]["what"])
+        self.assertEqual(step["plain"]["provenance"]["what"], "authored")
+        self.assertFalse(step["plain"]["generated"]["what"])
+        # And the field nobody authored still falls back to the unit's prose.
+        self.assertEqual(step["plain"]["provenance"]["why"], "inferred")
+
+    def test_an_objective_that_is_only_a_scaffold_comment_is_not_quoted(self):
+        """A section holding nothing but the form's own `<!-- ... -->` hint has
+        not been written. Quoting the hint at a non-technical reader is worse
+        than the generated sentence it would displace."""
+        directory = plan_mod.units_dir(self.layout, self.SLUG)
+        doc = frontmatter.read(directory / "01-a.md")
+        doc.body = "## Objective\n<!-- one sentence: the observable outcome -->\n"
+        doc.write(directory / "01-a.md")
+        step = preview.view_model(self.layout, self.SLUG)["steps"][0]
+        self.assertNotIn("observable outcome", step["plain"]["what"])
+        self.assertEqual(step["plain"]["provenance"]["what"], "generated")
+
+    def test_a_field_with_no_source_at_all_is_still_marked_generated(self):
+        """Tier 3 has nothing to say about "what changes", so the generated
+        sentence stands and says so."""
+        step = preview.view_model(self.layout, self.SLUG)["steps"][0]
+        self.assertEqual(step["plain"]["provenance"]["changes"], "generated")
+        self.assertTrue(step["plain"]["changes"])
+
+
+class TestTierFourFromOwnershipGaps(Fixture):
+    """A unit's risk field, when unauthored, states the real ownership-gap
+    fact for its own owned paths rather than the generic sentence.
+
+    The brief's draft of this case owned `ctx/hooks.py` and leaned on *this*
+    repository's own `tests/` tree being walked. It is not:
+    `plan.ownership_gaps` walks `Path(layout.root).parent`, which for a
+    `Fixture` is the throwaway temp project — so that version could only ever
+    skip. The gap is built inside the fixture instead, which is both a real
+    assertion and independent of what this checkout's own tests happen to
+    import.
+    """
+
+    SLUG = "tier-four"
+
+    def setUp(self):
+        super().setUp()
+        self.trust([{"kind": "cmd", "run": OK}])
+        self.assertEqual(self.cli("plan", self.SLUG, "--no-spec")[0], 0)
+        # A test nobody in the plan owns, that names a module somebody does.
+        self.write("tests/test_thing.py", "from src import a\n\n\ndef test_a():\n    pass\n")
+        directory = plan_mod.units_dir(self.layout, self.SLUG)
+        directory.mkdir(parents=True, exist_ok=True)
+        frontmatter.Document(
+            {"ctx_schema": 1, "unit": "01-a", "plan": self.SLUG,
+             "tier": "subagent", "owns": ["src/a.py"], "depends_on": [],
+             "reads": [], "forbid": [], "status": "pending",
+             "verify": [{"kind": "cmd", "run": OK}]},
+            "## Objective\nDoes something.\n",
+        ).write(directory / "01-a.md")
+        self.assertEqual(self.cli("plan-check", self.SLUG)[0], 0)
+
+    def test_the_fixture_really_has_the_gap_this_case_is_about(self):
+        """Calibration: without this the case below would pass vacuously."""
+        vm = preview.view_model(self.layout, self.SLUG)
+        self.assertEqual(
+            [gap["path"] for gap in vm["ownership_gaps"]["files"]], ["src/a.py"])
+
+    def test_risk_names_a_real_uncovered_test_file_when_one_exists(self):
+        vm = preview.view_model(self.layout, self.SLUG)
+        step = vm["steps"][0]
+        self.assertIn("src/a.py", step["plain"]["risk"])
+        self.assertEqual(step["plain"]["provenance"]["risk"], "inferred")
+
+    def test_a_unit_owning_the_gap_by_pattern_is_told_about_it_too(self):
+        """Who owns a path is `plan.covers_any`'s question everywhere else in
+        this module. A unit owning `src/*.py` owns `src/a.py` for the wave
+        collision check, so it owns it for the risk it is shown."""
+        directory = plan_mod.units_dir(self.layout, self.SLUG)
+        frontmatter.Document(
+            {"ctx_schema": 1, "unit": "02-b", "plan": self.SLUG,
+             "tier": "subagent", "owns": ["src/*.py"], "depends_on": ["01-a"],
+             "reads": [], "forbid": [], "status": "pending",
+             "verify": [{"kind": "cmd", "run": OK}]},
+            "## Objective\nDoes something else.\n",
+        ).write(directory / "02-b.md")
+        self.assertEqual(self.cli("plan-check", self.SLUG)[0], 0)
+        vm = preview.view_model(self.layout, self.SLUG)
+        second = [s for s in vm["steps"] if s["slug"] == "02-b"][0]
+        self.assertIn("src/a.py", second["plain"]["risk"])
+        self.assertEqual(second["plain"]["provenance"]["risk"], "inferred")
+
+    def test_a_unit_owning_nothing_in_the_gap_list_keeps_the_generated_risk(self):
+        """The fact is the unit's own, not the plan's. A second step owning a
+        path no outside test names must not inherit the first one's risk."""
+        directory = plan_mod.units_dir(self.layout, self.SLUG)
+        frontmatter.Document(
+            {"ctx_schema": 1, "unit": "02-b", "plan": self.SLUG,
+             "tier": "subagent", "owns": ["src/b.py"], "depends_on": [],
+             "reads": [], "forbid": [], "status": "pending",
+             "verify": [{"kind": "cmd", "run": OK}]},
+            "## Objective\nDoes something else.\n",
+        ).write(directory / "02-b.md")
+        self.assertEqual(self.cli("plan-check", self.SLUG)[0], 0)
+        vm = preview.view_model(self.layout, self.SLUG)
+        second = [s for s in vm["steps"] if s["slug"] == "02-b"][0]
+        self.assertEqual(second["plain"]["provenance"]["risk"], "generated")
+        self.assertNotIn("src/a.py", second["plain"]["risk"])
+
+
+class TestThePlanLevelIntakeTier(Fixture):
+    """The three intake categories answer the plan sections of the same name.
+
+    `ctx spec` collects "why now", "what could go wrong" and "what changes for
+    you" before a plan may be written. Those are three of `plain.PLAN_SECTIONS`
+    by name, so a plan whose summary nobody has written by hand is not
+    blank — it repeats what the spec was already told.
+    """
+
+    SLUG = "intake-tier"
+
+    def setUp(self):
+        super().setUp()
+        self.trust([{"kind": "cmd", "run": OK}])
+        spec_mod.create(self.layout, self.SLUG)
+        self.assertEqual(self.cli("plan", self.SLUG, "--no-spec")[0], 0)
+        directory = plan_mod.units_dir(self.layout, self.SLUG)
+        directory.mkdir(parents=True, exist_ok=True)
+        frontmatter.Document(
+            {"ctx_schema": 1, "unit": "01-a", "plan": self.SLUG,
+             "tier": "subagent", "owns": ["src/a.py"], "depends_on": [],
+             "reads": [], "forbid": [], "status": "pending",
+             "verify": [{"kind": "cmd", "run": OK}]},
+            "## Objective\nDoes something.\n",
+        ).write(directory / "01-a.md")
+        self.assertEqual(self.cli("plan-check", self.SLUG)[0], 0)
+
+    def model(self):
+        return preview.view_model(self.layout, self.SLUG)
+
+    def test_an_inferred_intake_answer_fills_the_section_of_the_same_name(self):
+        spec_mod.record_inferred(
+            self.layout, self.SLUG, "why now",
+            "The probe runs before anyone is asked to trust it",
+            "stated twice in the audit")
+        model = self.model()
+        self.assertIn("asked to trust it", model["plain"]["sections"]["why now"])
+        self.assertEqual(model["plain"]["provenance"]["why now"], "inferred")
+        # The audit trail the Resolved line carries is not prose for a reader.
+        self.assertNotIn("inferred, not asked",
+                         model["plain"]["sections"]["why now"])
+
+    def test_an_answered_question_contributes_its_answer_not_its_question(self):
+        spec_mod.add_questions(
+            self.layout, self.SLUG,
+            ["What could go wrong: is there any way back?"])
+        spec_mod.resolve(self.layout, self.SLUG, "What could go wrong",
+                         "A reviewer could sign a page that is already stale")
+        model = self.model()
+        section = model["plain"]["sections"]["what could go wrong"]
+        self.assertIn("already stale", section)
+        self.assertNotIn("is there any way back", section)
+        self.assertEqual(model["plain"]["provenance"]["what could go wrong"],
+                         "inferred")
+
+    def test_a_section_with_no_intake_category_is_still_generated(self):
+        """"Summary" and "out of scope" are not intake categories. Nothing is
+        invented for them."""
+        model = self.model()
+        for section in ("summary", "out of scope"):
+            self.assertEqual(model["plain"]["provenance"][section], "generated")
+            self.assertEqual(model["plain"]["sections"][section], "")
+
+    def test_authored_prose_still_wins_over_the_intake_answer(self):
+        spec_mod.record_inferred(self.layout, self.SLUG, "why now",
+                                 "Because of the audit", "stated in the audit")
+        meta = {"ctx_schema": 1, "plan": self.SLUG,
+                "digest": plain_mod.digest(self.layout, self.SLUG)}
+        atomic.write_text(
+            plain_mod.path(self.layout, self.SLUG),
+            frontmatter.Document(
+                meta, "## Why now\nBecause a customer asked.\n").render(),
+        )
+        model = self.model()
+        self.assertIn("customer asked", model["plain"]["sections"]["why now"])
+        self.assertNotIn("audit", model["plain"]["sections"]["why now"])
+        self.assertEqual(model["plain"]["provenance"]["why now"], "authored")
+
+    def test_every_plan_section_has_a_provenance(self):
+        model = self.model()
+        self.assertEqual(sorted(model["plain"]["provenance"]),
+                         sorted(plain_mod.PLAN_SECTIONS))
 
 
 if __name__ == "__main__":

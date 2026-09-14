@@ -83,6 +83,14 @@ FIELDS = (
     ("how_we_know", "How we'll know it worked"),
 )
 
+#: Keys of `steps[].plain` that are not prose and so are not looked for on the
+#: page: `generated` is `{field: bool}` and `provenance` is `{field: label}`.
+#: `check` compares every other value against the rendered HTML with `in`,
+#: which raises `TypeError` on a dict rather than reporting a problem — so a
+#: map added to `plain` and not named here takes `ctx preview --check` down
+#: instead of failing it.
+_PLAIN_NOT_PROSE = frozenset({"generated", "provenance"})
+
 #: The few words the page cannot avoid, explained in the reader's terms. None
 #: of them may be the contract's own vocabulary: a glossary that has to define
 #: `budget_tokens` is a page that should not have printed it.
@@ -1006,7 +1014,7 @@ def check(html, vm):
 
         plain = step.get("plain") or {}
         for key in sorted(plain):
-            if key == "generated":
+            if key in _PLAIN_NOT_PROSE:
                 continue
             value = plain[key]
             if value and value not in html:

@@ -31,9 +31,35 @@ The prose keys, and the only ones a renderer may insert unescaped:
     plan.title                  one line, already inline-marked-up
     plain.sections.*            block HTML
     steps[].title               one line
-    steps[].plain.*             block HTML (bar `generated`, which is flags)
+    steps[].plain.*             block HTML (bar `generated` and `provenance`,
+                                which are flags and labels)
     steps[].tech.criteria[]     block HTML
     critical_path.basis         one line
+
+**Five tiers answer every prose field, and the model says which one did.**
+Nothing on this page may be blank, and nothing on it may be invented, so a
+field nobody wrote falls back through progressively weaker *facts* rather than
+to a placeholder. The first rung with something to say wins:
+
+    1. what a human wrote in `plain.md`                    -> `authored`
+    2. what the spec's intake recorded, for the three plan
+       sections `spec.INTAKE_CATEGORIES` names             -> `inferred`
+    3. the unit's own `## Objective` / `## Background`     -> `inferred`
+    4. the ownership-gap facts `plan.py` already derived   -> `inferred`
+    5. the position sentence `plain._generate` builds      -> `generated`
+
+`plain.md`'s contract is untouched: authored text still wins outright, and
+nothing here writes to that file on anybody's behalf. Tiers 2-4 quote source
+text that already exists on disk — a spec answer, a unit's own objective, a
+derived fact — and never compose a judgment of their own, which is why they
+are labelled `inferred` rather than `generated` and why a reader can be told
+where the words came from.
+
+`steps[].plain.provenance` and `plain.provenance` carry that label per field.
+They are *additive*: `steps[].plain.generated` keeps exactly its old meaning —
+True whenever a human did not write the field — so a renderer that only knows
+about the flag still marks the same fields it always did, and a renderer that
+knows about provenance can say something more useful about why.
 
 **A step is headed by what a human called it**, from `plain.md`'s block
 heading, falling back to the slug in words (`01-plain-source` -> "Plain
@@ -66,7 +92,7 @@ import json
 import re
 
 from . import (atomic, config as config_mod, plain as plain_mod,
-               plan as plan_mod, preview_html, verify)
+               plan as plan_mod, preview_html, spec as spec_mod, verify)
 
 #: Version of the document `view_model` returns. Independent of `ctx_schema`:
 #: the page's shape and the ledger's file format move for different reasons,
@@ -112,6 +138,10 @@ _UNPHRASED = "another check runs"
 
 _INDEX = re.compile(r"^\d+[-_. ]+")
 _SPACES = re.compile(r"\s+")
+# The same shape `plan.Unit.interfaces` strips out of a contract section. Held
+# here rather than reached for across the module boundary: it is a literal, not
+# a derivation, and nothing about the two uses has to move together.
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 # `markup` wraps a paragraph in `<p>`, which a caller putting the value inside
 # an `<h1>` cannot use: an HTML parser closes the heading at the `<p>`.
 _ONE_PARAGRAPH = re.compile(r"\A<p>(?P<inner>.*)</p>\Z", re.S)
@@ -279,6 +309,84 @@ def _ownership(units, numbers, rounds):
 
 
 # --------------------------------------------------------------------------- #
+# the plan sections, from what the spec's intake was already told
+# --------------------------------------------------------------------------- #
+
+#: The day-stamp `spec.resolve` and `spec.record_inferred` both put on the end
+#: of a Resolved line. Provenance for the questions file, not prose for a page.
+_ANSWER_DATE = re.compile(r"\s*\(\d{4}-\d{2}-\d{2}\)\s*\Z")
+#: `spec.record_inferred`'s audit tail: " — inferred, not asked (why) (date)".
+_NOT_ASKED = re.compile(r"\s+—\s+inferred, not asked\b.*\Z", re.S)
+
+
+def _intake_answer(item, prefix):
+    """The answer one Resolved line records, or None if it carries none.
+
+    Two shapes reach `spec.py`'s Resolved section, and `spec.intake_status`
+    counts a category as answered by either, so both are read here:
+
+        Why now: <answer> — inferred, not asked (<rationale>) (<date>)
+        Why now: <question> → <answer> (<date>)
+
+    The first is `record_inferred`, where nobody was asked; the second is
+    `resolve` ticking off a real question whose text named the category.
+    Everything after the label is the answer in the first case and the
+    *question* in the second — so the arrow wins wherever there is one. A
+    "why now" section that quotes the question back at the reader would be
+    worse than an empty one, because it reads like an answer.
+
+    The audit tail and the date come off either way: they say why the
+    questions file can be trusted, which is not what this page is for.
+    """
+    body = _NOT_ASKED.sub("", item[len(prefix):])
+    if "→" in body:
+        body = body.split("→", 1)[1]
+    return _ANSWER_DATE.sub("", body).strip() or None
+
+
+def _fill_plan_sections(layout, spec_slug, source):
+    """`{section: "authored"|"inferred"|"generated"}`, filling tier 2 in place.
+
+    Three of `plain.PLAN_SECTIONS` are `spec.INTAKE_CATEGORIES` under the same
+    name, and `ctx spec-ready` will not open planning until all three have been
+    answered — so a plan whose summary form nobody filled in is not blank, its
+    answers are just somewhere else. Where a section is unauthored and its
+    category was answered, the answer is copied into `source.plan`, the
+    in-memory `Plain` the caller just loaded.
+
+    **Never into `plain.md` itself.** That file's contract is that a human owns
+    it and nothing writes to it on their behalf; this is the page choosing what
+    to show, not the tool filling in somebody's form.
+
+    A section with no intake category behind it — "summary", "out of scope" —
+    is left exactly as it was found. There is nothing on disk that answers it,
+    and composing one would be the invention this whole ladder exists to avoid.
+    """
+    _blocking, _non, resolved = spec_mod.questions(layout, spec_slug)
+    provenance = {}
+    for section in plain_mod.PLAN_SECTIONS:
+        if source.plan.get(section, ""):
+            provenance[section] = "authored"
+            continue
+        answer = None
+        if section in spec_mod.INTAKE_CATEGORIES:
+            # The prefix `spec.intake_status` matches on, so a category that
+            # gate counts as answered is one this can quote. The questions
+            # file is append-only, so a later line is a correction of an
+            # earlier one and the last answer wins.
+            prefix = (section + ":").lower()
+            for item in resolved:
+                if item.lower().startswith(prefix):
+                    answer = _intake_answer(item, prefix) or answer
+        if answer:
+            source.plan[section] = answer
+            provenance[section] = "inferred"
+        else:
+            provenance[section] = "generated"
+    return provenance
+
+
+# --------------------------------------------------------------------------- #
 # the model
 # --------------------------------------------------------------------------- #
 
@@ -305,13 +413,23 @@ def view_model(layout, slug):
     count, wave_count, ratio = plan_mod.parallelism(grouped)
     estimate, total_tokens, per_wave = plan_mod.critical_path(grouped)
     gaps, truncated = plan_mod.ownership_gaps(layout, units)
+    # Built once, in the shape the JSON carries, so the fact a step's risk
+    # states and the fact the page's gap table shows are the same list.
+    gap_files = [{"path": path, "tests": tests} for path, tests in gaps]
+
+    # The plan's originating spec. `write_graph` defaults `spec` to the plan
+    # slug, so this is the plan slug for a `--no-spec` plan, and the one
+    # expression is shared with the `"plan"."spec"` key below rather than
+    # written out twice.
+    spec_slug = str(graph.get("spec") or slug)
+    plan_provenance = _fill_plan_sections(layout, spec_slug, source)
 
     return {
         "schema": SCHEMA,
         "plan": {
             "slug": slug,
             "title": _phrase(_plan_title(layout, slug), patterns),
-            "spec": str(graph.get("spec") or slug),
+            "spec": spec_slug,
             # No `revision`: see the module docstring. It is the one value in
             # `plan.json` that moves without the plan moving, and this dict is
             # embedded in a committed file.
@@ -332,8 +450,10 @@ def view_model(layout, slug):
                 (section, preview_html.markup(text, patterns))
                 for section, text in source.plan.items()
             ),
+            "provenance": plan_provenance,
         },
-        "steps": [_step(unit, numbers, rounds, grouped, source, patterns)
+        "steps": [_step(unit, numbers, rounds, grouped, source, patterns,
+                        gap_files)
                   for unit in units],
         "graph": {
             "nodes": [{"number": numbers[unit.name], "slug": unit.name,
@@ -348,10 +468,7 @@ def view_model(layout, slug):
              "steps": sorted(numbers[name] for name in owners if name in numbers)}
             for path, owners in plan_mod.bottlenecks(units)
         ],
-        "ownership_gaps": {
-            "files": [{"path": path, "tests": tests} for path, tests in gaps],
-            "truncated": truncated,
-        },
+        "ownership_gaps": {"files": gap_files, "truncated": truncated},
         "concurrency": {"units": count, "waves": wave_count, "ratio": ratio},
         "critical_path": {
             "estimate_tokens": estimate,
@@ -388,7 +505,48 @@ def _title(unit, authored, patterns):
     return _phrase(_words(unit.name, drop_index=True), patterns), True
 
 
-def _step(unit, numbers, rounds, grouped, source, patterns):
+def _plain_from_objective(unit):
+    """(what_it_does, why_it_matters) drawn from the unit's own prose, or
+    (None, None) when it has none to give — never invented.
+
+    HTML comments come out first, the way `plan.Unit.interfaces` treats the
+    same problem: a section holding nothing but the scaffold's own `<!-- ...
+    -->` hint has not been written, and quoting the hint at a non-technical
+    reader is worse than the generated sentence it would displace.
+    """
+    objective = _HTML_COMMENT.sub(
+        "", unit.doc.section("objective") or "").strip()
+    background = _HTML_COMMENT.sub(
+        "", unit.doc.section("background") or "").strip()
+    return (objective or None), (background or None)
+
+
+def _plain_from_ownership_gap(unit, gap_files):
+    """A plain sentence naming an owned path this unit's own tests do not
+    cover, or None when nothing is known.
+
+    `gap_files` is `ownership_gaps`'s own `files` list — `[{path, tests}, ...]`
+    — already computed by the caller; this never recomputes it, so the risk a
+    reader is shown and the risk `plan-check` reports are the same finding.
+
+    Whether a gap is *this* unit's is asked of `plan.covers_any`, the same rule
+    `_ownership` above uses and the same one the wave collision check uses — so
+    a unit owning `src/*.py` is told about the gap on `src/a.py` exactly as it
+    would be told about colliding on it. A second ownership rule in this one
+    module would be a second truth about the same word.
+    """
+    hits = sorted(gap["path"] for gap in gap_files
+                  if plan_mod.covers_any(gap["path"], unit.owns))
+    if not hits:
+        return None
+    return (
+        "Tests outside this plan already reference %s; a change here could be "
+        "caught by one of those instead of by this plan's own checks."
+        % ", ".join(hits)
+    )
+
+
+def _step(unit, numbers, rounds, grouped, source, patterns, gap_files):
     """One step: what a reader needs, then what an engineer needs, separately."""
     level = rounds[unit.name]
     number = numbers[unit.name]
@@ -405,14 +563,35 @@ def _step(unit, numbers, rounds, grouped, source, patterns):
         "alongside": alongside,
         "checks": _check_phrases(unit.checks),
     })
-    prose = dict(
-        (key, preview_html.markup(written[field], patterns))
-        for field, key in zip(plain_mod.UNIT_FIELDS, FIELD_KEYS)
-    )
+    # Tiers 3 and 4, consulted only where nobody wrote anything. Keyed by
+    # `FIELD_KEYS` — this module's own names — rather than by `plain.py`'s
+    # English, so the fallback cannot go quietly missing because a question in
+    # the authored form was reworded.
+    inferred_what, inferred_why = _plain_from_objective(unit)
+    overrides = {
+        "what": inferred_what,
+        "why": inferred_why,
+        "risk": _plain_from_ownership_gap(unit, gap_files),
+    }
+
+    prose, provenance = {}, {}
+    for field, key in zip(plain_mod.UNIT_FIELDS, FIELD_KEYS):
+        override = overrides.get(key)
+        if not written["generated"][field]:
+            provenance[key], text = "authored", written[field]
+        elif override:
+            provenance[key], text = "inferred", override
+        else:
+            provenance[key], text = "generated", written[field]
+        prose[key] = preview_html.markup(text, patterns)
+    # Unchanged in meaning: True wherever a human did not write the field,
+    # whatever filled it in. A renderer that only knows this flag still marks
+    # exactly the fields it marked before `provenance` existed.
     prose["generated"] = dict(
         (key, bool(written["generated"][field]))
         for field, key in zip(plain_mod.UNIT_FIELDS, FIELD_KEYS)
     )
+    prose["provenance"] = provenance
 
     title, derived = _title(unit, written.get("title"), patterns)
 
