@@ -230,6 +230,7 @@ every slash command costs always-on context.
 | `ctx question «spec» «text»...` | Add questions to a spec; `--non-blocking` | |
 | `ctx ask [name]` | List the questions still open on a spec | `/ctx:ask` |
 | `ctx resolve «spec» --question X --answer Y` | Record an answer, with its date | |
+| `ctx infer «spec» «category» «answer» --because W` | Record a confident intake answer without asking | |
 | `ctx spec-ready [name]` | Gate 1 as an exit code (0 = ready to plan) | |
 | `ctx decide «title»` | Record an ADR | `/ctx:decide` |
 | `ctx verify [--plan X] [--sign-off rubric\|human]` | Run the done-gate for the active work, or every unit's gate in a plan | `/ctx:verify` |

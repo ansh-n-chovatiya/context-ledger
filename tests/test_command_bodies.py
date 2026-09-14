@@ -43,9 +43,10 @@ CLI_PATH = PACKAGE / "cli.py"
 COMMANDS_PATH = PACKAGE / "commands.py"
 
 # Forty-one when the bodies moved; forty-two since `ctx preview` was added, in
-# the same change as its registry row. This constant is what makes "one row,
-# one body" checkable, so it moves with the count and never ahead of it.
-EXPECTED_BODIES = 42
+# the same change as its registry row; forty-three since `ctx infer`. This
+# constant is what makes "one row, one body" checkable, so it moves with the
+# count and never ahead of it.
+EXPECTED_BODIES = 43
 
 
 def function_names(path):

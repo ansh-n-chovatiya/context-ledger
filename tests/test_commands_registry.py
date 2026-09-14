@@ -418,6 +418,30 @@ SURFACE = {
              'escalate advisory conditions to exit 1'),
         ),
     ),
+    'infer': (
+        'record a confident intake answer without asking',
+        'cmd_infer',
+        (
+            ('-h/--help', 'help', 0, None, '<SUPPRESS>', None, None, False,
+             None, '_HelpAction',
+             'show this help message and exit'),
+            ('<positional>', 'name', '?', None, None, None, None, False, None,
+             '_StoreAction',
+             None),
+            ('<positional>', 'category', None, None, None, None, None, True,
+             None, '_StoreAction',
+             None),
+            ('<positional>', 'answer', None, None, None, None, None, True,
+             None, '_StoreAction',
+             None),
+            ('--because', 'because', None, None, None, None, None, True,
+             None, '_StoreAction',
+             'why this was confident enough not to ask'),
+            ('--strict', 'strict', 0, True, '<SUPPRESS>', None, None, False,
+             None, '_StoreTrueAction',
+             'escalate advisory conditions to exit 1'),
+        ),
+    ),
     'spec-ready': (
         'Gate 1 as an exit code (0 = ready)',
         'cmd_spec_ready',
@@ -993,7 +1017,7 @@ class TestTheSurfaceIsUnchanged(unittest.TestCase):
     def test_the_same_commands_in_the_same_order(self):
         live = _live()
         self.assertEqual(list(live), list(SURFACE))
-        self.assertEqual(len(live), 42)
+        self.assertEqual(len(live), 43)
 
     def test_every_command_is_unchanged(self):
         live = _live()

@@ -43,7 +43,8 @@ from . import (
 #     `cli.<name>` before the move and they still are.
 from .commands import (  # noqa: F401
     cmd_ask, cmd_briefing, cmd_budget, cmd_ci, cmd_decide, cmd_digest,
-    cmd_doctor, cmd_drop, cmd_escalate, cmd_findings, cmd_handoff, cmd_init,
+    cmd_doctor, cmd_drop, cmd_escalate, cmd_findings, cmd_handoff, cmd_infer,
+    cmd_init,
     cmd_journal, cmd_level, cmd_list, cmd_load, cmd_merge, cmd_migrate,
     cmd_next, cmd_phase, cmd_plan, cmd_plan_check, cmd_plan_unit, cmd_preview,
     cmd_promote, cmd_prune, cmd_question, cmd_resolve, cmd_resume,
@@ -236,6 +237,14 @@ def commands():
             NAME,
             flag("--question", required=True, help="substring of the question"),
             flag("--answer", required=True),
+        ),
+        command(
+            "infer", "record a confident intake answer without asking", cmd_infer,
+            NAME,
+            flag("category"),
+            flag("answer"),
+            flag("--because", required=True,
+                help="why this was confident enough not to ask"),
         ),
         command("spec-ready", "Gate 1 as an exit code (0 = ready)", cmd_spec_ready, NAME),
         command(

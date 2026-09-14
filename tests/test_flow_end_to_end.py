@@ -108,8 +108,11 @@ class TestFullFlow(Fixture):
 
         self.cli("resolve", "add-auth", "--question", "IdP",
                  "--answer", "Okta, migrating off Auth0 later")
-        code, _out = self.cli("spec-ready", "add-auth")
-        self.assertEqual(code, 0)
+        for category in ("why now", "what could go wrong", "what changes for you"):
+            self.cli("infer", "add-auth", category, "answer",
+                     "--because", "drawn from the objective above")
+        code, out = self.cli("spec-ready", "add-auth")
+        self.assertEqual(code, 0, out)
 
         # ---- L2: a plan whose units own disjoint paths
         code, out = self.cli("plan", "auth-rollout", "--spec", "add-auth")

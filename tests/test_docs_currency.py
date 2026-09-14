@@ -361,7 +361,10 @@ class SplitTests(unittest.TestCase):
     # demand them. So the cap moved by exactly those two rows, to the length the
     # file now is and not one line further — there is still no room for prose,
     # which is the thing this test is actually for.
-    CAP = 302
+    #
+    # 303 since `ctx infer`: one CLI-table row and no slash-command counterpart
+    # (it has none), so the cap moved by exactly that one line.
+    CAP = 303
 
     def test_the_readme_stays_short_enough_to_read(self):
         lines = len(read(README).splitlines())

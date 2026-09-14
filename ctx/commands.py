@@ -1136,6 +1136,16 @@ def cmd_doctor(args):
             problems += 1
             continue
         kind = entry.get("kind")
+        # An unregistered kind used to land in the branch below and print `ok`,
+        # so a typo'd `kind: rubrik` read as a check that had been looked at
+        # and found fine — while `verify.ordered` silently dropped it at gate
+        # time. Doctor is the place that is supposed to notice.
+        trouble = plan_mod.kind_problem(kind)
+        if trouble:
+            say(f"  BAD  {trouble}")
+            check("bad", trouble, kind=kind)
+            problems += 1
+            continue
         if kind != "cmd":
             say(f"  ok   {kind} (no command to probe)")
             check("ok", "no command to probe", kind=kind)
@@ -1396,6 +1406,23 @@ def cmd_resolve(args):
     return 0
 
 
+def cmd_infer(args):
+    """Record an intake answer the AI was confident enough not to ask about."""
+    layout, config = _loaded(args)
+    slug = bundle.slugify(args.name)
+    category = args.category.strip().lower()
+    if category not in spec_mod.INTAKE_CATEGORIES:
+        _echo(
+            f"{category!r} is not an intake category — use one of "
+            f"{', '.join(spec_mod.INTAKE_CATEGORIES)}"
+        )
+        return 1
+    spec_mod.record_inferred(layout, slug, category, args.answer, args.because)
+    journal.append(layout, config, "spec", slug, f"inferred: {category}")
+    _echo(f"recorded an inferred answer for {category!r}")
+    return 0
+
+
 def cmd_spec_ready(args):
     """Gate 1 as an exit code, so CI can enforce it too."""
     layout, _config = _loaded(args)
@@ -1405,12 +1432,20 @@ def cmd_spec_ready(args):
         _echo("no active spec — nothing to gate")
         return 1
     ready, blocking = spec_mod.ready(layout, slug)
-    if ready:
+    intake_ready, missing = spec_mod.intake_ready(layout, slug)
+    if ready and intake_ready:
         _echo(f"spec {slug}: ready")
         return 0
-    _echo(f"spec {slug}: BLOCKED on {len(blocking)} question(s)")
-    for item in blocking:
-        _echo(f"  - {item}")
+    if not ready:
+        _echo(f"spec {slug}: BLOCKED on {len(blocking)} question(s)")
+        for item in blocking:
+            _echo(f"  - {item}")
+    if not intake_ready:
+        _echo(f"spec {slug}: BLOCKED on intake — not yet answered or inferred: "
+             + ", ".join(missing))
+        _echo("  `ctx infer <name> <category> <answer> --because <why>` records "
+             "a confident guess without asking; `ctx question`/`ctx resolve` "
+             "ask and answer instead.")
     return 1
 
 
