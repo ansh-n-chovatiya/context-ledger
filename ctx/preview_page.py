@@ -532,15 +532,30 @@ def _step_tech(step):
         "<h4>verify</h4>\n%s" % (rows, listed, checks))
 
 
+#: `steps[].plain.provenance` values -> the label shown beside the field.
+#: `generated` here is a fallback for a caller that has not been updated to
+#: pass `provenance` yet — see `_step_card`.
+_PROVENANCE_LABELS = {
+    "inferred": '<span class="auto">'
+                'inferred from the plan, not directly confirmed</span>',
+    "generated": '<span class="auto">put together automatically</span>',
+}
+
+
 def _step_card(step):
     number = _int(step.get("number"))
     plain = step.get("plain") or {}
     generated = plain.get("generated") or {}
+    provenance = plain.get("provenance") or {}
 
     fields = []
     for key, label in FIELDS:
-        mark = ('<span class="auto">put together automatically</span>'
-                if generated.get(key) else "")
+        mark = _PROVENANCE_LABELS.get(provenance.get(key), "")
+        if not provenance and generated.get(key):
+            # Defensive, not load-bearing: a caller that has not been
+            # updated to pass `provenance` still gets the old label rather
+            # than a blank one.
+            mark = _PROVENANCE_LABELS["generated"]
         fields.append('<div class="field">\n<h4>%s %s</h4>\n%s\n</div>'
                       % (_escape(label), mark, _prose(plain.get(key))))
 

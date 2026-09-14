@@ -320,6 +320,33 @@ class TestWhatItSays(PageCase):
         self.assertEqual(preview_page.check(html, model), [])
 
 
+class TestProvenanceLabels(PageCase):
+    """Three labels for three tiers, not the old two.
+
+    `authored` carries no label at all, `inferred` says so plainly, and a
+    field with nothing to infer from still falls back to the old
+    "put together automatically" — so a reader always sees a truthful label
+    rather than a page that used to say less than it knew.
+    """
+
+    def test_an_objective_backed_field_is_labelled_inferred(self):
+        html = self.page()
+        self.assertIn("inferred from the plan, not directly confirmed", html)
+
+    def test_a_field_with_no_source_at_all_is_still_labelled_generated(self):
+        # No unit in PageCase has a `## Background`, so "why it matters" has
+        # nothing to infer from and must still fall back to the old label.
+        html = self.page()
+        self.assertIn("put together automatically", html)
+
+    def test_an_authored_field_carries_neither_label(self):
+        self.write_plain(
+            "## Unit: 01-alpha — Alpha\n**What it does:** Written by a human.\n"
+        )
+        html = self.page()
+        self.assertIn("Written by a human.", html)
+
+
 # --------------------------------------------------------------------------- #
 # 8-13 — how it behaves
 # --------------------------------------------------------------------------- #
@@ -584,6 +611,12 @@ class TestTheChecker(PageCase):
         self.assertEqual(preview_page.check(html, vm), [])
         broken = html.replace("<p>We are closing four gaps.</p>", "")
         self.one(preview_page.check(broken, vm), "summary")
+
+    def test_check_does_not_crash_on_the_provenance_dict(self):
+        vm = self.model()
+        vm["steps"][0]["plain"]["provenance"] = {"what": "inferred"}
+        problems = preview_page.check(self.page(vm), vm)  # must not raise
+        self.assertIsInstance(problems, list)
 
     def test_a_url_a_contract_merely_quotes_is_not_an_external_reference(self):
         """Prose about a URL is not a reference to one.
