@@ -272,6 +272,13 @@ def validate(units):
                     )
             elif not unit.doc.meta.get(field):
                 problems.append(f"{unit.name}: missing `{field}`")
+        objective = (unit.doc.section("objective") or "").strip()
+        if not objective:
+            problems.append(
+                f"{unit.name}: `## Objective` is empty — every field on the "
+                "preview page that describes this step falls back to it; "
+                "write one real sentence naming the observable outcome"
+            )
         if unit.doc.meta.get("tier") and not unit.tier:
             problems.append(
                 f"{unit.name}: tier {unit.doc.meta.get('tier')!r} is not one of "

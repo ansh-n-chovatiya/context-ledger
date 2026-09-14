@@ -8,6 +8,7 @@ the one new `validate()` problem they enable.
 """
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -15,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ctx import frontmatter, plan as plan_mod  # noqa: E402
+from ctx.paths import Layout  # noqa: E402
 from support import OK, Fixture  # noqa: E402
 
 CHECK = [{"kind": "cmd", "run": OK}]
@@ -174,6 +176,39 @@ class TestBugWithoutReproductionIsAProblem(FieldsFixture):
         self.assertEqual(code, 1)
         self.assertIn("01-crash", out)
         self.assertIn("reproduction", out)
+
+
+class TestObjectiveIsRequired(unittest.TestCase):
+    """A unit whose page has to describe it needs a real Objective to read."""
+
+    def unit_with_objective(self, text):
+        directory = plan_mod.units_dir(self.layout, self.slug)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / "01-a.md"
+        path.write_text(
+            "---\nunit: 01-a\ntier: subagent\nowns:\n  - src/a.py\n"
+            "verify:\n  - kind: cmd\n    run: \"true\"\n---\n\n"
+            f"## Objective\n{text}\n", encoding="utf-8"
+        )
+        return plan_mod.load_units(self.layout, self.slug)
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.layout = Layout(Path(self._tmp.name))
+        self.slug = "objective-check"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_an_empty_objective_is_refused(self):
+        units = self.unit_with_objective("")
+        problems = plan_mod.validate(units)
+        self.assertTrue(any("Objective" in problem for problem in problems), problems)
+
+    def test_a_real_objective_passes(self):
+        units = self.unit_with_objective("Stop the probe from running a shim.")
+        problems = plan_mod.validate(units)
+        self.assertFalse(any("Objective" in problem for problem in problems), problems)
 
 
 if __name__ == "__main__":
