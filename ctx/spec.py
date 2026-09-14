@@ -340,6 +340,62 @@ def resolve(layout, slug, question, answer):
     return True
 
 
+INTAKE_CATEGORIES = ("why now", "what could go wrong", "what changes for you")
+
+
+def record_inferred(layout, slug, category, answer, rationale):
+    """Append an inferred (never asked) intake answer straight into Resolved.
+
+    Distinct from `resolve()`: there is no open question to tick off, because
+    nobody was asked. The Resolved line still carries the category, the
+    answer and *why nobody was asked* — the audit trail `resolve()` builds
+    for a real question, extended to cover the case where the AI judged it
+    confident enough to skip asking.
+    """
+    if category not in INTAKE_CATEGORIES:
+        raise ValueError(
+            f"{category!r} is not an intake category — use one of "
+            f"{', '.join(INTAKE_CATEGORIES)}"
+        )
+    qpath = questions_path(layout, slug)
+    doc = frontmatter.read(qpath)
+    if doc is None:
+        _, qpath = create(layout, slug)
+        doc = frontmatter.read(qpath)
+    label = category[:1].upper() + category[1:]
+    line = (
+        f"- {label}: {answer.strip()} — inferred, not asked "
+        f"({rationale.strip()}) ({datetime.date.today().isoformat()})\n"
+    )
+    doc.body = _append_to_section(doc.body, RESOLVED, line)
+    doc.write(qpath)
+    return True
+
+
+def intake_status(layout, slug):
+    """`{category: bool}` — does any Resolved entry answer this category.
+
+    A Resolved line counts whether it came from `resolve()` (a real question
+    that named the category, e.g. "Why now: is this urgent?") or from
+    `record_inferred()`. Matched on the same `"{Label}:"` prefix either way,
+    so the two paths are indistinguishable to this check by design — the
+    gate cares that the category was addressed, not how.
+    """
+    _blocking, _non, resolved = questions(layout, slug)
+    out = {}
+    for category in INTAKE_CATEGORIES:
+        prefix = (category[:1].upper() + category[1:] + ":").lower()
+        out[category] = any(item.lower().startswith(prefix) for item in resolved)
+    return out
+
+
+def intake_ready(layout, slug):
+    """(all three intake categories addressed, [the ones that are not])."""
+    status = intake_status(layout, slug)
+    missing = [category for category in INTAKE_CATEGORIES if not status[category]]
+    return (not missing), missing
+
+
 def ready(layout, slug):
     """Gate 1. (is_ready, open_blocking_questions)."""
     blocking, _non, _resolved = questions(layout, slug)
