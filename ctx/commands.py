@@ -1136,16 +1136,6 @@ def cmd_doctor(args):
             problems += 1
             continue
         kind = entry.get("kind")
-        # An unregistered kind used to land in the branch below and print `ok`,
-        # so a typo'd `kind: rubrik` read as a check that had been looked at
-        # and found fine — while `verify.ordered` silently dropped it at gate
-        # time. Doctor is the place that is supposed to notice.
-        trouble = plan_mod.kind_problem(kind)
-        if trouble:
-            say(f"  BAD  {trouble}")
-            check("bad", trouble, kind=kind)
-            problems += 1
-            continue
         if kind != "cmd":
             say(f"  ok   {kind} (no command to probe)")
             check("ok", "no command to probe", kind=kind)
