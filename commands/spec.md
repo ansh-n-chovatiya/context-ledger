@@ -24,13 +24,28 @@ Now do the work this command exists for: **surface what you would otherwise assu
    Be honest about which is which: a blocking question is one where guessing wrong
    means rework.
 
-4. **Ask them.** Use AskUserQuestion, recommending an option where you have a
+4. **Before asking, run the same judgment over three fixed categories this
+   system checks for**: *why now*, *what could go wrong*, and *what changes
+   for you*. For each, draft a candidate answer from the intent/ticket you
+   were given.
+   - If you're confident the draft is right, record it without asking:
+     `ctx infer <slug> "<category>" "<answer>" --because "<one line: what in
+     the ticket/intent makes you confident>"`.
+   - If you're not confident, add it as a real question (blocking, since
+     `ctx spec-ready` will not proceed without it) and offer your draft as
+     the recommended option when you ask.
+   Do this for all three every time — `ctx spec-ready` refuses to let
+   planning start while any of them is unaddressed, the same way it refuses
+   on an open blocking question.
+
+5. **Ask them.** Use AskUserQuestion, recommending an option where you have a
    view. Then record each answer:
    `ctx resolve <slug> --question "<substring>" --answer "<what they chose>"`
 
 Do not write implementation code in this command. The spec is not ready to plan
-while any blocking question is open — `ctx spec-ready <slug>` is the check, and it
-exits non-zero until every blocking question is resolved.
+while any blocking question is open, or while any of the three intake categories
+above is unaddressed — `ctx spec-ready <slug>` is the check, and it exits non-zero
+until both are clear.
 
 Once the spec is ready, `/ctx:plan` decomposes it into independently
 dispatchable units — and refuses to run while any blocking question is open.
