@@ -745,6 +745,70 @@ class TestTierThreeFromObjective(Fixture):
         self.assertNotIn("observable outcome", step["plain"]["what"])
         self.assertEqual(step["plain"]["provenance"]["what"], "generated")
 
+    def assert_reader_safe(self, step, key):
+        """The rule `plain.py` states and `test_preview_page` enforces on the
+        rendered plain half: no file path, none of the contract's words."""
+        text = re.sub(r"</?[a-z]+>", "", step["plain"][key])
+        self.assertNotIn(".py", text, key)
+        self.assertNotIn("/", text, key)
+        self.assertNotIn("\\", text, key)
+        for word in BANNED:
+            self.assertNotIn(word, text.lower(), (key, word))
+
+    def test_an_objective_written_for_an_implementer_is_declined_not_quoted(self):
+        """An `## Objective` is written for the person doing the work, and
+        routinely names files and says `owns`/`forbid`. That is right there and
+        barred here, so the text is declined rather than laundered — the field
+        falls through to the generated sentence as if nothing were written.
+        """
+        directory = plan_mod.units_dir(self.layout, self.SLUG)
+        doc = frontmatter.read(directory / "01-a.md")
+        doc.body = ("## Objective\nMake ctx/verify.py report a real breakage.\n\n"
+                    "## Background\nThe step that owns src/a.py must forbid it.\n")
+        doc.write(directory / "01-a.md")
+
+        # Calibration: the fixture really does carry the vocabulary, so this
+        # cannot pass by there being nothing to decline.
+        contract = (directory / "01-a.md").read_text(encoding="utf-8")
+        self.assertIn("ctx/verify.py", contract)
+        self.assertIn("forbid", contract)
+
+        step = preview.view_model(self.layout, self.SLUG)["steps"][0]
+        for key in ("what", "why"):
+            self.assert_reader_safe(step, key)
+            self.assertEqual(step["plain"]["provenance"][key], "generated")
+            self.assertTrue(step["plain"][key], key)
+
+    def test_only_the_field_that_trips_the_check_is_declined(self):
+        """One unsafe section does not cost a safe one its tier."""
+        directory = plan_mod.units_dir(self.layout, self.SLUG)
+        doc = frontmatter.read(directory / "01-a.md")
+        doc.body = ("## Objective\nStop the probe from running a shipped binary.\n\n"
+                    "## Background\nThe step that owns src/a.py did it first.\n")
+        doc.write(directory / "01-a.md")
+        step = preview.view_model(self.layout, self.SLUG)["steps"][0]
+        self.assertIn("shipped binary", step["plain"]["what"])
+        self.assertEqual(step["plain"]["provenance"]["what"], "inferred")
+        self.assertEqual(step["plain"]["provenance"]["why"], "generated")
+        self.assert_reader_safe(step, "why")
+
+    def test_english_that_merely_uses_a_slash_is_not_mistaken_for_a_path(self):
+        """"and/or" is not a file path, and declining it would cost a reader a
+        perfectly good sentence."""
+        directory = plan_mod.units_dir(self.layout, self.SLUG)
+        doc = frontmatter.read(directory / "01-a.md")
+        doc.body = "## Objective\nStop read/write access and/or execution.\n"
+        doc.write(directory / "01-a.md")
+        step = preview.view_model(self.layout, self.SLUG)["steps"][0]
+        self.assertIn("and/or", step["plain"]["what"])
+        self.assertEqual(step["plain"]["provenance"]["what"], "inferred")
+
+    def test_the_declined_words_are_the_same_words_the_page_rule_names(self):
+        """Two lists of the same rule would eventually disagree about it, and
+        the quiet direction is the dangerous one: a word dropped from the
+        module's tuple would let that word onto the page with nothing red."""
+        self.assertEqual(sorted(preview.CONTRACT_WORDS), sorted(BANNED))
+
     def test_a_field_with_no_source_at_all_is_still_marked_generated(self):
         """Tier 3 has nothing to say about "what changes", so the generated
         sentence stands and says so."""
@@ -939,6 +1003,22 @@ class TestThePlanLevelIntakeTier(Fixture):
         self.assertIn("customer asked", model["plain"]["sections"]["why now"])
         self.assertNotIn("audit", model["plain"]["sections"]["why now"])
         self.assertEqual(model["plain"]["provenance"]["why now"], "authored")
+
+    def test_an_unreadable_questions_file_degrades_rather_than_crashing(self):
+        """Guarded the way `plain.load` guards its own read. `ctx preview` is
+        often the first thing anyone runs against a ledger somebody else
+        wrote, and a page that will not render says far less than a page with
+        one tier missing."""
+        spec_mod.record_inferred(self.layout, self.SLUG, "why now",
+                                 "Because of the audit", "stated in the audit")
+        with mock.patch.object(spec_mod, "questions",
+                               side_effect=OSError("unreadable")):
+            model = self.model()
+        self.assertEqual(model["plain"]["provenance"]["why now"], "generated")
+        self.assertEqual(model["plain"]["sections"]["why now"], "")
+        # The rest of the page is entirely unaffected.
+        self.assertEqual(len(model["steps"]), 1)
+        self.assertTrue(model["steps"][0]["plain"]["what"])
 
     def test_every_plan_section_has_a_provenance(self):
         model = self.model()

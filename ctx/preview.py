@@ -362,7 +362,14 @@ def _fill_plan_sections(layout, spec_slug, source):
     is left exactly as it was found. There is nothing on disk that answers it,
     and composing one would be the invention this whole ladder exists to avoid.
     """
-    _blocking, _non, resolved = spec_mod.questions(layout, spec_slug)
+    try:
+        _blocking, _non, resolved = spec_mod.questions(layout, spec_slug)
+    except (OSError, UnicodeDecodeError, ValueError):
+        # Guarded exactly as `plain.load` guards its own read: an unreadable
+        # questions file means this tier found nothing, not that the page
+        # cannot be rendered. `ctx preview` is often the first thing run
+        # against a ledger somebody else wrote.
+        resolved = []
     provenance = {}
     for section in plain_mod.PLAN_SECTIONS:
         if source.plan.get(section, ""):
@@ -505,20 +512,69 @@ def _title(unit, authored, patterns):
     return _phrase(_words(unit.name, drop_index=True), patterns), True
 
 
+#: The contract's own vocabulary, which `plain.py` bars from this half of the
+#: page: "the reader of this page does not have those words". Stated here as
+#: well because tier 3 quotes prose nobody wrote for that reader, and something
+#: has to hold it to the same rule. `tests/test_preview_model.py` asserts this
+#: tuple and the one the page's own rule is tested with are the same list, so
+#: the two cannot drift into disagreeing about what the rule is.
+CONTRACT_WORDS = ("owns", "forbid", "depends_on", "wave", "tier",
+                  "budget_tokens", "subagent")
+
+#: A filename: a dotted token ending in something a source file ends in.
+_FILENAME = re.compile(
+    r"[\w.-]+\.(?:py|pyi|js|jsx|ts|tsx|json|ya?ml|toml|ini|cfg|md|rst|sh|bash|"
+    r"html?|css|sql|go|rs|rb|java|kt|swift|c|h|cc|cpp|hpp|lock|txt)\b",
+    re.I)
+#: Any token carrying a `/`. English uses one too — "and/or", "read/write",
+#: "he/she" — and those are two whole words either side of it with nothing
+#: else; anything else with a slash in it is shaped like a path.
+_SLASHED = re.compile(r"\S*/\S*")
+_WORD_PAIR = re.compile(r"\A[A-Za-z]{2,}/[A-Za-z]{2,}\Z")
+
+
+def _has_technical_vocabulary(text):
+    """True when this prose says something the plain half may not say.
+
+    A file path or the contract's own words. `plain.py` bars both from the
+    text a non-technical reader is shown, and the bar is about what reaches
+    that reader — not about which tier produced it, so prose quoted out of a
+    unit contract is held to it exactly as generated text is.
+    """
+    lowered = text.lower()
+    if any(word in lowered for word in CONTRACT_WORDS):
+        return True
+    if _FILENAME.search(text):
+        return True
+    return any(not _WORD_PAIR.match(token.strip(" .,;:!?()[]{}<>`\"'"))
+               for token in _SLASHED.findall(text) if token.strip(" .,;:`\"'"))
+
+
 def _plain_from_objective(unit):
     """(what_it_does, why_it_matters) drawn from the unit's own prose, or
-    (None, None) when it has none to give — never invented.
+    (None, None) when it has none a reader of this page can be shown.
 
     HTML comments come out first, the way `plan.Unit.interfaces` treats the
     same problem: a section holding nothing but the scaffold's own `<!-- ...
     -->` hint has not been written, and quoting the hint at a non-technical
     reader is worse than the generated sentence it would displace.
+
+    **An `## Objective` is written for the implementer**, and routinely names
+    files and says `owns` and `forbid` — which is right, there, and is exactly
+    what the plain half of the page may not carry. So the text is *declined*
+    rather than repaired: rewriting or truncating somebody's free-form prose to
+    launder it is how a sentence ends up meaning something its author did not
+    write. A field that trips the check is treated as though the section were
+    empty and falls through to the generated sentence, and only that field —
+    an objective full of paths does not cost a clean background its tier.
     """
     objective = _HTML_COMMENT.sub(
         "", unit.doc.section("objective") or "").strip()
     background = _HTML_COMMENT.sub(
         "", unit.doc.section("background") or "").strip()
-    return (objective or None), (background or None)
+    usable = lambda text: bool(text) and not _has_technical_vocabulary(text)
+    return (objective if usable(objective) else None,
+            background if usable(background) else None)
 
 
 def _plain_from_ownership_gap(unit, gap_files):
