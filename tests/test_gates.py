@@ -84,6 +84,8 @@ class TestAmbiguityGate(Fixture):
         ready, blocking = spec_mod.ready(self.layout, slug)
         self.assertTrue(ready, "resolving the last blocker opens the gate")
         self.assertEqual(blocking, [])
+        for category in ("why now", "what could go wrong", "what changes for you"):
+            self.cli("infer", slug, category, "a", "--because", "b")
         self.assertEqual(self.cli("spec-ready", slug)[0], 0)
 
         body = spec_mod.questions_path(self.layout, slug).read_text(encoding="utf-8")
