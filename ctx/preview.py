@@ -522,8 +522,8 @@ def _plain_from_objective(unit):
 
 
 def _plain_from_ownership_gap(unit, gap_files):
-    """A plain sentence naming an owned path this unit's own tests do not
-    cover, or None when nothing is known.
+    """A plain sentence counting the tests outside this plan that already reach
+    what this step changes, or None when there are none.
 
     `gap_files` is `ownership_gaps`'s own `files` list — `[{path, tests}, ...]`
     — already computed by the caller; this never recomputes it, so the risk a
@@ -534,15 +534,37 @@ def _plain_from_ownership_gap(unit, gap_files):
     a unit owning `src/*.py` is told about the gap on `src/a.py` exactly as it
     would be told about colliding on it. A second ownership rule in this one
     module would be a second truth about the same word.
+
+    **It counts; it does not name.** `plain.py` holds this half of the page to
+    a rule — "never uses the contract's own vocabulary ... or a file path,
+    because the reader of this page does not have those words" — and a sentence
+    listing `src/a.py, src/b.py` breaks it just as surely when the words were
+    inferred as when they were generated. A count is the same fact in the
+    reader's language, and is the idiom `plain._generate` already uses when it
+    says a step changes four files. The paths themselves are two feet away in
+    the technical view and in the page's own ownership-gap table, for the
+    reader who does have those words.
+
+    Still a fact, not a judgment: how many tests, and that any of them could be
+    what breaks. It does not say the step is risky, and `ownership_gaps` is a
+    heuristic about which tests *name* a module, so the sentence claims only
+    that they refer to it.
     """
-    hits = sorted(gap["path"] for gap in gap_files
-                  if plan_mod.covers_any(gap["path"], unit.owns))
-    if not hits:
+    hits = [gap for gap in gap_files
+            if plan_mod.covers_any(gap["path"], unit.owns)]
+    tests = set(test for gap in hits for test in gap["tests"])
+    if not tests:
         return None
+    if len(tests) == 1:
+        return (
+            "One test elsewhere in the project already refers to part of what "
+            "this step changes; a change here could be caught by that test "
+            "instead of by this plan's own checks."
+        )
     return (
-        "Tests outside this plan already reference %s; a change here could be "
-        "caught by one of those instead of by this plan's own checks."
-        % ", ".join(hits)
+        "%d tests elsewhere in the project already refer to part of what this "
+        "step changes; a change here could be caught by one of those instead "
+        "of by this plan's own checks." % len(tests)
     )
 
 

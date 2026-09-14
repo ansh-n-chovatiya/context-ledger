@@ -791,11 +791,36 @@ class TestTierFourFromOwnershipGaps(Fixture):
         self.assertEqual(
             [gap["path"] for gap in vm["ownership_gaps"]["files"]], ["src/a.py"])
 
-    def test_risk_names_a_real_uncovered_test_file_when_one_exists(self):
+    def test_risk_states_the_real_gap_as_a_count(self):
         vm = preview.view_model(self.layout, self.SLUG)
         step = vm["steps"][0]
-        self.assertIn("src/a.py", step["plain"]["risk"])
+        self.assertIn("One test elsewhere in the project", step["plain"]["risk"])
         self.assertEqual(step["plain"]["provenance"]["risk"], "inferred")
+
+    def test_the_count_is_of_tests_and_moves_with_them(self):
+        """Calibration: a fixed sentence would pass the case above too."""
+        self.write("tests/test_other.py", "from src import a\n")
+        self.assertEqual(self.cli("plan-check", self.SLUG)[0], 0)
+        step = preview.view_model(self.layout, self.SLUG)["steps"][0]
+        self.assertIn("2 tests elsewhere in the project", step["plain"]["risk"])
+
+    def test_the_risk_never_names_a_file_even_though_it_knows_one(self):
+        """`plain.py`'s rule for this half of the page: no file path and none
+        of the contract's vocabulary, "because the reader of this page does not
+        have those words". Inferred text is held to it exactly as generated
+        text is — the paths are in the technical view and the gap table, which
+        is where a reader who has those words will look.
+        """
+        vm = preview.view_model(self.layout, self.SLUG)
+        # Calibration: the model really does know the path, elsewhere.
+        self.assertIn("src/a.py", json.dumps(vm["ownership_gaps"]))
+        for step in vm["steps"]:
+            risk = re.sub(r"</?[a-z]+>", "", step["plain"]["risk"])
+            self.assertNotIn(".py", risk, step["slug"])
+            self.assertNotIn("/", risk, step["slug"])
+            self.assertNotIn("\\", risk, step["slug"])
+            for word in BANNED:
+                self.assertNotIn(word, risk.lower(), (step["slug"], word))
 
     def test_a_unit_owning_the_gap_by_pattern_is_told_about_it_too(self):
         """Who owns a path is `plan.covers_any`'s question everywhere else in
@@ -812,7 +837,8 @@ class TestTierFourFromOwnershipGaps(Fixture):
         self.assertEqual(self.cli("plan-check", self.SLUG)[0], 0)
         vm = preview.view_model(self.layout, self.SLUG)
         second = [s for s in vm["steps"] if s["slug"] == "02-b"][0]
-        self.assertIn("src/a.py", second["plain"]["risk"])
+        self.assertIn("One test elsewhere in the project",
+                      second["plain"]["risk"])
         self.assertEqual(second["plain"]["provenance"]["risk"], "inferred")
 
     def test_a_unit_owning_nothing_in_the_gap_list_keeps_the_generated_risk(self):
@@ -830,7 +856,10 @@ class TestTierFourFromOwnershipGaps(Fixture):
         vm = preview.view_model(self.layout, self.SLUG)
         second = [s for s in vm["steps"] if s["slug"] == "02-b"][0]
         self.assertEqual(second["plain"]["provenance"]["risk"], "generated")
-        self.assertNotIn("src/a.py", second["plain"]["risk"])
+        self.assertNotIn("elsewhere in the project", second["plain"]["risk"])
+        # And the step that does have the gap still says so, in the same model.
+        first = [s for s in vm["steps"] if s["slug"] == "01-a"][0]
+        self.assertEqual(first["plain"]["provenance"]["risk"], "inferred")
 
 
 class TestThePlanLevelIntakeTier(Fixture):
