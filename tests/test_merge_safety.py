@@ -217,6 +217,133 @@ class TestConflictReporting(MergeSafetyFixture):
         )
 
 
+class TestAMergeThatNeverStarted(MergeSafetyFixture):
+    """The preflight's `.ctx/` exemption, met head-on by git's lack of one.
+
+    `dirty_paths` excludes ledger paths from the clean-tree check by design —
+    every `ctx` command appends to the journal, so insisting on a spotless tree
+    would mean no merge ever runs. `git merge` has no such exemption. When the
+    unit branch also committed a ledger file that the integration tree has
+    uncommitted, git refuses to *begin*: no reconciliation is attempted, so
+    `_conflicted` finds no unmerged paths and `_landed_since_fork` finds
+    nothing either. The failure branch then fell through to its `else` and
+    reported "one unit wrote outside its scope" — of a unit whose diff was
+    entirely inside `owns`, about a merge that never happened, naming the one
+    cause it was not.
+    """
+
+    JOURNAL = ".ctx/journal/2026-01-01--t.md"
+
+    def ledger_file(self, text):
+        path = self.root / self.JOURNAL
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def setUp(self):
+        super().setUp()
+        self.ledger_file("base\n")
+
+    def dirty_ledger_merge(self):
+        """A unit with a clean, in-scope diff — and a ledger file that both the
+        branch and the integration tree have moved."""
+        self.dispatched()
+        tree = wt.path_for(self.layout, self.slug, "01-a")
+        (tree / self.JOURNAL).write_text("the unit's own journal write\n",
+                                         encoding="utf-8")
+        self.git("add", "-A", cwd=tree)
+        self.git("commit", "-qm", "journal", cwd=tree)
+        # ...and ctx's own uncommitted write sitting in the integration tree,
+        # which is exactly what the preflight looks past.
+        self.ledger_file("a ctx command wrote this and nobody committed it\n")
+
+    def test_the_preflight_still_calls_the_integration_tree_clean(self):
+        """The premise. If this ever stops holding, the case below is gone and
+        the test is measuring something else."""
+        self.dirty_ledger_merge()
+        changed, error = wt.dirty_paths(self.layout)
+        self.assertEqual(error, "")
+        self.assertEqual(changed, [], "the ledger write is excluded by design")
+        self.assertIn(self.JOURNAL, wt.ledger_dirt(self.layout))
+
+    def test_the_cause_named_is_the_ledger_dirt_not_a_scope_violation(self):
+        self.dirty_ledger_merge()
+
+        ok, messages = wt.merge(self.layout, self.config, self.slug, "01-a")
+
+        joined = "\n".join(messages)
+        self.assertFalse(ok, joined)
+        self.assertNotIn(
+            "wrote outside its scope", joined,
+            "the unit's diff was entirely inside `owns` — blaming it sends the "
+            "reader auditing the wrong thing",
+        )
+        self.assertIn("never started", joined, "no merge was attempted at all")
+        self.assertIn(self.JOURNAL, joined, "the dirty ledger file is named")
+        self.assertIn("commit ctx's own ledger writes", joined,
+                      "and the fix is spelled out")
+
+    def test_nothing_landed_and_the_unit_is_not_done(self):
+        self.dirty_ledger_merge()
+
+        ok, _messages = wt.merge(self.layout, self.config, self.slug, "01-a")
+
+        self.assertFalse(ok)
+        code, _out = self.git_out("rev-parse", "--verify", wt.branch_for(self.slug, "01-a"))
+        self.assertEqual(code, 0, "the branch still holds the work")
+        self.assertFalse((self.root / "src" / "a.py").exists())
+        self.assertEqual(self.unit_meta()["status"], "pending")
+        self.assertEqual(
+            (self.root / self.JOURNAL).read_text(encoding="utf-8"),
+            "a ctx command wrote this and nobody committed it\n",
+            "the uncommitted ledger write survives the refusal",
+        )
+
+    def test_dealing_with_the_ledger_write_is_all_it_takes(self):
+        """The positive control, and the proof the advice is actionable: do what
+        the message says about the integration tree and the same merge lands,
+        with no change to the unit at all."""
+        self.dirty_ledger_merge()
+        self.assertFalse(wt.merge(self.layout, self.config, self.slug, "01-a")[0])
+
+        self.git("checkout", "--", self.JOURNAL)
+
+        ok, messages = wt.merge(self.layout, self.config, self.slug, "01-a")
+        self.assertTrue(ok, "\n".join(messages))
+        self.assertTrue((self.root / "src" / "a.py").is_file())
+
+    def test_committing_it_instead_turns_it_into_an_honest_conflict(self):
+        """The other half of the advice. Committing a ledger write that really
+        does diverge from the branch's is a genuine three-way conflict — and it
+        is now reported as one, naming the file and the recovery, rather than as
+        a unit writing outside its scope."""
+        self.dirty_ledger_merge()
+        self.git("add", "-A")
+        self.git("commit", "-qm", "ledger")
+
+        ok, messages = wt.merge(self.layout, self.config, self.slug, "01-a")
+        joined = "\n".join(messages)
+        self.assertFalse(ok, joined)
+        self.assertIn("merge conflicted in", joined)
+        self.assertIn(self.JOURNAL, joined)
+        self.assertNotIn("wrote outside its scope", joined)
+
+    def test_a_real_conflict_is_still_reported_as_a_conflict(self):
+        """The new branch must not swallow the old one: a merge that genuinely
+        started and could not reconcile still names the unmerged paths."""
+        self.dispatched()
+        (self.root / "src").mkdir(exist_ok=True)
+        (self.root / "src" / "a.py").write_text("x = 2\n", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "someone else edited a.py")
+
+        ok, messages = wt.merge(self.layout, self.config, self.slug, "01-a")
+        joined = "\n".join(messages)
+        self.assertFalse(ok, joined)
+        self.assertIn("merge conflicted in", joined)
+        self.assertNotIn("never started", joined)
+
+
 # --------------------------------------------------------------------------- #
 # removal and listing
 # --------------------------------------------------------------------------- #

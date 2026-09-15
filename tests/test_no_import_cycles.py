@@ -150,6 +150,9 @@ class TestTheImportGraph(unittest.TestCase):
             # The gate. Everything that runs it imports it, so it may import
             # none of them at the top.
             "verify": ["contract", "findings", "journal", "plan", "review"],
+            # `commands` imports this module at the top; `merge` needs
+            # `_set_unit_status` to write `done` under the plan lock.
+            "worktree": ["commands"],
         })
 
 

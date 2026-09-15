@@ -26,7 +26,7 @@ the unit was planned against.
 import os
 import subprocess
 
-from . import paths, plan as plan_mod, verify
+from . import contract as contract_mod, paths, plan as plan_mod, verify
 
 WORKTREE_SUBDIR = "worktrees"
 BRANCH_PREFIX = "ctx/"
@@ -143,6 +143,20 @@ def dirty_paths(layout):
     """Uncommitted changes that would entangle a merge, ignoring ledger writes."""
     changed, error = verify.changed_files(repo_root(layout))
     return [path for path in changed if not _is_ledger(path)], error
+
+
+def ledger_dirt(layout):
+    """The mirror image of `dirty_paths`: the `.ctx/` writes it looks past.
+
+    Excluding them from the preflight is right — every `ctx` command appends to
+    the journal, so insisting on a spotless tree would mean no merge ever runs.
+    But `git merge` has no such exclusion. If the unit branch also committed
+    ledger files (a runner that commits with `git add -A` does), git refuses to
+    *start* the merge rather than overwrite the dirty copies, and the preflight
+    that declared the tree clean has no idea why.
+    """
+    changed, _error = verify.changed_files(repo_root(layout))
+    return [path for path in changed if _is_ledger(path)]
 
 
 def _record_fork_point(layout, plan_slug, unit_name):
@@ -486,6 +500,90 @@ def _conflicted(root):
     return sorted(line.strip() for line in output.splitlines() if line.strip())
 
 
+def _merge_in_progress(root):
+    """Did `git merge` get far enough to leave a MERGE_HEAD behind?
+
+    The difference between "git tried and could not reconcile" and "git refused
+    to begin at all". `_conflicted` returns `[]` for both — there are no unmerged
+    paths when no merge was ever attempted — and so does `_landed_since_fork`
+    after it, which is how a pre-merge abort came to be reported as a unit
+    writing outside its scope.
+
+    Asked of git's refs rather than of its prose: matching on "would be
+    overwritten" would hold only in the locale that sentence was written in.
+    """
+    code, _output = git(["rev-parse", "--verify", "--quiet", "MERGE_HEAD"], root)
+    return code == 0
+
+
+def _contract_guard(layout, plan_slug, unit):
+    """`verify.gate_check`'s steps 0 and 1, as a merge refusal. `(refusal, notes)`.
+
+    `merge` reimplemented a *subset* of the done-gate: it ran the unit's checks
+    and handled FAIL/PENDING/blind-ERROR itself, but never asked the two
+    questions that come *before* any check is worth running — was this unit
+    dispatched through ctx at all, and is it still being judged against the
+    contract it was dispatched with. Both are `gate_check`'s, whose only other
+    caller is `ctx unit --status done`; so `ctx merge` was a complete route
+    around them.
+
+    Calling `gate_check` itself here would re-run every check against the
+    *integration* tree, which is not the tree this merge is judging — step 4
+    below deliberately runs them inside the worktree. Its two steps that are
+    pure file reads are therefore applied directly.
+
+    This is not the `stray` check above, and does not replace it. That one
+    validates the branch's diff against whatever `owns` says *now*; this one
+    asks whether `owns` is still what was sealed at dispatch. A unit that
+    widened its own `owns` and then stayed inside it passes the first and fails
+    this one.
+    """
+    notes = []
+
+    # 0. Was this unit ever dispatched through ctx at all? Scoped to plans that
+    #    seal, exactly as `gate_check` scopes it: a plan where *no* unit has a
+    #    seal predates sealing, and refusing there would brick it on upgrade.
+    if (contract_mod.load_seal(layout, plan_slug, unit.name) is None
+            and contract_mod.any_seal(layout, plan_slug)):
+        return [
+            f"refusing to merge {unit.name} — it has no dispatch seal, so it was "
+            "never dispatched by ctx:",
+            "  nothing recorded its contract, its review baseline or the commit "
+            "it started from,",
+            "  which is most of what this gate compares against.",
+            "",
+            "`ctx start` is what records a seal. Dispatch the wave through it "
+            "(other units in",
+            "this plan have one, so this unit was sent out around it), or pass "
+            "--skip-gate to accept",
+            "a unit nothing can be checked against.",
+        ], notes
+
+    # 1. Did the unit rewrite its own contract after it was dispatched?
+    if contract_mod.baseline(layout, plan_slug, unit) is None:
+        # Not a violation — an older dispatch, or one whose snapshot failed, has
+        # nothing to compare against.
+        if contract_mod.load_seal(layout, plan_slug, unit.name) is not None:
+            notes.append(
+                f"note: no dispatch baseline for {unit.name}, so its contract was "
+                "not checked for edits — /ctx:start records one from now on"
+            )
+        return [], notes
+
+    intact, changed = contract_mod.compare(layout, plan_slug, unit)
+    if not intact:
+        return [
+            f"refusing to merge {unit.name} — its contract changed after it was "
+            "dispatched:",
+            *[f"  changed: {item}" for item in changed],
+            "",
+            "A unit does not get to rewrite the promise it is judged against.",
+            "Restore what changed from the plan, or — if the change is a real",
+            "planning decision — say so out loud and pass --skip-gate.",
+        ], notes
+    return [], notes
+
+
 def _landed_since_fork(root, branch, paths):
     """Which of `paths` the integration branch changed since `branch` forked.
 
@@ -589,7 +687,20 @@ def merge(layout, config, plan_slug, unit_name, skip_gate=False):
             + (f": {named}" if named else "")
             + (" (+%d more)" % (len(skipped) - 3) if len(skipped) > 3 else "")
         )
+        messages.append(
+            "warning: the dispatch-seal and contract-intact guards were skipped "
+            f"too — nothing checked that {unit_name} was dispatched by ctx, or "
+            "that its contract is still the one it was dispatched with"
+        )
     else:
+        # 4a. The two guards that come before any check is worth running. Same
+        #     refusals as `ctx unit --status done`, which is the point: a merge
+        #     is a done-transition, and it used to make one without them.
+        refusal, notes = _contract_guard(layout, plan_slug, unit)
+        if refusal:
+            return False, notes + refusal
+        messages.extend(notes)
+
         checks = verify.ordered(unit.checks)
         if not checks:
             return False, [f"{unit_name} has no verify checks — refusing to merge blind"]
@@ -655,6 +766,33 @@ def merge(layout, config, plan_slug, unit_name, skip_gate=False):
         root,
     )
     if code != 0:
+        started = _merge_in_progress(root)
+        last = output.strip().splitlines()[-1] if output.strip() else ""
+        if not started:
+            # git refused before attempting to reconcile anything, so there are
+            # no unmerged paths to name and nothing below this point applies.
+            # The commonest cause is ctx's own doing: the preflight excludes
+            # `.ctx/` from the clean-tree check by design, and git does not.
+            dirt = ledger_dirt(layout)
+            git(["merge", "--abort"], root)
+            cause = [
+                "the integration tree has uncommitted ctx ledger writes that "
+                "this merge would overwrite: " + ", ".join(sorted(dirt)[:8]),
+                "the merge preflight looks past `.ctx/` paths on purpose — they "
+                "are merge-safe by construction — but git does not: commit ctx's "
+                "own ledger writes in the integration tree, or discard them, "
+                "before merging",
+                f"{unit_name} did nothing wrong; its diff stayed inside its "
+                "`owns`",
+            ] if dirt else [
+                f"git declined before any reconciliation was attempted, so this "
+                f"is not a conflict and not a scope violation by {unit_name} — "
+                "its diff stayed inside its `owns`",
+            ]
+            return False, [
+                f"the merge of {branch} into {target} never started"
+            ] + cause + [line for line in ["Nothing changed.", last] if line]
+
         conflicts = _conflicted(root)
         landed = _landed_since_fork(root, branch, conflicts)
         git(["merge", "--abort"], root)
@@ -676,7 +814,6 @@ def merge(layout, config, plan_slug, unit_name, skip_gate=False):
                 "and ownership was disjoint, so git had nothing to reconcile — one "
                 "unit wrote outside its scope",
             ]
-        last = output.strip().splitlines()[-1] if output.strip() else ""
         return False, [f"merge conflicted in {named}"] + detail + [
             line for line in ["Merge aborted; nothing changed.", last] if line
         ]
@@ -686,6 +823,13 @@ def merge(layout, config, plan_slug, unit_name, skip_gate=False):
     messages.append(
         f"cleanup incomplete: {error}" if error else "worktree and branch removed"
     )
-    unit.set(status="done")
+    # The plan lock, held across a re-read of the document. `unit` was parsed
+    # before the gate ran and before `remove` touched anything, and `Unit.set`
+    # writes the *whole* document back — so writing this stale copy would erase
+    # every field another writer has added since, `base_branch` among them.
+    # Imported inside the function: `commands` imports this module at the top,
+    # so the edge back has to run after both modules are built.
+    from . import commands
+    commands._set_unit_status(layout, plan_slug, [unit], "done")
     messages.append(f"{unit_name}: done")
     return True, messages
