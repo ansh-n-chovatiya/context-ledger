@@ -1373,7 +1373,14 @@ def cmd_ask(args):
         for item in resolved[-5:]:
             _echo(f"  · {item}")
     if not blocking:
-        _echo("no blocking questions — spec is ready to plan")
+        _, _, missing = spec_mod.plannable(layout, slug)
+        if missing:
+            _echo("no blocking questions, but the intake is unaddressed: "
+                  + ", ".join(missing))
+            _echo(f"  /ctx:spec {slug} runs the intake interview; `ctx plan` "
+                  "refuses until it has.")
+        else:
+            _echo("no blocking questions — spec is ready to plan")
     return 0
 
 
@@ -1387,12 +1394,21 @@ def cmd_resolve(args):
         _echo(f"no open question matching {args.question!r}")
         return 1
     journal.append(layout, config, "spec", slug, f"resolved: {args.question[:60]}")
-    ready, blocking = spec_mod.ready(layout, slug)
-    if ready:
+    # Both halves of the gate `ctx plan` actually applies. Answering the last
+    # blocking question used to print "now ready to plan" and stamp
+    # `status: ready` on a spec whose intake nobody had touched — advice the
+    # very next command refuses to honour.
+    ok, blocking, missing = spec_mod.plannable(layout, slug)
+    if ok:
         spec_mod.mark(layout, slug, "ready")
         _echo(f"resolved · spec {slug} is now ready to plan")
-    else:
+    elif blocking:
         _echo(f"resolved · {len(blocking)} blocking question(s) remain")
+    else:
+        _echo(f"resolved · no blocking questions left, but the intake is "
+              f"unaddressed: {', '.join(missing)}")
+        _echo(f"  /ctx:spec {slug} runs the intake interview; `ctx plan` "
+              "refuses until it has.")
     return 0
 
 
@@ -1421,16 +1437,15 @@ def cmd_spec_ready(args):
         # A gate, so this stays non-zero: "no spec" is not "spec is ready".
         _echo("no active spec — nothing to gate")
         return 1
-    ready, blocking = spec_mod.ready(layout, slug)
-    intake_ready, missing = spec_mod.intake_ready(layout, slug)
-    if ready and intake_ready:
+    ok, blocking, missing = spec_mod.plannable(layout, slug)
+    if ok:
         _echo(f"spec {slug}: ready")
         return 0
-    if not ready:
+    if blocking:
         _echo(f"spec {slug}: BLOCKED on {len(blocking)} question(s)")
         for item in blocking:
             _echo(f"  - {item}")
-    if not intake_ready:
+    if missing:
         _echo(f"spec {slug}: BLOCKED on intake — not yet answered or inferred: "
              + ", ".join(missing))
         _echo("  `ctx infer <name> <category> <answer> --because <why>` records "

@@ -29,7 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ctx import (  # noqa: E402
-    advice, cli, frontmatter, journal, plan as plan_mod, state as state_mod,
+    advice, cli, frontmatter, journal, plan as plan_mod, spec as spec_mod,
+    state as state_mod,
 )
 from support import OK, Fixture  # noqa: E402
 
@@ -219,9 +220,30 @@ class TestLevel2(AdviceFixture):
 
     def test_a_ready_spec_proposes_planning_it(self):
         self.assertEqual(self.cli("spec", "auth", "--intent", "log in")[0], 0)
+        # "Ready" here has to mean what `ctx plan` means by it, which is both
+        # halves of the gate — so a spec is only ready once its intake is
+        # recorded, the same way every other fixture in this plan records it.
+        for category in spec_mod.INTAKE_CATEGORIES:
+            self.assertEqual(
+                self.cli("infer", "auth", category, "a", "--because", "b")[0], 0)
         command, why = self.advise(level="2", spec="auth")
         self.assertEqual(command, "/ctx:plan auth")
         self.assertIn("ready to decompose", why)
+
+    def test_a_spec_whose_intake_is_unaddressed_is_not_called_ready(self):
+        """The three surfaces that advertise readiness and the gate that
+        enforces it used to disagree: `/ctx:next` sent people at `/ctx:plan`
+        for a spec `ctx plan` would refuse. Control: the test above proves the
+        same fixture *does* reach `/ctx:plan` once the intake is recorded, so
+        this is not passing because the advice never says that."""
+        self.assertEqual(self.cli("spec", "auth", "--intent", "log in")[0], 0)
+        command, why = self.advise(level="2", spec="auth")
+        self.assertNotEqual(command, "/ctx:plan auth")
+        self.assertIn("intake", why)
+        # And the advice names what is actually missing, not just that
+        # something is.
+        for category in spec_mod.INTAKE_CATEGORIES:
+            self.assertIn(category, why)
 
     def test_a_plan_with_problems_proposes_doctor(self):
         current = self.make_plan()

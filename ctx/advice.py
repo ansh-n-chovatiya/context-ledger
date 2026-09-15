@@ -70,12 +70,22 @@ def next_action(layout, config, state=None):
         spec = current.get("spec")
         plan = current.get("plan")
         if spec and not plan:
-            ready, blocking = spec_mod.ready(layout, spec)
-            if not ready:
+            # Both halves of the gate `ctx plan` applies, asked as one
+            # question. Consulting only the blocking-question half sent people
+            # at `/ctx:plan` for a spec that command then refused — advice
+            # whose only effect is a wasted round trip and a lost afternoon.
+            _ok, blocking, missing = spec_mod.plannable(layout, spec)
+            if blocking:
                 return "/ctx:ask", (
                     f"spec {spec} has {len(blocking)} unanswered blocking "
                     "question(s); planning around them is the failure this exists "
                     "to prevent"
+                )
+            if missing:
+                return f"/ctx:spec {spec}", (
+                    f"spec {spec} has {len(missing)} intake question(s) nobody "
+                    "has answered or inferred (" + ", ".join(missing) + "); "
+                    "`ctx plan` refuses until they are addressed"
                 )
             return f"/ctx:plan {spec}", f"spec {spec} is ready to decompose"
         if plan:

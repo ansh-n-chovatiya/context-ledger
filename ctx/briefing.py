@@ -116,12 +116,21 @@ def _spec_blocks(layout, state):
     slug = state.get("spec")
     if not slug:
         return ["no active spec — /ctx:spec «intent» to start one"]
-    ready, blocking = spec_mod.ready(layout, slug)
-    if not ready:
+    # `plannable`, not `ready`: "ready" printed here has to mean the same
+    # thing `ctx plan` means by it, or the briefing is telling the next
+    # session to run a command that will turn it away.
+    _ok, blocking, missing = spec_mod.plannable(layout, slug)
+    if blocking:
         listed = "; ".join(blocking[:3])
         return [
             f"spec {slug} · BLOCKED on {len(blocking)} unanswered question(s)",
             f"ask before building: {listed}",
+        ]
+    if missing:
+        return [
+            f"spec {slug} · intake unaddressed: {', '.join(missing)}",
+            f"/ctx:spec {slug} runs the intake interview; planning is refused "
+            "until it has",
         ]
     return [f"spec {slug} · ready · /ctx:plan {slug} to decompose it into units"]
 

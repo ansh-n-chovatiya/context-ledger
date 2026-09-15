@@ -76,6 +76,12 @@ class TestAmbiguityGate(Fixture):
     def test_resolving_opens_the_gate_and_leaves_an_audit_trail(self):
         slug = self.open_spec()
         self.cli("question", slug, "Does invoice_v1 still receive traffic?")
+        # Recorded before the resolve, not after: `ctx resolve` stamps
+        # `status: ready` only when the spec is plannable on *both* halves of
+        # the gate, so an intake recorded afterwards would be a spec whose
+        # status says draft while `ctx plan` would let it through.
+        for category in ("why now", "what could go wrong", "what changes for you"):
+            self.cli("infer", slug, category, "a", "--because", "b")
         code, _ = self.cli(
             "resolve", slug, "--question", "invoice_v1", "--answer", "No, read-only since July",
         )
@@ -84,8 +90,6 @@ class TestAmbiguityGate(Fixture):
         ready, blocking = spec_mod.ready(self.layout, slug)
         self.assertTrue(ready, "resolving the last blocker opens the gate")
         self.assertEqual(blocking, [])
-        for category in ("why now", "what could go wrong", "what changes for you"):
-            self.cli("infer", slug, category, "a", "--because", "b")
         self.assertEqual(self.cli("spec-ready", slug)[0], 0)
 
         body = spec_mod.questions_path(self.layout, slug).read_text(encoding="utf-8")

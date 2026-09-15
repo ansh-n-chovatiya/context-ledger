@@ -47,7 +47,22 @@ class TestNext(Fixture):
 
     def test_a_ready_spec_points_at_planning(self):
         self.cli("spec", "billing", "--intent", "Move billing")
+        # A spec is "ready" only once both halves of the gate `ctx plan`
+        # applies are satisfied — no open blocking question *and* a recorded
+        # intake. Without the second, this advice pointed at a command that
+        # would refuse.
+        for category in ("why now", "what could go wrong", "what changes for you"):
+            self.cli("infer", "billing", category, "a", "--because", "b")
         self.assertIn("/ctx:plan", self.next_line())
+
+    def test_an_unaddressed_intake_does_not_point_at_planning(self):
+        """Control for the test above: the fixture reaches `/ctx:plan` only
+        because the intake was recorded, not because the advice always says
+        so."""
+        self.cli("spec", "billing", "--intent", "Move billing")
+        out = self.next_line()
+        self.assertNotIn("/ctx:plan", out)
+        self.assertIn("intake", out)
 
     def test_a_dispatchable_plan_points_at_start(self):
         self.cli("spec", "auth", "--intent", "Rotate keys")

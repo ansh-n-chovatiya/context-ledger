@@ -397,9 +397,34 @@ def intake_ready(layout, slug):
 
 
 def ready(layout, slug):
-    """Gate 1. (is_ready, open_blocking_questions)."""
+    """Gate 1, question half only. (is_ready, open_blocking_questions).
+
+    Callers deciding whether to *tell somebody they can plan* want
+    `plannable` instead — this answers a narrower question and answering the
+    wider one with it is how three separate surfaces came to promise a user
+    something `ctx plan` then refused.
+    """
     blocking, _non, _resolved = questions(layout, slug)
     return (not blocking), blocking
+
+
+def plannable(layout, slug):
+    """Gate 1 in full: `(ok, open_blocking_questions, unaddressed_intake)`.
+
+    `ctx plan` refuses on either half — an open blocking question, or an
+    intake category nobody has answered or inferred — but for a while only the
+    first half was consulted by everything that *advertised* readiness:
+    `ctx resolve` printed "now ready to plan", `/ctx:next` proposed
+    `/ctx:plan`, and the briefing said "ready". All three could say so of a
+    spec `ctx plan` would turn away at the door.
+
+    One helper rather than three copies of `ready() and intake_ready()`,
+    because a fourth surface will be written eventually and the copy it is
+    modelled on should already be the whole rule.
+    """
+    ready_now, blocking = ready(layout, slug)
+    intake_ok, missing = intake_ready(layout, slug)
+    return (ready_now and intake_ok), blocking, missing
 
 
 def mark(layout, slug, status):
