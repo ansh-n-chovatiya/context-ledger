@@ -153,21 +153,15 @@ class ListItemContinuations(unittest.TestCase):
         self.assertEqual(doc.list_items("acceptance criteria"), [])
 
 
-class RealSpecFileProvesTheFix(unittest.TestCase):
-    def test_the_real_ledger_spec_no_longer_truncates_criterion_one(self):
-        """Criterion 5. `.ctx/specs/ctx-0-8/spec.md`'s own first acceptance
-        criterion spans four physical lines in the source file. Reading it
-        through the fixed code must yield the full sentence, tail intact."""
-        repo_root = Path(__file__).resolve().parent.parent
-        path = repo_root / ".ctx" / "specs" / "ctx-0-8" / "spec.md"
-        doc = frontmatter.read(path)
-        self.assertIsNotNone(doc, f"expected {path} to exist")
-        items = doc.list_items("acceptance criteria")
-        self.assertTrue(items, "expected at least one acceptance criterion")
-        self.assertTrue(
-            items[0].endswith("One unit test per signal."),
-            f"criterion 1 came back truncated: {items[0]!r}",
-        )
+# Criterion 5 once had a companion here — `RealSpecFileProvesTheFix`, which
+# read this repository's own `.ctx/specs/ctx-0-8/spec.md` and checked the
+# multi-line criterion it was found on came back whole. `.ctx/` is local
+# working state now: untracked, gitignored, and absent from every fresh clone,
+# so that test asserted nothing in CI and passed here only on leftover files.
+# It was an extra "proven on real messy data" confirmation on top of the
+# synthetic continuation cases above, which own the behaviour, so it was
+# deleted rather than pinned to a snapshot of a file the repository no longer
+# keeps.
 
 
 # --------------------------------------------------------------------------- #

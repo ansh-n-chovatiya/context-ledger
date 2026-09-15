@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ctx import config as config_mod, hooks, paths, trust  # noqa: E402
 from ctx.cli import main as cli_main  # noqa: E402
+from ctx.commands import GITIGNORE  # noqa: E402
 
 
 # A verify command that exits 0 anywhere. `true` is a POSIX builtin: on Windows
@@ -79,6 +80,13 @@ def _guard(path, verb):
             f"checkout's own ledger at {_REAL_CTX} — every test must write "
             f"through its own fixture (support.Fixture.setUp), never here"
         )
+
+
+# The originals, captured before the guard replaces them. The guard is total by
+# design — there is no legitimate way for a test to write inside `.ctx/` — and
+# `ensure_real_ledger_gitignore` below is the single sanctioned exception, so it
+# needs the unpatched calls. Nothing else may use them.
+_UNGUARDED = {}
 
 
 def _install_isolation_guard():
@@ -153,6 +161,12 @@ def _install_isolation_guard():
             _guard(self, "Path.open(mode=%r)" % mode)
         return real_path_open(self, mode, *a, **kw)
 
+    # `real_makedirs` is deliberately not among these: `os.makedirs` resolves
+    # `os.mkdir` through the module at call time, so the original function
+    # still lands on the guarded one. Only calls that touch nothing patched
+    # belong here.
+    _UNGUARDED.update(mkdir=real_mkdir, open=real_open)
+
     os.replace = guarded_replace
     os.rename = guarded_rename
     os.mkdir = guarded_mkdir
@@ -165,6 +179,45 @@ def _install_isolation_guard():
 
 
 _install_isolation_guard()
+
+
+def ensure_real_ledger_gitignore():
+    """Create this checkout's own `.ctx/.gitignore` if — and only if — it is
+    absent, and return its path.
+
+    `.ctx/` is this repository's local working state: untracked, and ignored
+    wholesale by the top-level `.gitignore`. So a fresh clone has no `.ctx/` at
+    all, and the guard's own tests — which must aim at the *real* ledger, not a
+    fixture standing in for it, or they prove nothing — had nothing to read as
+    a canary and failed in setUp before their bodies ran.
+
+    Skipping there was the other option, and the wrong one: a guard that is
+    silently skipped on every fresh checkout, which is what CI is, is precisely
+    the fail-green shape this guard exists to rule out. So the canary is
+    created instead — the same bytes `ctx init` writes, imported from
+    `commands.GITIGNORE` rather than retyped so the two cannot drift.
+
+    Never an overwrite. The file is opened `"x"`, so an existing
+    `.ctx/.gitignore` with different content is left exactly as it is (and two
+    runs racing lose harmlessly). It stays untracked either way: this writes to
+    disk, not to the index.
+
+    This is the one sanctioned bypass of the isolation guard, which is why it
+    lives here, beside it, and uses the pre-patch calls directly.
+    """
+    target = _REAL_CTX / ".gitignore"
+    if target.exists():
+        return target
+    try:  # one level: the parent is the repository root, which exists
+        _UNGUARDED["mkdir"](str(_REAL_CTX))
+    except FileExistsError:
+        pass
+    try:
+        with _UNGUARDED["open"](target, "x", encoding="utf-8") as handle:
+            handle.write(GITIGNORE)
+    except FileExistsError:  # another run got there first
+        pass
+    return target
 
 
 def _cleanup(tmp, attempts=5):

@@ -32,7 +32,6 @@ both halves hold, so both halves are asserted.
 """
 
 import os
-import shutil
 import subprocess
 import sys
 import unittest
@@ -118,22 +117,15 @@ class TestDuplicateAdrIdsAreNamed(Fixture):
         code, out = self.cli("doctor")
         self.assertEqual(code, 0, out)
 
-    def test_this_repositorys_own_decisions_are_clean(self):
-        """Criterion 10, on the real thing. The check has to be quiet on a tree
-        with nothing wrong with it, or it is noise everyone learns to scroll
-        past — so it is run against this repository's actual ADRs, copied into
-        a throwaway ledger so the assertion is about the files and not about
-        whatever else is on this machine.
-        """
-        source = REPO / ".ctx" / "decisions"
-        self.assertTrue(source.is_dir(), "this repository has no decisions/")
-        found = sorted(source.glob("*.md"))
-        self.assertTrue(found, "no ADRs to check — the assertion would be empty")
-        for path in found:
-            shutil.copy2(path, self.layout.decisions / path.name)
-        self.assertEqual(cli.duplicate_adrs(self.layout), [])
-        code, out = self.cli("doctor")
-        self.assertEqual(code, 0, out)
+    # Criterion 10 also had `test_this_repositorys_own_decisions_are_clean`
+    # here, which copied this repository's own `.ctx/decisions/*.md` into a
+    # fixture ledger and asserted the detector stayed quiet on them. `.ctx/` is
+    # local working state now — untracked, gitignored, absent from every fresh
+    # clone — so it read an empty directory in CI and passed here only on files
+    # left over from before the untracking. It was a corroborating pass over
+    # real ADRs on top of the synthetic cases above, which own the behaviour,
+    # so it was deleted rather than pinned to a snapshot of files the
+    # repository no longer keeps.
 
     def test_a_file_that_is_not_an_adr_is_ignored(self):
         adr(self.layout, 1, "alpha")
@@ -273,13 +265,32 @@ class TestDoctorAdvisesAboutATrackedDigest(TrackedDigestFixture):
 
 class TestThisLedgerHasAlreadyDoneIt(unittest.TestCase):
     """Criterion 11, asserted against this repository rather than a fixture.
-    The advice `doctor` gives other projects is advice this one has taken."""
+    The advice `doctor` gives other projects is advice this one has taken —
+    and then went further: the whole of `.ctx/` is local working state here,
+    untracked and ignored wholesale, not just the digest.
 
-    def test_the_ledger_gitignore_carries_the_line(self):
-        text = (REPO / ".ctx" / ".gitignore").read_text(encoding="utf-8")
-        self.assertIn(cli.DIGEST_IGNORE_LINE, text.split("\n"))
+    Both claims are made against git, not against disk. Whether a file happens
+    to exist in this working copy is a property of the machine; what the
+    repository *tracks* and *ignores* is a property of the project, and is the
+    same in every clone.
+
+    This used to read `.ctx/.gitignore` for the digest rule. That file is
+    itself untracked now — nothing under `.ctx/` is tracked — so there was no
+    committed file left to read it from, and the rule it carried is in any case
+    subsumed by the top-level `.gitignore`'s blanket `.ctx/`. Asserting a
+    redundant, unenforced rule inside an already-ignored directory is not worth
+    a test; the two claims below are.
+    """
+
+    def test_the_ledger_is_ignored_wholesale(self):
+        """The top-level `.gitignore` is tracked, so this is the committed
+        intent, readable in a fresh clone."""
+        ignore = (REPO / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn(".ctx/", ignore.split())
 
     def test_the_digest_is_not_tracked_here(self):
+        """Untracked, not deleted. Untracking it is what stopped two agents
+        finishing at once from conflicting on a derived file."""
         if not (REPO / ".git").exists():
             self.skipTest("not a git checkout")
         listed = subprocess.run(
@@ -290,32 +301,6 @@ class TestThisLedgerHasAlreadyDoneIt(unittest.TestCase):
             listed.stdout.strip(), "",
             "DIGEST.md is tracked again — every merge of two working branches "
             "will conflict on it",
-        )
-
-    def test_the_digest_is_not_tracked_but_is_still_ignored_on_purpose(self):
-        """Untracked, not deleted — asserted against git, not against disk.
-
-        This used to assert the file was present in *this checkout*. That
-        passes on a machine where a session has run and regenerated it, and
-        fails in every fresh clone — which is what CI is, so it went red the
-        first time this branch reached a runner. The claim worth making is
-        about the repository's intent, and git is where that lives: the path is
-        ignored, and it is not tracked. Whether it happens to exist right now
-        is a property of the working copy, not of the project.
-
-        That it comes *back* is the other half, and it has its own class
-        below, driven through a fixture rather than through this checkout.
-        """
-        ignore = (REPO / ".ctx" / ".gitignore").read_text(encoding="utf-8")
-        self.assertIn("journal/DIGEST.md", ignore.split())
-        tracked = subprocess.run(
-            ["git", "ls-files", "--error-unmatch", ".ctx/journal/DIGEST.md"],
-            cwd=str(REPO), capture_output=True, text=True,
-        )
-        self.assertNotEqual(
-            tracked.returncode, 0,
-            "DIGEST.md is tracked again — untracking it is what stopped two "
-            "agents finishing at once from conflicting on a derived file",
         )
 
 

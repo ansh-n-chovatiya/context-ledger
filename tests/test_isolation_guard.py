@@ -19,7 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ctx import atomic, frontmatter  # noqa: E402
-from support import Fixture, RealLedgerWriteError, _REAL_CTX  # noqa: E402
+from support import (  # noqa: E402
+    Fixture, RealLedgerWriteError, _REAL_CTX, ensure_real_ledger_gitignore,
+)
 
 
 class TheGuardCatchesAWriteToTheRealLedger(unittest.TestCase):
@@ -29,13 +31,22 @@ class TheGuardCatchesAWriteToTheRealLedger(unittest.TestCase):
     CANARY = _REAL_CTX / ".gitignore"
 
     def setUp(self):
+        # `.ctx/` is untracked local working state, so a fresh clone has no
+        # ledger and no canary to read — and this file cannot answer that with
+        # a fixture (it would stop testing the real guard) or with a skip (a
+        # guard skipped on every CI checkout is the fail-green shape the
+        # docstring above is about). So the canary is created if it is absent,
+        # with the bytes `ctx init` itself writes; an existing one is never
+        # touched.
+        ensure_real_ledger_gitignore()
         # Proof this is the genuine article, not a fixture standing in for
         # it, and the baseline the "untouched" assertions below compare
         # against.
         self.assertTrue(
             _REAL_CTX.is_dir(),
-            "this checkout has no .ctx/ — the guard has nothing real to "
-            "protect and this test would prove nothing",
+            "this checkout has no .ctx/ and one could not be created — the "
+            "guard has nothing real to protect and this test would prove "
+            "nothing",
         )
         self.before = self.CANARY.read_bytes()
         # Writes aim here, not at .gitignore. The previous version wrote "*"
