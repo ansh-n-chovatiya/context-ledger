@@ -210,6 +210,60 @@ class TestObjectiveIsRequired(unittest.TestCase):
         problems = plan_mod.validate(units)
         self.assertFalse(any("Objective" in problem for problem in problems), problems)
 
+    def test_the_scaffolded_hint_is_refused_the_same_as_an_empty_one(self):
+        """`.strip()` said this objective was written. `scaffold_unit` wrote
+        it."""
+        units = self.unit_with_objective(plan_mod.OBJECTIVE_HINT)
+        # Calibration: the section really is non-empty, so the old check
+        # genuinely passed it rather than this being a fixture that says
+        # nothing.
+        self.assertTrue(units[0].doc.section("objective").strip())
+        problems = plan_mod.validate(units)
+        self.assertTrue(any("Objective" in problem for problem in problems), problems)
+
+    def test_a_unit_as_scaffold_unit_actually_writes_it_is_refused(self):
+        """The real default authoring path, end to end.
+
+        Not a hand-typed approximation of what `ctx plan-unit` produces —
+        `scaffold_unit` itself, loaded back off disk. Every fixture in this
+        plan supplied a better objective than the tool does, which is exactly
+        how the gate came to accept the tool's own placeholder.
+        """
+        plan_mod.units_dir(self.layout, self.slug).mkdir(
+            parents=True, exist_ok=True)
+        plan_mod.scaffold_unit(self.layout, self.slug, "01-fresh",
+                               owns=["src/x.py"],
+                               verify_checks=[{"kind": "cmd", "run": OK}])
+        units = plan_mod.load_units(self.layout, self.slug)
+        self.assertEqual(len(units), 1)
+        problems = plan_mod.validate(units)
+        matches = [p for p in problems if "01-fresh" in p and "Objective" in p]
+        self.assertEqual(len(matches), 1, problems)
+
+    def test_a_filled_in_scaffold_passes(self):
+        """Control: the refusal above is about the placeholder, not about
+        `scaffold_unit`."""
+        plan_mod.units_dir(self.layout, self.slug).mkdir(
+            parents=True, exist_ok=True)
+        plan_mod.scaffold_unit(self.layout, self.slug, "01-fresh",
+                               objective="Cap the export at ten thousand rows.",
+                               owns=["src/x.py"],
+                               verify_checks=[{"kind": "cmd", "run": OK}])
+        problems = plan_mod.validate(plan_mod.load_units(self.layout, self.slug))
+        self.assertFalse(any("Objective" in problem for problem in problems),
+                         problems)
+
+    def test_the_predicate_agrees_with_the_template_it_guards(self):
+        """The hint the gate recognises is the hint the scaffold writes. If
+        `UNIT_TEMPLATE` or `OBJECTIVE_HINT` is reworded without the other,
+        this fails rather than the gate quietly reopening."""
+        self.assertTrue(plan_mod.is_unwritten_objective(plan_mod.OBJECTIVE_HINT))
+        self.assertTrue(plan_mod.is_unwritten_objective(""))
+        self.assertTrue(plan_mod.is_unwritten_objective(None))
+        self.assertTrue(plan_mod.is_unwritten_objective("<!-- a hint -->"))
+        self.assertFalse(
+            plan_mod.is_unwritten_objective("Cap the export at 10,000 rows."))
+
 
 if __name__ == "__main__":
     unittest.main()

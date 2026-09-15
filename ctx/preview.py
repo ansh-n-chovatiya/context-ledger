@@ -45,8 +45,17 @@ to a placeholder. The first rung with something to say wins:
     2. what the spec's intake recorded, for the three plan
        sections `spec.INTAKE_CATEGORIES` names             -> `inferred`
     3. the unit's own `## Objective` / `## Background`     -> `inferred`
+       (and, for `why it matters` only, the plan's own
+       `why now` where the unit has no background — which
+       is every unit, since `plan.UNIT_TEMPLATE` has no
+       such section; see `_plain_why`)
     4. the ownership-gap facts `plan.py` already derived   -> `inferred`
     5. the position sentence `plain._generate` builds      -> `generated`
+
+Every rung below the first is held to the plain half's vocabulary rule by
+`_has_technical_vocabulary`, tier 2 included: a recorded intake answer is
+free-form text somebody typed, and the bar is about what reaches the reader,
+not about which rung produced it.
 
 `plain.md`'s contract is untouched: authored text still wins outright, and
 nothing here writes to that file on anybody's behalf. Tiers 2-4 quote source
@@ -385,6 +394,15 @@ def _fill_plan_sections(layout, spec_slug, source):
             for item in resolved:
                 if item.lower().startswith(prefix):
                     answer = _intake_answer(item, prefix) or answer
+        # Held to the same rule as tiers 3 and 4: the bar is about what reaches
+        # the reader, not about which tier produced it. An intake answer is
+        # free-form text somebody typed at a terminal — `ctx infer "... rewrite
+        # ctx/plan.py so nothing else owns it"` is a perfectly good answer to
+        # record and exactly what this half of the page may not carry. Declined
+        # whole rather than laundered, and only that section: an answer full of
+        # paths does not cost a clean sibling its tier.
+        if answer and _has_technical_vocabulary(answer):
+            answer = None
         if answer:
             source.plan[section] = answer
             provenance[section] = "inferred"
@@ -430,6 +448,18 @@ def view_model(layout, slug):
     # written out twice.
     spec_slug = str(graph.get("spec") or slug)
     plan_provenance = _fill_plan_sections(layout, spec_slug, source)
+    # Tier 3's other half. A unit's "why it matters" is meant to come from its
+    # own `## Background` — except `UNIT_TEMPLATE` has no such section, so no
+    # unit this tool scaffolds has ever had one and the field fell all the way
+    # to tier 5 on the ordinary path. The plan's own recorded reason for
+    # existing is the nearest true answer to "why does this step matter", and
+    # it is already on disk; borrowing it beats printing "nobody has written
+    # this down yet" under a heading somebody is being asked to sign.
+    #
+    # Read after `_fill_plan_sections` has run, so it is whatever that
+    # resolved — a human's `plain.md` paragraph or the intake answer — rather
+    # than a second reading of the questions file.
+    plan_why = str(source.plan.get("why now") or "").strip() or None
 
     return {
         "schema": SCHEMA,
@@ -460,7 +490,7 @@ def view_model(layout, slug):
             "provenance": plan_provenance,
         },
         "steps": [_step(unit, numbers, rounds, grouped, source, patterns,
-                        gap_files)
+                        gap_files, plan_why)
                   for unit in units],
         "graph": {
             "nodes": [{"number": numbers[unit.name], "slug": unit.name,
@@ -521,6 +551,17 @@ def _title(unit, authored, patterns):
 CONTRACT_WORDS = ("owns", "forbid", "depends_on", "wave", "tier",
                   "budget_tokens", "subagent")
 
+#: `CONTRACT_WORDS` as whole words. Anchored because the unanchored substring
+#: check this replaced declined ordinary English on sight of a fragment:
+#: "Downstream consumers see a clear error" carries `owns`, "a frontier case"
+#: carries `tier`, "it waves goodbye" carries `wave` — three sentences a
+#: reader would have understood, each thrown away for a word that was never
+#: there. `_` is a word character, so `\b` bounds `depends_on` and
+#: `budget_tokens` at both ends exactly as it bounds the rest.
+_CONTRACT_WORD = re.compile(
+    r"\b(?:%s)\b" % "|".join(re.escape(word) for word in CONTRACT_WORDS),
+    re.I)
+
 #: A filename: a dotted token ending in something a source file ends in.
 _FILENAME = re.compile(
     r"[\w.-]+\.(?:py|pyi|js|jsx|ts|tsx|json|ya?ml|toml|ini|cfg|md|rst|sh|bash|"
@@ -541,8 +582,7 @@ def _has_technical_vocabulary(text):
     that reader — not about which tier produced it, so prose quoted out of a
     unit contract is held to it exactly as generated text is.
     """
-    lowered = text.lower()
-    if any(word in lowered for word in CONTRACT_WORDS):
+    if _CONTRACT_WORD.search(text):
         return True
     if _FILENAME.search(text):
         return True
@@ -573,6 +613,13 @@ def _plain_from_objective(unit):
     background = _HTML_COMMENT.sub(
         "", unit.doc.section("background") or "").strip()
     usable = lambda text: bool(text) and not _has_technical_vocabulary(text)
+    # The scaffold's own hint is not an objective. `plan.is_unwritten_objective`
+    # is the same predicate `plan.validate` refuses on, asked here rather than
+    # restated, so the gate and the page cannot disagree about whether anybody
+    # wrote one. Without it a freshly scaffolded unit put
+    # `<one sentence: the observable outcome>` on the page labelled `inferred`.
+    if plan_mod.is_unwritten_objective(objective):
+        objective = ""
     return (objective if usable(objective) else None,
             background if usable(background) else None)
 
@@ -631,7 +678,36 @@ def _plain_from_ownership_gap(unit, gap_files):
     )
 
 
-def _step(unit, numbers, rounds, grouped, source, patterns, gap_files):
+def _plain_why(unit_background, plan_why):
+    """Why this step matters: its own `## Background`, else the plan's reason.
+
+    A cross-level fallback, and the only one on the page — so it is worth
+    saying why it is honest. `UNIT_TEMPLATE` has no `## Background` section,
+    which means the tier meant to answer this field has no source on the
+    ordinary path and never did: every unit `ctx plan-unit` scaffolds arrives
+    without one, and the field fell to the literal "Nobody has written this
+    down yet." The alternative fix — grow the template a sixth section — asks
+    somebody to write more prose for every unit of every plan, which is the
+    cost this whole design exists to avoid.
+
+    The plan's `why now` is a weaker claim than a unit's own background, not a
+    false one: it says why the work this step belongs to is being done, which
+    is a true and useful answer to "why does this matter" and is exactly what
+    a reviewer signing the page is being asked about. It is labelled
+    `inferred` by the caller for that reason — nobody wrote it about *this*
+    step — and it is held to the same vocabulary rule as everything else in
+    the plain half, because an authored `plain.md` paragraph is free to name a
+    file where a unit card is not.
+    """
+    if unit_background:
+        return unit_background
+    if plan_why and not _has_technical_vocabulary(plan_why):
+        return plan_why
+    return None
+
+
+def _step(unit, numbers, rounds, grouped, source, patterns, gap_files,
+          plan_why=None):
     """One step: what a reader needs, then what an engineer needs, separately."""
     level = rounds[unit.name]
     number = numbers[unit.name]
@@ -655,7 +731,7 @@ def _step(unit, numbers, rounds, grouped, source, patterns, gap_files):
     inferred_what, inferred_why = _plain_from_objective(unit)
     overrides = {
         "what": inferred_what,
-        "why": inferred_why,
+        "why": _plain_why(inferred_why, plan_why),
         "risk": _plain_from_ownership_gap(unit, gap_files),
     }
 

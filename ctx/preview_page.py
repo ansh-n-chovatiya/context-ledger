@@ -351,10 +351,28 @@ def _header(vm):
     )
 
 
+def _plan_mark(key, vm):
+    """The provenance label for one plan-level section, or "".
+
+    `preview._fill_plan_sections` has always said which of the five sections a
+    human wrote and which came off the spec's intake record, and the page has
+    always ignored it — so a paragraph quoted out of a questions file read
+    exactly like one the reader's colleague typed into `plain.md`. That is the
+    failure the three-way label exists to prevent, and it was being prevented
+    per step and nowhere else.
+
+    `_PROVENANCE_LABELS` is the one the step cards already use, not a second
+    copy: two labels for one distinction would eventually disagree about what
+    the distinction is.
+    """
+    provenance = (vm.get("plain") or {}).get("provenance") or {}
+    return _PROVENANCE_LABELS.get(provenance.get(key), "")
+
+
 def _section(key, heading, vm):
     body = (vm.get("plain") or {}).get("sections") or {}
-    return '<section id="%s">\n<h2>%s</h2>\n%s\n</section>' % (
-        _attr(key.replace(" ", "-")), _escape(heading),
+    return '<section id="%s">\n<h2>%s %s</h2>\n%s\n</section>' % (
+        _attr(key.replace(" ", "-")), _escape(heading), _plan_mark(key, vm),
         _prose(body.get(key), "Nobody has written this part down yet."))
 
 
@@ -532,7 +550,11 @@ def _step_tech(step):
         "<h4>verify</h4>\n%s" % (rows, listed, checks))
 
 
-#: `steps[].plain.provenance` values -> the label shown beside the field.
+#: `steps[].plain.provenance` and `plain.provenance` values -> the label shown
+#: beside the field or the section heading. One table for both levels: the
+#: distinction a reader is being asked to make ("did a person write this?") is
+#: the same distinction whether it is a step card or a plan section, and two
+#: wordings for it would read as two different claims.
 #: `generated` here is a fallback for a caller that has not been updated to
 #: pass `provenance` yet — see `_step_card`.
 _PROVENANCE_LABELS = {
@@ -609,9 +631,13 @@ def _risks(vm):
             _tech("Tests nobody in this plan declares",
                   _table(["Source file", "Tests that name it"], rows)))
 
-    return ('<section id="what-could-go-wrong">\n<h2>What could go wrong</h2>\n'
+    # Rendered here rather than through `_section` — it carries the gap table
+    # and the per-step list too — so the label has to be asked for by hand.
+    return ('<section id="what-could-go-wrong">\n'
+            "<h2>What could go wrong %s</h2>\n"
             "%s\n%s\n%s\n</section>"
-            % (_prose(sections.get("what could go wrong"),
+            % (_plan_mark("what could go wrong", vm),
+               _prose(sections.get("what could go wrong"),
                       "Nobody has written down what could go wrong."),
                unclaimed, per_step))
 

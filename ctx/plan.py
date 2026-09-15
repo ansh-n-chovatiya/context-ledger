@@ -38,6 +38,18 @@ _UNIT_NAME = re.compile(r"^[0-9]{2}-[a-z0-9][a-z0-9-]*$")
 # touched the section must not read as having published anything.
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 
+#: What `scaffold_unit` writes into `## Objective` when the caller supplied
+#: none — the form's own hint, not a fact about the unit. Named here because
+#: two places have to recognise it: `validate`, which must not accept it as an
+#: objective, and `preview._plain_from_objective`, which must not quote it at a
+#: non-technical reader as though somebody had written it.
+OBJECTIVE_HINT = "<one sentence: the observable outcome>"
+#: Matched as a substring rather than in full, the way `commands.cmd_plan`
+#: already recognises the acceptance-criteria hint (`"<checkable" in body`):
+#: an exact match is defeated by a stray space or a reworded tail, and the
+#: opening angle bracket is what makes this a hint rather than a sentence.
+_OBJECTIVE_HINT_MARK = "<one sentence"
+
 UNIT_TEMPLATE = """## Objective
 {objective}
 
@@ -225,7 +237,7 @@ def scaffold_unit(layout, slug, name, objective="", tier="subagent", owns=(), ve
         "status": "pending",
         "verify": list(verify_checks),
     }
-    body = UNIT_TEMPLATE.format(objective=objective or "<one sentence: the observable outcome>")
+    body = UNIT_TEMPLATE.format(objective=objective or OBJECTIVE_HINT)
     frontmatter.Document(meta, body).write(path)
     return path, True
 
@@ -245,6 +257,28 @@ def load_units(layout, slug):
 # --------------------------------------------------------------------------- #
 # validation
 # --------------------------------------------------------------------------- #
+
+def is_unwritten_objective(text):
+    """True when this `## Objective` is the form, not an answer to it.
+
+    Three things are the same nothing, and every caller wants all three
+    treated alike: an absent section, a section holding only the scaffold's
+    `<!-- ... -->` comment, and a section still carrying `OBJECTIVE_HINT` —
+    the placeholder `scaffold_unit` itself writes when nobody supplied an
+    objective.
+
+    The third is the one that was being missed. `.strip()` says that text is
+    non-empty, so `validate` accepted the tool's own unfilled hint as an
+    objective and `preview` quoted it into the plain half of the page under an
+    `inferred` label — the reader shown the form's prompt as though a person
+    had answered it. One predicate, used by both, so the gate and the page
+    cannot disagree about what "nobody wrote one" means.
+    """
+    body = _HTML_COMMENT.sub("", str(text or "")).strip()
+    if not body:
+        return True
+    return _OBJECTIVE_HINT_MARK in body.lower()
+
 
 def validate(units):
     """Structural problems, independent of scheduling. Empty list means valid."""
@@ -272,12 +306,12 @@ def validate(units):
                     )
             elif not unit.doc.meta.get(field):
                 problems.append(f"{unit.name}: missing `{field}`")
-        objective = (unit.doc.section("objective") or "").strip()
-        if not objective:
+        if is_unwritten_objective(unit.doc.section("objective")):
             problems.append(
-                f"{unit.name}: `## Objective` is empty — every field on the "
-                "preview page that describes this step falls back to it; "
-                "write one real sentence naming the observable outcome"
+                f"{unit.name}: `## Objective` is empty or still the "
+                "scaffolded hint — every field on the preview page that "
+                "describes this step falls back to it; write one real "
+                "sentence naming the observable outcome"
             )
         if unit.doc.meta.get("tier") and not unit.tier:
             problems.append(

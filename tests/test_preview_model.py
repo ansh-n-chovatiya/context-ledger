@@ -733,10 +733,40 @@ class TestTierThreeFromObjective(Fixture):
         # And the field nobody authored still falls back to the unit's prose.
         self.assertEqual(step["plain"]["provenance"]["why"], "inferred")
 
-    def test_an_objective_that_is_only_a_scaffold_comment_is_not_quoted(self):
-        """A section holding nothing but the form's own `<!-- ... -->` hint has
-        not been written. Quoting the hint at a non-technical reader is worse
-        than the generated sentence it would displace."""
+    def test_an_objective_that_is_only_the_scaffolded_hint_is_not_quoted(self):
+        """A section holding nothing but the form's own hint has not been
+        written. Quoting the hint at a non-technical reader is worse than the
+        generated sentence it would displace.
+
+        The placeholder here is `plan.OBJECTIVE_HINT` itself — the literal
+        string `scaffold_unit` writes — rather than a hand-typed HTML comment.
+        This test used to pass against `<!-- one sentence: the observable
+        outcome -->`, a shape the real scaffold has never produced: the
+        HTML-comment stripper caught it, the actual placeholder sailed past,
+        and a freshly scaffolded unit put the form's prompt on the page under
+        an `inferred` label.
+        """
+        directory = plan_mod.units_dir(self.layout, self.SLUG)
+        doc = frontmatter.read(directory / "01-a.md")
+        doc.body = "## Objective\n%s\n" % plan_mod.OBJECTIVE_HINT
+        doc.write(directory / "01-a.md")
+
+        # Calibration: the fixture carries the real scaffold's text, so this
+        # cannot pass by the placeholder never having been there. `.strip()`
+        # — the check that used to guard this — sees a non-empty objective.
+        body = (directory / "01-a.md").read_text(encoding="utf-8")
+        self.assertIn(plan_mod.OBJECTIVE_HINT, body)
+        self.assertTrue(doc.section("objective").strip())
+
+        step = preview.view_model(self.layout, self.SLUG)["steps"][0]
+        self.assertNotIn("observable outcome", step["plain"]["what"])
+        self.assertNotIn("one sentence", step["plain"]["what"])
+        self.assertEqual(step["plain"]["provenance"]["what"], "generated")
+
+    def test_a_scaffold_comment_objective_is_still_not_quoted(self):
+        """The HTML-comment shape keeps its own case: `plan.Unit.interfaces`
+        treats a comment-only section as unwritten and nothing here regressed
+        that."""
         directory = plan_mod.units_dir(self.layout, self.SLUG)
         doc = frontmatter.read(directory / "01-a.md")
         doc.body = "## Objective\n<!-- one sentence: the observable outcome -->\n"
@@ -1033,6 +1063,174 @@ class TestThePlanLevelIntakeTier(Fixture):
         model = self.model()
         self.assertEqual(sorted(model["plain"]["provenance"]),
                          sorted(plain_mod.PLAN_SECTIONS))
+
+    # ------------------------------------------------------------------ #
+    # the vocabulary rule, at this tier too
+    # ------------------------------------------------------------------ #
+
+    def test_an_intake_answer_naming_a_file_is_declined_not_shown(self):
+        """Tiers 3 and 4 both learned this rule; tier 2 never did.
+
+        An intake answer is free-form text somebody typed at a terminal, and
+        `ctx infer` is happy to record one that names a module. The bar is
+        about what reaches the reader, not about which tier produced it.
+        """
+        spec_mod.record_inferred(
+            self.layout, self.SLUG, "why now",
+            "The probe in ctx/detect.py runs before anyone trusts it",
+            "stated twice in the audit")
+        model = self.model()
+        self.assertNotIn("ctx/detect.py",
+                         model["plain"]["sections"]["why now"])
+        self.assertEqual(model["plain"]["provenance"]["why now"], "generated")
+
+    def test_an_intake_answer_using_a_contract_word_is_declined(self):
+        spec_mod.record_inferred(
+            self.layout, self.SLUG, "what could go wrong",
+            "Two steps could both claim the same owns entry",
+            "the audit names the collision")
+        model = self.model()
+        section = model["plain"]["sections"]["what could go wrong"]
+        self.assertNotIn("owns", section)
+        self.assertEqual(model["plain"]["provenance"]["what could go wrong"],
+                         "generated")
+
+    def test_a_clean_intake_answer_still_reaches_the_page(self):
+        """Control for the two above: the guard declines the answers that
+        trip it, not every answer."""
+        spec_mod.record_inferred(
+            self.layout, self.SLUG, "what changes for you",
+            "Exports larger than ten thousand rows fail with a clear message.",
+            "the intent says so")
+        model = self.model()
+        self.assertIn("ten thousand rows",
+                      model["plain"]["sections"]["what changes for you"])
+        self.assertEqual(model["plain"]["provenance"]["what changes for you"],
+                         "inferred")
+
+
+class TestWhyItMattersFallsBackToThePlansOwnReason(Fixture):
+    """`plan.UNIT_TEMPLATE` has no `## Background`, so tier 3's source for a
+    unit's "why it matters" does not exist on the ordinary path — the field
+    fell to the literal placeholder for every unit of every plan the tool
+    itself scaffolds. It borrows the plan's recorded `why now` instead.
+    """
+
+    SLUG = "cross-level"
+
+    def setUp(self):
+        super().setUp()
+        self.trust([{"kind": "cmd", "run": OK}])
+        # Deliberately no spec and no intake yet: the starting state is the
+        # legacy one the design says must degrade honestly, and each test
+        # below arms what it needs. `write_graph` defaults a `--no-spec`
+        # plan's `spec` to the plan slug, so recording an intake under this
+        # slug is what `_fill_plan_sections` will go looking for.
+        self.assertEqual(self.cli("plan", self.SLUG, "--no-spec")[0], 0)
+        self.directory = plan_mod.units_dir(self.layout, self.SLUG)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        # No `## Background`: exactly what `scaffold_unit` produces.
+        frontmatter.Document(
+            {"ctx_schema": 1, "unit": "01-a", "plan": self.SLUG,
+             "tier": "subagent", "owns": ["src/a.py"], "depends_on": [],
+             "reads": [], "forbid": [], "status": "pending",
+             "verify": [{"kind": "cmd", "run": OK}]},
+            "## Objective\nCap the export at ten thousand rows.\n",
+        ).write(self.directory / "01-a.md")
+        self.assertEqual(self.cli("plan-check", self.SLUG)[0], 0)
+
+    def step(self):
+        return preview.view_model(self.layout, self.SLUG)["steps"][0]
+
+    def test_without_an_intake_record_it_is_still_the_last_resort(self):
+        """RED, kept: nothing is invented for a plan that has no recorded
+        reason. This is the legacy-plan case the design says degrades
+        honestly."""
+        step = self.step()
+        self.assertEqual(step["plain"]["provenance"]["why"], "generated")
+
+    def test_the_plans_recorded_reason_fills_it(self):
+        spec_mod.record_inferred(
+            self.layout, self.SLUG, "why now",
+            "Customers have been hitting a bare 500 for two weeks.",
+            "the intent says so")
+        step = self.step()
+        self.assertIn("bare 500", step["plain"]["why"])
+        self.assertEqual(step["plain"]["provenance"]["why"], "inferred")
+        # Still `generated: True` — nobody wrote this field by hand, and the
+        # old flag keeps its old meaning for a renderer that only knows it.
+        self.assertTrue(step["plain"]["generated"]["why"])
+
+    def test_the_units_own_background_still_wins_over_the_plans(self):
+        spec_mod.record_inferred(
+            self.layout, self.SLUG, "why now", "The plan level reason.",
+            "the intent says so")
+        doc = frontmatter.read(self.directory / "01-a.md")
+        doc.body += "\n## Background\nThe unit level reason.\n"
+        doc.write(self.directory / "01-a.md")
+        step = self.step()
+        self.assertIn("unit level", step["plain"]["why"])
+        self.assertNotIn("plan level", step["plain"]["why"])
+
+    def test_an_authored_why_still_wins_over_both(self):
+        spec_mod.record_inferred(
+            self.layout, self.SLUG, "why now", "The plan level reason.",
+            "the intent says so")
+        meta = {"ctx_schema": 1, "plan": self.SLUG,
+                "digest": plain_mod.digest(self.layout, self.SLUG)}
+        atomic.write_text(
+            plain_mod.path(self.layout, self.SLUG),
+            frontmatter.Document(
+                meta,
+                "## Unit: 01-a\n**Why it matters:** Because a customer asked.\n",
+            ).render(),
+        )
+        step = self.step()
+        self.assertIn("customer asked", step["plain"]["why"])
+        self.assertEqual(step["plain"]["provenance"]["why"], "authored")
+
+    def test_a_borrowed_reason_is_held_to_the_vocabulary_rule(self):
+        """The plan section may carry an authored path — `plain.md` is a
+        human's file. A step card may not, so the borrow is declined rather
+        than laundered."""
+        meta = {"ctx_schema": 1, "plan": self.SLUG,
+                "digest": plain_mod.digest(self.layout, self.SLUG)}
+        atomic.write_text(
+            plain_mod.path(self.layout, self.SLUG),
+            frontmatter.Document(
+                meta, "## Why now\nBecause ctx/detect.py runs too early.\n"
+            ).render(),
+        )
+        step = self.step()
+        self.assertNotIn("ctx/detect.py", step["plain"]["why"])
+        self.assertEqual(step["plain"]["provenance"]["why"], "generated")
+
+
+class TestTheContractWordCheckIsAnchored(unittest.TestCase):
+    """`"owns" in "downstream"` is True, and that is how three sentences of
+    ordinary English were thrown away for words that were never in them."""
+
+    NOT_TECHNICAL = (
+        "Downstream consumers see a clear error.",
+        "A frontier case.",
+        "It waves goodbye.",
+        "The subagentry of it all is beside the point.",
+        "Forbidden fruit, and a tiered cake.",
+    )
+
+    def test_ordinary_english_is_not_flagged(self):
+        for phrase in self.NOT_TECHNICAL:
+            self.assertFalse(preview._has_technical_vocabulary(phrase), phrase)
+
+    def test_the_real_contract_words_are_still_flagged(self):
+        """Control: the anchoring narrowed the check, it did not disable it."""
+        for word in preview.CONTRACT_WORDS:
+            phrase = "This step %s the thing." % word
+            self.assertTrue(preview._has_technical_vocabulary(phrase), phrase)
+
+    def test_a_file_path_is_still_flagged(self):
+        self.assertTrue(
+            preview._has_technical_vocabulary("It rewrites ctx/plan.py."))
 
 
 if __name__ == "__main__":

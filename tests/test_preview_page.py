@@ -39,7 +39,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ctx import (atomic, frontmatter, plain as plain_mod,  # noqa: E402
-                 plan as plan_mod, preview, preview_html, preview_page)
+                 plan as plan_mod, preview, preview_html, preview_page,
+                 spec as spec_mod)
 from support import OK, Fixture  # noqa: E402
 
 
@@ -345,6 +346,52 @@ class TestProvenanceLabels(PageCase):
         )
         html = self.page()
         self.assertIn("Written by a human.", html)
+
+    # ------------------------------------------------------------------ #
+    # the same three-way label, at the plan level
+    # ------------------------------------------------------------------ #
+
+    def test_a_generated_plan_section_says_so(self):
+        """`_fill_plan_sections` has always computed a provenance for the five
+        plan sections and the page has always ignored it — so a paragraph
+        quoted out of a questions file read exactly like one a colleague
+        typed into `plain.md`."""
+        html = self.page()
+        headings = re.findall(r"<h2>(.*?)</h2>", html, re.S)
+        marked = [h for h in headings if "put together automatically" in h]
+        self.assertTrue(marked, headings)
+
+    def test_an_authored_plan_section_carries_no_label(self):
+        self.write_plain("## Summary\nA human wrote this summary.\n")
+        html = self.page()
+        summary = re.search(
+            r'<section id="summary">\s*<h2>(.*?)</h2>(.*?)</section>',
+            html, re.S)
+        self.assertIsNotNone(summary)
+        self.assertNotIn("put together automatically", summary.group(1))
+        self.assertNotIn("inferred from the plan", summary.group(1))
+        self.assertIn("A human wrote this summary.", summary.group(2))
+
+    def test_an_inferred_plan_section_says_it_was_inferred(self):
+        vm = self.model()
+        vm["plain"]["provenance"]["why now"] = "inferred"
+        vm["plain"]["sections"]["why now"] = "<p>Because the audit said so.</p>"
+        html = self.page(vm)
+        why = re.search(r'<section id="why-now">\s*<h2>(.*?)</h2>', html, re.S)
+        self.assertIsNotNone(why)
+        self.assertIn("inferred from the plan, not directly confirmed",
+                      why.group(1))
+
+    def test_the_label_is_the_one_the_step_cards_use(self):
+        """One table, not two wordings for one distinction."""
+        source = SOURCE.read_text(encoding="utf-8")
+        self.assertEqual(source.count("inferred from the plan, not directly"), 1)
+        # Counted as the label's own markup: the words also appear in the
+        # degraded-page banner, which is a sentence about the whole page and
+        # not one of these labels.
+        self.assertEqual(
+            source.count('<span class="auto">put together automatically</span>'),
+            1)
 
 
 # --------------------------------------------------------------------------- #
@@ -673,6 +720,112 @@ class TestWriting(PageCase):
         text = SOURCE.read_text(encoding="utf-8")
         self.assertIn("atomic.write_text(", text)
         self.assertNotIn(".write_text(", text.replace("atomic.write_text(", ""))
+
+
+class TestEveryTierIsHeldToTheVocabularyRule(Fixture):
+    """The guard, exercised end to end against every tier now in play.
+
+    `test_the_default_view_speaks_no_contract_vocabulary` above proves the
+    rule over `PageCase`, whose fixture is clean: nothing in it *wants* to say
+    `owns` or name a module, so the assertion passes whether or not a guard
+    exists. That is how tier 2 shipped with no guard at all — the plan-level
+    intake answer went from a questions file to the rendered page unchecked,
+    and every test that could have noticed was looking at prose that had
+    nothing to declare.
+
+    So this fixture arms all three lower tiers at once:
+
+        tier 2  three intake answers, each naming a module or a contract word
+        tier 3  an `## Objective` and a `## Background` that do the same
+        tier 4  a real ownership gap, so the risk sentence has a path to know
+
+    and asserts the plain half of the rendered page carries none of it, with
+    the technical half proving the page knew all of it.
+    """
+
+    SLUG = "armed"
+
+    INTAKE = {
+        "why now": "ctx/detect.py runs the probe before anyone trusts it.",
+        "what could go wrong": "Two steps could claim the same owns entry.",
+        "what changes for you": "The wave ordering in plan.json changes.",
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.trust([{"kind": "cmd", "run": OK}])
+        spec_mod.create(self.layout, self.SLUG, intent="Harden the probe.")
+        for category, answer in self.INTAKE.items():
+            spec_mod.record_inferred(self.layout, self.SLUG, category, answer,
+                                     "the intent describes this directly")
+        self.assertEqual(self.cli("plan", self.SLUG)[0], 0)
+        # A test nobody in the plan owns, naming a module somebody does: a
+        # real gap, so tier 4 has a real path to keep to itself.
+        self.write("tests/test_thing.py",
+                   "from src import a\n\n\ndef test_a():\n    pass\n")
+        directory = plan_mod.units_dir(self.layout, self.SLUG)
+        directory.mkdir(parents=True, exist_ok=True)
+        frontmatter.Document(
+            {"ctx_schema": 1, "unit": "01-probe", "plan": self.SLUG,
+             "tier": "subagent", "owns": ["src/a.py"], "depends_on": [],
+             "reads": [], "forbid": [], "status": "pending",
+             "verify": [{"kind": "cmd", "run": OK}]},
+            "## Objective\nStop src/a.py from running a shipped binary.\n\n"
+            "## Background\nThe step that owns src/a.py must forbid it.\n\n"
+            "## Acceptance criteria\n1. the probe refuses\n",
+        ).write(directory / "01-probe.md")
+        self.assertEqual(self.cli("plan-check", self.SLUG)[0], 0)
+
+    def page(self):
+        return preview_page.render(preview.view_model(self.layout, self.SLUG))
+
+    def test_the_fixture_really_arms_all_three_tiers(self):
+        """Calibration, in four parts. Without it every assertion below could
+        be passing on an empty page."""
+        vm = preview.view_model(self.layout, self.SLUG)
+        # tier 2: the answers are on disk and carry what they claim to.
+        body = spec_mod.questions_path(
+            self.layout, self.SLUG).read_text(encoding="utf-8")
+        for answer in self.INTAKE.values():
+            self.assertIn(answer, body)
+        # tier 3: the unit's own prose says it too.
+        contract = (plan_mod.units_dir(self.layout, self.SLUG)
+                    / "01-probe.md").read_text(encoding="utf-8")
+        self.assertIn("src/a.py", contract)
+        self.assertIn("forbid", contract)
+        # tier 4: the gap is real.
+        self.assertEqual([gap["path"] for gap in vm["ownership_gaps"]["files"]],
+                         ["src/a.py"])
+        # and the page is a page, not an empty shell.
+        self.assertGreater(len(preview_page.regions(self.page()).plain_text),
+                           1000)
+
+    def test_none_of_it_reaches_the_plain_half(self):
+        regions = preview_page.regions(self.page())
+        plain = regions.plain_text.lower()
+        for word in BANNED:
+            self.assertNotIn(word, plain, word)
+        self.assertNotIn(".py", plain)
+        self.assertNotIn("src/a", plain)
+
+    def test_the_page_knew_all_of_it(self):
+        """Control for the test above: the words are in the document, just
+        confined to the region marked technical. A page that had dropped the
+        facts entirely would pass the assertions above too."""
+        regions = preview_page.regions(self.page())
+        self.assertIn("owns", regions.tech_text.lower())
+        self.assertIn("src/a.py", regions.tech_text)
+
+    def test_the_declined_fields_are_still_filled(self):
+        """Declining is not blanking. Every field falls through to a lower
+        tier and says something true."""
+        vm = preview.view_model(self.layout, self.SLUG)
+        step = vm["steps"][0]
+        for key in preview.FIELD_KEYS:
+            self.assertTrue(str(step["plain"][key]).strip(), key)
+        for section in ("why now", "what could go wrong", "what changes for you"):
+            self.assertEqual(vm["plain"]["provenance"][section], "generated",
+                             section)
 
 
 class TestProjectRules(unittest.TestCase):
