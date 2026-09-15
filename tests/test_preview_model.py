@@ -905,9 +905,11 @@ class TestTierFourFromOwnershipGaps(Fixture):
                       second["plain"]["risk"])
         self.assertEqual(second["plain"]["provenance"]["risk"], "inferred")
 
-    def test_a_unit_owning_nothing_in_the_gap_list_keeps_the_generated_risk(self):
+    def test_a_unit_owning_nothing_in_the_gap_list_states_no_gap_not_the_first_ones(self):
         """The fact is the unit's own, not the plan's. A second step owning a
-        path no outside test names must not inherit the first one's risk."""
+        path no outside test names must not inherit the first one's risk — it
+        gets the real "found nothing" fact instead of the generic placeholder,
+        exactly as a hit gets the real count instead of one."""
         directory = plan_mod.units_dir(self.layout, self.SLUG)
         frontmatter.Document(
             {"ctx_schema": 1, "unit": "02-b", "plan": self.SLUG,
@@ -919,11 +921,16 @@ class TestTierFourFromOwnershipGaps(Fixture):
         self.assertEqual(self.cli("plan-check", self.SLUG)[0], 0)
         vm = preview.view_model(self.layout, self.SLUG)
         second = [s for s in vm["steps"] if s["slug"] == "02-b"][0]
-        self.assertEqual(second["plain"]["provenance"]["risk"], "generated")
-        self.assertNotIn("elsewhere in the project", second["plain"]["risk"])
+        self.assertEqual(second["plain"]["provenance"]["risk"], "inferred")
+        self.assertNotIn("Nobody has written this down yet",
+                         second["plain"]["risk"])
+        self.assertNotIn("elsewhere in the project already refer",
+                         second["plain"]["risk"])
+        self.assertIn("No test elsewhere in the project", second["plain"]["risk"])
         # And the step that does have the gap still says so, in the same model.
         first = [s for s in vm["steps"] if s["slug"] == "01-a"][0]
         self.assertEqual(first["plain"]["provenance"]["risk"], "inferred")
+        self.assertIn("One test elsewhere in the project", first["plain"]["risk"])
 
 
 class TestThePlanLevelIntakeTier(Fixture):

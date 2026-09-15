@@ -1574,8 +1574,14 @@ def cmd_plan(args):
         )
     slug = bundle.slugify(args.name)
     # The plan rarely shares the spec's name, so fall back to the spec that is
-    # actually active before assuming they match.
+    # actually active before assuming they match — but only once a spec named
+    # after the plan itself is ruled out. Without that check, planning a
+    # second, never-vetted spec while an earlier, already-ready one is still
+    # "active" would silently gate against the wrong spec and let the new one
+    # through unchecked.
     active_spec = state.load(layout).get("spec")
+    if not args.spec and active_spec and spec_mod.spec_path(layout, slug).is_file():
+        active_spec = None
     spec_slug = bundle.slugify(args.spec or active_spec or slug)
 
     if spec_mod.spec_path(layout, spec_slug).is_file():

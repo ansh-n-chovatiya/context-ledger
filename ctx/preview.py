@@ -578,8 +578,10 @@ def _plain_from_objective(unit):
 
 
 def _plain_from_ownership_gap(unit, gap_files):
-    """A plain sentence counting the tests outside this plan that already reach
-    what this step changes, or None when there are none.
+    """A plain sentence stating the real ownership-gap fact for this unit's own
+    owned paths — never `None`, so risk is never left to the generic sentence
+    `plain._generate` falls back to. Zero is a fact too: it is what
+    `ownership_gaps` actually found, checked the same way a hit is.
 
     `gap_files` is `ownership_gaps`'s own `files` list — `[{path, tests}, ...]`
     — already computed by the caller; this never recomputes it, so the risk a
@@ -604,13 +606,18 @@ def _plain_from_ownership_gap(unit, gap_files):
     Still a fact, not a judgment: how many tests, and that any of them could be
     what breaks. It does not say the step is risky, and `ownership_gaps` is a
     heuristic about which tests *name* a module, so the sentence claims only
-    that they refer to it.
+    that they refer to it — including the zero case, which claims only that
+    the search came up empty, not that the change is safe.
     """
     hits = [gap for gap in gap_files
             if plan_mod.covers_any(gap["path"], unit.owns)]
     tests = set(test for gap in hits for test in gap["tests"])
     if not tests:
-        return None
+        return (
+            "No test elsewhere in the project was found to refer to what this "
+            "step changes; a mistake here would have to be caught by this "
+            "plan's own checks."
+        )
     if len(tests) == 1:
         return (
             "One test elsewhere in the project already refers to part of what "
