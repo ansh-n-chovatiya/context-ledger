@@ -87,6 +87,27 @@ class SyntheticKind(Fixture):
         self.addCleanup(verify.KIND_TABLE.pop, self.NAME, None)
         return calls
 
+    def unit(self, slug, name, verify_checks):
+        """One plan unit on disk, carrying exactly these `verify:` checks."""
+        directory = plan_mod.units_dir(self.layout, slug)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{name}.md"
+        frontmatter.Document(
+            {"ctx_schema": 1, "unit": name, "plan": slug, "tier": "subagent",
+             "owns": ["src/a.py"], "budget_tokens": 1000, "status": "pending",
+             "wave": 1, "verify": list(verify_checks)},
+            "## Objective\nx\n\n## Acceptance criteria\n1. it works\n",
+        ).write(path)
+        return path
+
+    def set_verify(self, entries):
+        """Rewrite `ctx.yaml`'s `verify:` block — `doctor` reads it off disk."""
+        lines = ["schema: 1", "profile: code", 'level: "0"', "verify:"]
+        for entry in entries:
+            for index, (key, value) in enumerate(entry.items()):
+                lines.append(f"{'  - ' if index == 0 else '    '}{key}: {value}")
+        self.layout.config.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
 
 # --------------------------------------------------------------------------- #
 # (a) one dict entry is the whole registration
@@ -226,15 +247,114 @@ class TestTheOldFourEditsAreRefused(SyntheticKind):
                 self.assertIn("KIND_TABLE", str(caught.exception))
 
     def test_an_unregistered_kind_is_still_dropped_loudly_enough(self):
-        """The old silent `pass` is still the behaviour for a genuinely
-        unknown kind — and must be, because a malformed `ctx.yaml` is not a
-        reason to brick a session. What changed is that a *registered* kind can
-        no longer land in this branch by accident."""
+        """Dropped at gate time, refused before it — the name, asserted.
+
+        This test used to end at the first two assertions: `results == []`,
+        `verdict == PASS`. That is the right *runtime* behaviour — a malformed
+        `ctx.yaml` is not a reason to brick a session — but on its own it is
+        the opposite of what the name claims. A check that is dropped and
+        never mentioned is a check that reads as green.
+
+        So the drop stays, and the "loudly" is now the other two thirds: the
+        same check that `verify.run` swallows is refused by `plan.check` before
+        anything is dispatched and reported `BAD` by `ctx doctor`, both naming
+        the value and the nearest registered kind. The three together are what
+        makes the silent drop survivable.
+
+        The kind here is `rubrik` — a typo for a real one, which is how this
+        arrives in practice and the only way the "nearest kind" half of the
+        message can be asserted at all.
+        """
+        check = {"kind": "rubrik"}
+
+        # (1) at gate time, still dropped rather than crashing —
         results, verdict = verify.run(
-            self.layout, self.config, [{"kind": self.NAME}],
-            cwd=self.root, key="k")
+            self.layout, self.config, [check], cwd=self.root, key="k")
         self.assertEqual(results, [])
         self.assertEqual(verdict, verify.PASS)
+        # — and the verdict is over an empty set, which is why nothing
+        # downstream can tell this apart from a check that passed. Hence (2).
+
+        # (2) plan-check refuses the unit, naming the value and the nearest
+        # registered kind, before a single unit is dispatched.
+        slug = "auth"
+        self.unit(slug, "01-api", verify_checks=[
+            {"kind": "exists", "path": "src/a.py"}, check,
+        ])
+        _grouped, problems = plan_mod.check(self.layout, slug)
+        offending = [p for p in problems if "rubrik" in p]
+        self.assertEqual(len(offending), 1, problems)
+        self.assertIn("01-api", offending[0])
+        self.assertIn("not registered", offending[0])
+        self.assertIn("did you mean 'rubric'?", offending[0])
+        # A good check sitting beside the bad one is exactly the case the old
+        # `no usable verify checks` guard missed: it only fires when *every*
+        # check is unusable, so one typo among several passed silently.
+        self.assertFalse([p for p in problems if "no usable" in p], problems)
+
+        code, out = self.cli("plan-check", slug)
+        self.assertNotEqual(code, 0)
+        self.assertIn("rubrik", out)
+
+        # (3) doctor reports it as a problem, not `ok`.
+        self.set_verify([check])
+        code, out = self.cli("doctor")
+        self.assertNotEqual(code, 0)
+        line, = [ln for ln in out.splitlines() if "rubrik" in ln]
+        self.assertIn("BAD", line)
+        self.assertNotIn("  ok ", line)
+        self.assertIn("did you mean 'rubric'?", line)
+
+    def test_a_missing_kind_is_refused_the_same_way(self):
+        """`- run: pytest` with no `kind:` is the commonest way to write one.
+
+        `None` is not in the table either, so it took the same silent path: a
+        `verify:` entry that never ran and never said so.
+        """
+        self.assertIn("missing", plan_mod.kind_problem(None))
+
+        slug = "auth"
+        self.unit(slug, "01-api", verify_checks=[{"run": "pytest -q"}])
+        _grouped, problems = plan_mod.check(self.layout, slug)
+        self.assertTrue([p for p in problems
+                         if "01-api" in p and "verify kind missing" in p],
+                        problems)
+
+        self.set_verify([{"run": "pytest -q"}])
+        code, out = self.cli("doctor")
+        self.assertNotEqual(code, 0)
+        self.assertIn("BAD  verify kind missing is not registered", out)
+
+    def test_a_registered_kind_is_untouched_by_either_refusal(self):
+        """The control. Every kind in the table passes both gates as before."""
+        slug = "auth"
+        for kind in verify.KINDS:
+            with self.subTest(kind=kind):
+                self.unit(slug, "01-api", verify_checks=[{"kind": kind}])
+                _grouped, problems = plan_mod.check(self.layout, slug)
+                self.assertEqual(
+                    [p for p in problems if "not registered" in p], [], problems)
+                self.assertIsNone(plan_mod.kind_problem(kind))
+
+                self.set_verify([{"kind": kind}])
+                _code, out = self.cli("doctor")
+                self.assertNotIn("is not registered", out)
+
+    def test_a_kind_registered_after_import_is_accepted_by_both(self):
+        """The refusal reads the live table, not a copy taken at import.
+
+        A frozen snapshot would make `plan-check` refuse a kind the gate is
+        perfectly willing to run — the same two-places-to-edit bug this file
+        exists to prevent, pointed the other way.
+        """
+        self.assertIsNotNone(plan_mod.kind_problem(self.NAME))
+        self.register()
+        self.assertIsNone(plan_mod.kind_problem(self.NAME))
+
+        slug = "auth"
+        self.unit(slug, "01-api", verify_checks=[{"kind": self.NAME}])
+        _grouped, problems = plan_mod.check(self.layout, slug)
+        self.assertEqual([p for p in problems if self.NAME in p], [], problems)
 
 
 # --------------------------------------------------------------------------- #

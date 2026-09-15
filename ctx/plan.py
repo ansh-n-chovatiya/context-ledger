@@ -20,6 +20,7 @@ them — rewriting someone's dependency graph silently is not a favour.
 
 import bisect
 import datetime
+import difflib
 import fnmatch
 import json
 import os
@@ -280,6 +281,29 @@ def is_unwritten_objective(text):
     return _OBJECTIVE_HINT_MARK in body.lower()
 
 
+def kind_problem(kind):
+    """One sentence naming an unregistered verify `kind`, or None if it is fine.
+
+    `verify.ordered` drops an unknown kind on purpose — a malformed check must
+    not crash a gate mid-session — but silence there means a typo'd `kind:`
+    reads as a check that passed. Nothing downstream can tell the difference,
+    so the refusal has to happen here, before dispatch, where the fix is one
+    character and nobody is waiting on a subagent.
+
+    Read off `verify.KIND_TABLE` on every call rather than a frozen copy: a
+    kind registered into the table is registered for this check too.
+    """
+    registered = list(verify.KIND_TABLE)
+    if kind in registered:
+        return None
+    named = "missing" if kind is None else repr(kind)
+    near = difflib.get_close_matches(str(kind or ""), registered, n=1)
+    if near:
+        return (f"verify kind {named} is not registered — did you mean "
+                f"{near[0]!r}? (one of {'/'.join(registered)})")
+    return f"verify kind {named} is not registered — use one of {'/'.join(registered)}"
+
+
 def validate(units):
     """Structural problems, independent of scheduling. Empty list means valid."""
     problems = []
@@ -323,6 +347,24 @@ def validate(units):
                 f"{unit.name}: kind is `bug` but `reproduction` is empty — add the "
                 "steps that reproduce it before this unit can be dispatched"
             )
+        entries = unit.checks if isinstance(unit.checks, (list, tuple)) else []
+        if unit.checks and not entries:
+            problems.append(
+                f"{unit.name}: `verify` must be a list of checks, not "
+                f"{type(unit.checks).__name__}"
+            )
+        for entry in entries:
+            if not isinstance(entry, dict):
+                problems.append(
+                    f"{unit.name}: `verify` entry {entry!r} is not a mapping"
+                )
+                continue
+            # One bad `kind:` among several good ones used to pass: `ordered`
+            # dropped it and the check below only fires when *every* check on
+            # the unit is unusable. Each one is named separately.
+            trouble = kind_problem(entry.get("kind"))
+            if trouble:
+                problems.append(f"{unit.name}: {trouble}")
         if not verify.ordered(unit.checks):
             problems.append(
                 f"{unit.name}: no usable `verify` checks — the done-gate cannot hold"
