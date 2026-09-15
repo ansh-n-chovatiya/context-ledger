@@ -2,3 +2,7 @@ __pycache__/
 *.py[cod]
 .DS_Store
 .coverage
+
+# The ledger is local working state (plans, journal, decisions, saved
+# contexts) — kept on disk, not in this repo's history.
+.ctx/
