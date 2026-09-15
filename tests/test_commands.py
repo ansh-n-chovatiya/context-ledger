@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from ctx import spec as spec_mod  # noqa: E402
 from support import Fixture  # noqa: E402
 
 COMMANDS = Path(__file__).resolve().parent.parent / "commands"
@@ -242,6 +243,38 @@ class TestPlanResolvesTheActiveSpec(Fixture):
         self.cli("question", "search-api", "should results be paginated?")
         code, out = self.cli("plan", "search-v1")
         self.assertEqual(code, 1)
+
+    def test_a_plan_named_after_its_own_spec_is_not_shadowed_by_the_active_one(self):
+        """The active-spec fallback above is for a plan whose name genuinely
+        differs from its spec's. It must not apply when the plan's own name
+        *is* an existing spec: that spec — not whatever is merely active —
+        is the one `ctx plan` has to gate against.
+
+        Without this, planning a second, never-vetted spec while an earlier,
+        already-ready one is still "active" would silently check the wrong
+        spec and let the new one through unchecked — a real gate bypass, not
+        just a naming quirk.
+
+        `search-v2` is created with `spec_mod.create` directly rather than
+        `ctx spec`, on purpose: a spec can exist on disk — written by hand,
+        by a script, by a teammate's session — without ever having been made
+        "active" in this session's `.ctx/state.json`. Going through `ctx
+        spec` here would make `search-v2` the active spec itself and never
+        exercise the fallback this test is pinning.
+        """
+        self.cli("spec", "search-api", "--intent", "add search")
+        for category in ("why now", "what could go wrong", "what changes for you"):
+            self.cli("infer", "search-api", category, "a", "--because", "b")
+        # This makes "search-api" the active spec, exactly as in the test above.
+        self.assertEqual(self.cli("plan", "search-v1")[0], 0)
+
+        spec_mod.create(self.layout, "search-v2", intent="add faceting")
+        # "search-v2" never gets its own intake recorded.
+        code, out = self.cli("plan", "search-v2")
+        self.assertEqual(code, 1, out)
+        self.assertIn("search-v2", out)
+        self.assertNotIn("search-api", out)
+        self.assertFalse((self.layout.plans / "search-v2").is_dir())
         self.assertIn("refusing to plan", out)
 
 
