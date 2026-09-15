@@ -313,6 +313,11 @@ def _check_diff(check, cwd, owns, since=None, wave=()):
     nothing, and a unit in another wave is not running now, so its `owns` is not
     an excuse either. `review.wave_scope` decides all three and hands the answer
     down; this function only applies it.
+
+    One verdict this check deliberately cannot reach is "fine, nothing stray"
+    when nothing at all was written. That used to be a PASS — the cheapest check
+    in the table handing the done-gate the single pass it needs to believe it is
+    not blind. Zero changes is an ERROR now; the reasoning is at the branch.
     """
     scope = [str(p) for p in (check.get("owns") or owns or [])]
     if not scope:
@@ -335,6 +340,28 @@ def _check_diff(check, cwd, owns, since=None, wave=()):
         if path not in seen:
             seen.add(path)
             everything.append(path)
+    if not everything:
+        # Nothing stray was written because *nothing was written*. This used to
+        # PASS, and that pass was worth exactly nothing: `diff` costs 0, so
+        # `ordered()` runs it first, and one vacuous PASS was enough to satisfy
+        # `gate_before_done`'s "some check did pass, so the gate is not blind"
+        # branch. A unit whose other checks all ERROR — an untrusted command, a
+        # missing tool — could reach `done` having written nothing at all, gated
+        # by a check that had observed nothing.
+        #
+        # ERROR, not FAIL: this has the same shape as any other check that could
+        # not establish anything, and the two branches downstream already handle
+        # it correctly without being touched. If every check on the unit lands
+        # here, `gate_before_done`'s "no check could run" branch refuses `done`;
+        # if a sibling check genuinely PASSed, it is a non-blocking warning,
+        # because a real pass is real evidence. The wording has to stay distinct
+        # from the stray-scope FAIL below: a reader of `ctx doctor` or `ctx unit`
+        # must be able to tell an idle unit from a scope violation at a glance.
+        return Result(
+            "diff", label_of(check), ERROR,
+            "no files changed at all, so this check verified nothing about "
+            + ", ".join(sorted(scope)[:8]),
+        )
     excused = [str(p) for p in (wave or [])]
     stray = [path for path in everything
              if not is_ledger(path)

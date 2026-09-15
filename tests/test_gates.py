@@ -10,6 +10,7 @@ run once a cheap one has already failed.
 
 import json
 import os
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -18,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ctx import (  # noqa: E402
-    frontmatter, journal, spec as spec_mod, state, trust, verify, work,
+    frontmatter, journal, plan as plan_mod, spec as spec_mod, state, trust,
+    verify, work,
 )
 from support import FAILS, OK, Fixture  # noqa: E402
 
@@ -371,6 +373,163 @@ class TestUnrunChecksNeverBecomePasses(Fixture):
             {"kind": "rubric", "about": "judged"},
         ])
         self.assertEqual(verdict, verify.PENDING)
+
+
+# --------------------------------------------------------------------------- #
+# a check that saw nothing has not passed
+# --------------------------------------------------------------------------- #
+
+class TestTheDiffKindDoesNotPassOnNothing(Fixture):
+    """`diff` used to sign off on a unit that had written nothing at all.
+
+    Its tail returned PASS whenever nothing *stray* had been written — and
+    writing nothing is the easiest way to write nothing stray. That pass was
+    load-bearing in the worst way: `diff` costs 0 in `KIND_TABLE`, so `ordered`
+    always runs it first, and one PASS anywhere in the results is what tells
+    `gate_before_done` the gate was not blind. A unit carrying `diff` beside a
+    `cmd` check on a tool this machine does not have, or has never trusted,
+    therefore reached `done` with the `cmd` check ERRORed, no code written, and
+    nothing verified by anything.
+    """
+
+    def clean_repo(self):
+        """A real repository with a clean working tree: nothing changed."""
+        self.git_init()
+
+    def diff(self, owns, check=None):
+        return verify._check_diff(check or {"kind": "diff"}, self.root, owns)
+
+    def test_zero_changes_is_not_a_pass(self):
+        self.clean_repo()
+        result = self.diff(["src"])
+        self.assertEqual(result.status, verify.ERROR, result.message)
+        self.assertIn("no files changed", result.message)
+
+    def test_the_idle_message_is_not_the_scope_violation_message(self):
+        """A `ctx doctor` reader has to tell an idle unit from a unit that
+        wrote somewhere it had no business writing, at a glance."""
+        self.clean_repo()
+        idle = self.diff(["src"])
+
+        self.write("elsewhere/theirs.py", "y = 2\n")
+        stray = self.diff(["src"])
+        self.assertEqual(stray.status, verify.FAIL)
+        self.assertIn("changed outside owned scope", stray.message)
+
+        self.assertNotIn("changed outside owned scope", idle.message)
+        self.assertNotEqual(idle.message, stray.message)
+
+    def test_work_inside_the_owned_scope_still_passes(self):
+        """The positive control: this changes the zero-change case and only it."""
+        self.clean_repo()
+        self.write("src/mine.py", "x = 1\n")
+        result = self.diff(["src"])
+        self.assertEqual(result.status, verify.PASS, result.message)
+
+    def test_a_stray_write_still_fails_rather_than_erroring(self):
+        self.clean_repo()
+        self.write("src/mine.py", "x = 1\n")
+        self.write("elsewhere/theirs.py", "y = 2\n")
+        result = self.diff(["src"])
+        self.assertEqual(result.status, verify.FAIL)
+        self.assertIn("elsewhere/theirs.py", result.message)
+
+    def test_no_declared_scope_is_still_the_separate_no_op(self):
+        """`owns: []` has always been a documented no-op with its own message,
+        surfaced by `ctx kinds`. It is not the zero-change case."""
+        self.clean_repo()
+        result = self.diff([])
+        self.assertEqual(result.status, verify.PASS)
+        self.assertEqual(result.message, "no owned scope declared")
+
+
+class TestAUnitThatWroteNothingCannotReachDone(Fixture):
+    """The end-to-end shape of the bypass, through `ctx unit --status done`.
+
+    Nothing below touches `gate_before_done`, `gate_check` or `verdict_of`: the
+    refusal comes from the "no check could run" branch that already existed, now
+    that `diff` no longer hands it a pass it did not earn.
+    """
+
+    slug = "vacuous"
+    body = "## Objective\nDo the thing.\n\n## Acceptance criteria\n1. it works\n"
+
+    def setUp(self):
+        super().setUp()
+        self.git_init()
+
+    def git(self, *args):
+        completed = subprocess.run(
+            ["git", *args], cwd=str(self.root), capture_output=True, text=True,
+            env=dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null",
+                     GIT_CONFIG_SYSTEM="/dev/null",
+                     GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="t@example.com",
+                     GIT_COMMITTER_NAME="Test", GIT_COMMITTER_EMAIL="t@example.com"),
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return completed.stdout
+
+    def unit(self, name="01-api", checks=()):
+        directory = plan_mod.units_dir(self.layout, self.slug)
+        directory.mkdir(parents=True, exist_ok=True)
+        frontmatter.Document(
+            {
+                "ctx_schema": 1, "unit": name, "plan": self.slug,
+                "tier": "subagent", "depends_on": [], "owns": ["src/api.py"],
+                "reads": [], "forbid": [], "budget_tokens": 1000,
+                "status": "pending", "wave": 1, "verify": list(checks),
+            },
+            self.body,
+        ).write(directory / f"{name}.md")
+        self.cli("plan", self.slug, "--no-spec")
+
+    def settle(self):
+        """Commit the ledger, so the working tree really is clean.
+
+        Without this the unit file and the journal sit untracked in `git
+        status`, and `changed ∪ committed` is not empty — the test would then
+        be measuring the ledger's own writes rather than the unit's work.
+        """
+        self.git("add", "-A")
+        self.git("commit", "-qm", "ledger")
+
+    def done(self, name="01-api"):
+        return self.cli("unit", name, "--status", "done")
+
+    def checks(self):
+        """`diff`, plus a `cmd` check that cannot run on this machine."""
+        return [{"kind": "diff"},
+                {"kind": "cmd", "run": "ctx-no-such-tool-xyz --run"}]
+
+    def test_diff_plus_an_erroring_cmd_and_no_work_is_refused(self):
+        self.unit(checks=self.checks())
+        self.trust(self.checks())
+        self.settle()
+
+        code, out = self.done()
+        self.assertEqual(code, 1, out)
+        self.assertIn("not one check could run", out)
+        self.assertIn("no files changed", out)
+        self.assertEqual(
+            plan_mod.find_unit(self.layout, self.slug, "01-api").status,
+            "pending", "and it is still not done",
+        )
+
+    def test_the_same_unit_with_real_work_in_scope_is_let_through(self):
+        """The control. One ERRORing `cmd` beside a `diff` that genuinely saw
+        the work is today's behaviour and stays today's behaviour: a real pass
+        is real evidence, so the ERROR is a warning, not a block."""
+        self.unit(checks=self.checks())
+        self.trust(self.checks())
+        self.settle()
+        self.write("src/api.py", "x = 1\n")
+
+        code, out = self.done()
+        self.assertEqual(code, 0, out)
+        self.assertIn("warning", out)
+        self.assertEqual(
+            plan_mod.find_unit(self.layout, self.slug, "01-api").status, "done",
+        )
 
 
 # --------------------------------------------------------------------------- #
