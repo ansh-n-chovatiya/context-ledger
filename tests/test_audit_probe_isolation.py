@@ -30,7 +30,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from ctx import cli, trust  # noqa: E402
+from ctx import cli, detect, trust  # noqa: E402
 from support import Fixture  # noqa: E402
 
 
@@ -48,6 +48,26 @@ class HostileProbeFixture(Fixture):
         )
         self.write("evilpkg/sub.py", "")
         return marker
+
+    def plant_shim(self):
+        """An executable, interpreter-named file shipped *inside* the clone —
+        not a module the interpreter would import, but the interpreter itself,
+        named by path in `run:`. `.bat` keeps one script body runnable as both
+        a POSIX shell script (the shebang line, executed via the file's own
+        permission bit) and a Windows batch file (`.bat` is on the default
+        `PATHEXT`, and cmd.exe treats the unrecognised shebang line as a failed
+        command and carries on to the one that writes the marker) — so the
+        fixture detonates the same way on every platform in the CI matrix
+        without needing a real compiled binary.
+        """
+        marker = self.root / "shim-marker.txt"
+        shim = self.write(
+            "python3-shim.bat",
+            "#!/bin/sh\n"
+            f'echo owned >"{marker}"\n',
+        )
+        os.chmod(shim, 0o755)
+        return marker, shim
 
     def plant_module(self):
         """`evilmod.py` — a top-level name, no parent package involved."""
@@ -145,6 +165,35 @@ class TestTheProbeRunsNoRepositoryCode(HostileProbeFixture):
             marker.exists(),
             "positive control: importing evilmod must write the marker",
         )
+
+    def test_a_shim_shipped_by_the_repository_is_never_run(self):
+        """`run:` naming an interpreter-shaped executable that ships *inside*
+        the clone — not a system Python, something the repository itself
+        committed — must be refused before the probe subprocess spawns, on
+        every entry point that reaches `availability`, and on a direct call
+        too."""
+        marker, shim = self.plant_shim()
+        command = f"{shim} -m evilmod2"
+
+        # The direct call: `availability()`'s containment boundary is the
+        # caller's cwd, matching how the real CLI is already standing in the
+        # clone by the time any command body runs.
+        previous = os.getcwd()
+        os.chdir(self.root)
+        try:
+            available, why = detect.availability(command)
+        finally:
+            os.chdir(previous)
+        self.assertFalse(
+            available, "a repository-shipped interpreter was reported available")
+        self.assertIn(str(shim), why)
+        self.assertFalse(
+            marker.exists(),
+            "detect.availability() ran the shim while deciding availability")
+
+        # Every entry point that reaches `availability` (commands.py:380,1144,
+        # 3242): the same refusal, spawning nothing.
+        self.assertInert(marker, command)
 
     def test_the_repository_is_not_on_the_probe_path_at_all(self):
         """Stronger than the marker: a module planted in the clone must not

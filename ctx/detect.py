@@ -235,7 +235,8 @@ def availability(command):
     parts = command.split()
     if not parts:
         return False, "empty command"
-    if shutil.which(parts[0]) is None:
+    resolved = shutil.which(parts[0])
+    if resolved is None:
         return False, f"{parts[0]} is not on PATH"
     if os.path.basename(parts[0]).startswith("python") and "-m" in parts[:3]:
         module = parts[parts.index("-m") + 1:parts.index("-m") + 2]
@@ -243,6 +244,20 @@ def availability(command):
             top = module[0].split(".", 1)[0]
             if not _MODULE_NAME.match(top):
                 return False, f"{parts[0]} cannot import {module[0]}"
+            # `resolved` is whatever a committed ctx.yaml's `run:` named,
+            # by path or by PATH lookup, before trust is ever consulted.
+            # Refuse to spawn it unless it is the interpreter already
+            # running this process, or it lives outside the current
+            # project (a real system interpreter, not something the
+            # repository itself shipped and pointed `run:` at).
+            real = os.path.realpath(resolved)
+            cwd = os.path.realpath(os.getcwd())
+            inside_project = real == cwd or real.startswith(cwd + os.sep)
+            if inside_project and real != os.path.realpath(sys.executable):
+                return False, (
+                    f"refusing to run {parts[0]}: it resolves inside this "
+                    "project, not to a system interpreter"
+                )
             try:
                 with tempfile.TemporaryDirectory() as elsewhere:
                     ok = subprocess.run(
