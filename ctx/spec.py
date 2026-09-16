@@ -357,6 +357,18 @@ def record_inferred(layout, slug, category, answer, rationale):
             f"{category!r} is not an intake category — use one of "
             f"{', '.join(INTAKE_CATEGORIES)}"
         )
+    # `intake_status` only checks that a Resolved line *starts with* the
+    # category's prefix — nothing downstream reads the rest of it — so an
+    # empty answer or rationale recorded here satisfies `ctx spec-ready`'s
+    # intake gate exactly as well as a real one. Refusing it here, at the one
+    # place free-text becomes a ledger entry, is what makes "recorded" mean
+    # "answered" rather than "a line was appended".
+    if not answer.strip():
+        raise ValueError("an inferred answer cannot be empty")
+    if not rationale.strip():
+        raise ValueError(
+            "an inferred answer needs a rationale — why nobody was asked"
+        )
     qpath = questions_path(layout, slug)
     doc = frontmatter.read(qpath)
     if doc is None:

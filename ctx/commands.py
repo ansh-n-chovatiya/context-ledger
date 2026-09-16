@@ -1454,6 +1454,12 @@ def cmd_infer(args):
             f"{', '.join(spec_mod.INTAKE_CATEGORIES)}"
         )
         return 1
+    if not str(args.answer or "").strip():
+        _echo("an inferred answer cannot be empty")
+        return 1
+    if not str(args.because or "").strip():
+        _echo("--because cannot be empty — say why nobody was asked")
+        return 1
     spec_mod.record_inferred(layout, slug, category, args.answer, args.because)
     journal.append(layout, config, "spec", slug, f"inferred: {category}")
     _echo(f"recorded an inferred answer for {category!r}")

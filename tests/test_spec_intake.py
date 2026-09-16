@@ -51,6 +51,23 @@ class TestRecordInferred(unittest.TestCase):
         self.assertEqual(blocking, [])
         self.assertEqual(non_blocking, [])
 
+    def test_rejects_an_empty_answer(self):
+        """`intake_status` only checks that a Resolved line starts with the
+        category prefix — nothing downstream reads what follows — so an empty
+        answer used to satisfy `ctx spec-ready`'s intake gate exactly as well
+        as a real one. See `test_an_empty_answer_cannot_satisfy_spec_ready`
+        below for the end-to-end version of this."""
+        for answer in ("", "   ", "\n"):
+            with self.assertRaises(ValueError):
+                spec_mod.record_inferred(
+                    self.layout, self.slug, "why now", answer, "a real reason")
+
+    def test_rejects_an_empty_rationale(self):
+        for rationale in ("", "   "):
+            with self.assertRaises(ValueError):
+                spec_mod.record_inferred(
+                    self.layout, self.slug, "why now", "a real answer", rationale)
+
 
 class TestIntakeStatus(unittest.TestCase):
     def setUp(self):
