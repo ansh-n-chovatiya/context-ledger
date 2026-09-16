@@ -179,6 +179,10 @@ class TestMergeRefusals(WorktreeFixture):
         self.assertIn("changed nothing", " ".join(messages))
 
     def test_a_unit_with_no_checks_is_not_merged_blind(self):
+        """This refusal now comes from `verify.gate_preflight` (step 2, shared
+        with `ctx unit --status done`) rather than a second, merge-local check
+        — see `test_a_shared_preflight_refuses_the_same_way_it_used_to` in
+        test_merge_safety.py for why the two were unified."""
         self.unit("01-a", owns=["src/a.py"], checks=[])
         plan_mod.units_dir(self.layout, self.slug).mkdir(parents=True, exist_ok=True)
         self.cli("plan", self.slug, "--no-spec")
@@ -189,7 +193,11 @@ class TestMergeRefusals(WorktreeFixture):
 
         ok, messages = wt.merge(self.layout, self.config, self.slug, "01-a")
         self.assertFalse(ok)
-        self.assertIn("refusing to merge blind", " ".join(messages))
+        joined = " ".join(messages)
+        self.assertIn("no usable verify checks", joined)
+        self.assertIn("--skip-gate", joined,
+                       "a ctx merge refusal must name ctx merge's own override "
+                       "flag, not --force")
 
     def test_an_undispatched_unit_has_no_branch(self):
         self.unit("01-a", owns=["src/a.py"])

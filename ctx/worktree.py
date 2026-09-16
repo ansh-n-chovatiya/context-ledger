@@ -26,7 +26,7 @@ the unit was planned against.
 import os
 import subprocess
 
-from . import contract as contract_mod, paths, plan as plan_mod, verify
+from . import paths, plan as plan_mod, verify
 
 WORKTREE_SUBDIR = "worktrees"
 BRANCH_PREFIX = "ctx/"
@@ -517,71 +517,36 @@ def _merge_in_progress(root):
 
 
 def _contract_guard(layout, plan_slug, unit):
-    """`verify.gate_check`'s steps 0 and 1, as a merge refusal. `(refusal, notes)`.
+    """`verify.gate_preflight`, as a merge refusal. `(refusal, notes)`.
 
-    `merge` reimplemented a *subset* of the done-gate: it ran the unit's checks
-    and handled FAIL/PENDING/blind-ERROR itself, but never asked the two
-    questions that come *before* any check is worth running — was this unit
-    dispatched through ctx at all, and is it still being judged against the
-    contract it was dispatched with. Both are `gate_check`'s, whose only other
-    caller is `ctx unit --status done`; so `ctx merge` was a complete route
-    around them.
+    `merge` used to reimplement a hand-picked subset of the done-gate's
+    preflight here — only the dispatch-seal and contract-intact steps —
+    because at the time those were the only two steps `gate_check` had before
+    it ran the unit's own checks. When findings and phases refusals were later
+    added ahead of those checks, this hand-rolled copy was not updated to
+    match, and `ctx merge` silently stopped enforcing either: a unit with an
+    open critical review finding, or a `kind: bug` unit with no recorded
+    reproduction, could merge and land `done` with no override anywhere in the
+    output. Calling `verify.gate_preflight` here — the same function `gate_
+    check` itself calls — is what keeps the two done-transitions from drifting
+    apart like that again; there is now only one place these steps live.
 
-    Calling `gate_check` itself here would re-run every check against the
-    *integration* tree, which is not the tree this merge is judging — step 4
-    below deliberately runs them inside the worktree. Its two steps that are
-    pure file reads are therefore applied directly.
+    Calling `verify.gate_check` itself here would re-run the checks themselves
+    against the *integration* tree, which is not the tree this merge is
+    judging — step 4 below deliberately runs them inside the worktree, so only
+    the tree-agnostic preflight is shared.
 
     This is not the `stray` check above, and does not replace it. That one
-    validates the branch's diff against whatever `owns` says *now*; this one
-    asks whether `owns` is still what was sealed at dispatch. A unit that
-    widened its own `owns` and then stayed inside it passes the first and fails
-    this one.
+    validates the branch's diff against whatever `owns` says *now*; the
+    contract-intact step inside `gate_preflight` asks whether `owns` is still
+    what was sealed at dispatch. A unit that widened its own `owns` and then
+    stayed inside it passes the first and fails this one.
     """
-    notes = []
-
-    # 0. Was this unit ever dispatched through ctx at all? Scoped to plans that
-    #    seal, exactly as `gate_check` scopes it: a plan where *no* unit has a
-    #    seal predates sealing, and refusing there would brick it on upgrade.
-    if (contract_mod.load_seal(layout, plan_slug, unit.name) is None
-            and contract_mod.any_seal(layout, plan_slug)):
-        return [
-            f"refusing to merge {unit.name} — it has no dispatch seal, so it was "
-            "never dispatched by ctx:",
-            "  nothing recorded its contract, its review baseline or the commit "
-            "it started from,",
-            "  which is most of what this gate compares against.",
-            "",
-            "`ctx start` is what records a seal. Dispatch the wave through it "
-            "(other units in",
-            "this plan have one, so this unit was sent out around it), or pass "
-            "--skip-gate to accept",
-            "a unit nothing can be checked against.",
-        ], notes
-
-    # 1. Did the unit rewrite its own contract after it was dispatched?
-    if contract_mod.baseline(layout, plan_slug, unit) is None:
-        # Not a violation — an older dispatch, or one whose snapshot failed, has
-        # nothing to compare against.
-        if contract_mod.load_seal(layout, plan_slug, unit.name) is not None:
-            notes.append(
-                f"note: no dispatch baseline for {unit.name}, so its contract was "
-                "not checked for edits — /ctx:start records one from now on"
-            )
-        return [], notes
-
-    intact, changed = contract_mod.compare(layout, plan_slug, unit)
-    if not intact:
-        return [
-            f"refusing to merge {unit.name} — its contract changed after it was "
-            "dispatched:",
-            *[f"  changed: {item}" for item in changed],
-            "",
-            "A unit does not get to rewrite the promise it is judged against.",
-            "Restore what changed from the plan, or — if the change is a real",
-            "planning decision — say so out loud and pass --skip-gate.",
-        ], notes
-    return [], notes
+    ok, _reason, lines = verify.gate_preflight(
+        layout, plan_slug, unit, override_flag="--skip-gate")
+    if ok:
+        return [], lines
+    return lines, []
 
 
 def _landed_since_fork(root, branch, paths):
@@ -701,9 +666,8 @@ def merge(layout, config, plan_slug, unit_name, skip_gate=False):
             return False, notes + refusal
         messages.extend(notes)
 
-        checks = verify.ordered(unit.checks)
-        if not checks:
-            return False, [f"{unit_name} has no verify checks — refusing to merge blind"]
+        # `_contract_guard` above already refused an empty check list (`gate_
+        # preflight` step 2) before this point was ever reached.
         results, verdict = verify.run(
             layout, config, unit.checks,
             cwd=_tree_path(layout, plan_slug, unit_name),

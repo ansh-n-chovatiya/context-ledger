@@ -1602,29 +1602,35 @@ def _untracked_within(cwd, owns):
     return found
 
 
-def gate_check(layout, config, slug, unit, record=True):
-    """(ok, reason, lines) — may this unit be marked `done`, and if not, why.
+def gate_preflight(layout, slug, unit, override_flag="--force"):
+    """(ok, reason, lines) for steps 0-4 of the done-gate — everything that
+    must hold *before* the unit's own checks are worth running at all, and
+    that is decided the same way regardless of which tree those checks will
+    then run against.
 
-    Ordered by what invalidates what, and by cost. A forged contract makes every
-    result below it meaningless, so it is answered first; it and the empty-checks
-    case are both pure file reads, and neither spawns a process.
+    Split out of `gate_check` so `ctx merge` — which must run the checks
+    themselves against the unit's worktree, not the integration tree `gate_
+    check` uses for step 5 — has one real function to call instead of a
+    hand-rolled subset of its own. That subset (`worktree._contract_guard`)
+    used to reimplement only steps 0-1 directly, because at the time those
+    were the only ones that existed; when steps 3-4 (findings, phases) were
+    added here, nothing forced the copy to grow with them, and `ctx merge`
+    silently stopped enforcing either — a route around the gate `ctx unit
+    --status done` still had, on the exact commands that ships/lands work.
+    Callers now share this function so there is only one place these steps can
+    drift out of sync with themselves.
 
-    Split out of `gate_before_done` so that `--force` can say *what* it is
-    overriding. An escape hatch that records "forced" and nothing else leaves no
-    trace of the thing it stepped over, which is exactly the trace that matters
-    later.
-
-    `record=False` forwards to `review.wave_scope`: `ctx ci` calls this for
-    every in-flight unit of a plan just to report whether each one *would*
-    pass, not to decide one unit's `done` — and asking that question must not
-    fingerprint the unit's mid-flight state as though its gate had just run.
-    `gate_before_done`, the real decision, never passes this.
+    `override_flag` names the flag *this caller's own command* accepts to step
+    over the refusal — `ctx unit --status done` takes `--force`, `ctx merge`
+    takes `--skip-gate`, and the two are not interchangeable: telling a `ctx
+    merge` user to pass a flag `ctx merge` does not have is its own small
+    defect, the kind that erodes trust in the larger one this function exists
+    to close.
     """
     # `phases` is imported at the top of this module, not here: it depends on
     # nothing that depends on `verify`, so there is no cycle to break, and the
     # deferred-import list is a statement about cycles rather than a habit.
-    from . import (contract as contract_mod, findings as findings_mod,
-                   review as review_mod)
+    from . import contract as contract_mod, findings as findings_mod
 
     lines = []
 
@@ -1655,7 +1661,7 @@ def gate_check(layout, config, slug, unit, record=True):
             "`ctx start` is what records a seal. Dispatch the wave through it "
             "(other units in",
             "this plan have one, so this unit was sent out around it), or pass "
-            "--force to accept",
+            f"{override_flag} to accept",
             "a unit nothing can be checked against.",
         ]
 
@@ -1678,14 +1684,14 @@ def gate_check(layout, config, slug, unit, record=True):
                 "",
                 "A unit does not get to rewrite the promise it is judged against.",
                 "Restore what changed from the plan, or — if the change is a real",
-                "planning decision — say so out loud and pass --force.",
+                f"planning decision — say so out loud and pass {override_flag}.",
             ]
 
     # 2. A gate with nothing in it holds nothing.
     if not ordered(unit.checks):
         return False, "no usable verify checks", lines + [
             f"refusing to mark {unit.name} done — it has no usable verify checks",
-            "add a `verify` block to the unit file, or pass --force to override",
+            f"add a `verify` block to the unit file, or pass {override_flag} to override",
         ]
 
     # 3. Findings a reviewer raised against this unit.
@@ -1722,7 +1728,8 @@ def gate_check(layout, config, slug, unit, record=True):
             "--evidence «why it is wrong»",
             f"  ctx findings {unit.name} --set «id» --status parked "
             "--ruling «what was decided»",
-            "Or pass --force, which records that you overrode a review finding.",
+            f"Or pass {override_flag}, which records that you overrode a review "
+            "finding.",
         ]
 
     # 4. Phases the unit declared, or that its `kind` imposes.
@@ -1755,10 +1762,38 @@ def gate_check(layout, config, slug, unit, record=True):
                 "Each phase is recorded as it is cleared, with what proved it:",
                 f"  ctx phase {unit.name} {missing[0]} --command «…» "
                 "--exit-code «…» --evidence «…»",
-                "A phase nobody recorded is a phase nobody ran. Pass --force if "
-                "you are deliberately",
+                f"A phase nobody recorded is a phase nobody ran. Pass {override_flag} "
+                "if you are deliberately",
                 "completing this unit without the discipline its kind asks for.",
             ]
+
+    return True, None, lines
+
+
+def gate_check(layout, config, slug, unit, record=True):
+    """(ok, reason, lines) — may this unit be marked `done`, and if not, why.
+
+    Ordered by what invalidates what, and by cost. A forged contract makes every
+    result below it meaningless, so it is answered first; it and the empty-checks
+    case are both pure file reads, and neither spawns a process — see `gate_
+    preflight` for steps 0-4, shared with `ctx merge`.
+
+    Split out of `gate_before_done` so that `--force` can say *what* it is
+    overriding. An escape hatch that records "forced" and nothing else leaves no
+    trace of the thing it stepped over, which is exactly the trace that matters
+    later.
+
+    `record=False` forwards to `review.wave_scope`: `ctx ci` calls this for
+    every in-flight unit of a plan just to report whether each one *would*
+    pass, not to decide one unit's `done` — and asking that question must not
+    fingerprint the unit's mid-flight state as though its gate had just run.
+    `gate_before_done`, the real decision, never passes this.
+    """
+    from . import contract as contract_mod, review as review_mod
+
+    ok, reason, lines = gate_preflight(layout, slug, unit)
+    if not ok:
+        return False, reason, lines
 
     # 5. The checks themselves.
     #

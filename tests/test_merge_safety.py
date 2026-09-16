@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ctx import (  # noqa: E402
     frontmatter, plan as plan_mod, worktree as wt,
 )
-from support import OK, Fixture  # noqa: E402
+from support import FAILS, OK, Fixture  # noqa: E402
 
 
 class MergeSafetyFixture(Fixture):
@@ -187,6 +187,97 @@ class TestMergeTarget(MergeSafetyFixture):
         self.assertIn("merging into main", joined)
         self.assertIn("merged ctx/auth/01-a into main", joined)
         self.assertTrue((self.root / "src" / "a.py").is_file())
+
+
+class TestMergeSharesGatePreflightWithUnitDone(MergeSafetyFixture):
+    """`ctx merge` and `ctx unit --status done` both refuse through `verify.
+    gate_preflight` (see `worktree._contract_guard`). This pins the specific
+    way the two used to drift apart: `_contract_guard` reimplemented only the
+    dispatch-seal and contract-intact steps, from when those were the only two
+    `gate_check` had. When findings and phases refusals were later added to
+    `gate_check`, this copy was never updated to match, and `ctx merge` kept
+    landing units with an open critical review finding, or a `kind: bug` fix
+    with no recorded reproduction, as `done` — silently outperforming its own
+    "route ctx merge through the same gate" fix.
+    """
+
+    def bug_unit(self, name="01-a", owns=("src/a.py",)):
+        directory = plan_mod.units_dir(self.layout, self.slug)
+        directory.mkdir(parents=True, exist_ok=True)
+        checks = [{"kind": "cmd", "run": OK}]
+        frontmatter.Document(
+            {
+                "ctx_schema": 1, "unit": name, "plan": self.slug, "tier": "session",
+                "depends_on": [], "owns": list(owns), "reads": [], "forbid": [],
+                "budget_tokens": 1000, "status": "pending", "kind": "bug",
+                # `_fix_satisfied` matches `fix`'s recorded `--command` against
+                # this field verbatim (`ctx/phases.py:251`), not against
+                # `reproduce`'s command — so this has to be the same string
+                # `fix` is recorded with below, not free prose.
+                "reproduction": OK,
+                "verify": checks,
+            },
+            "## Objective\nFix the crash.\n\n## Acceptance criteria\n1. it works\n",
+        ).write(directory / f"{name}.md")
+        self.trust(checks)
+
+    def test_an_open_critical_finding_blocks_the_merge(self):
+        self.dispatched()
+        code, out = self.cli("findings", "01-a", "--add", "critical",
+                              "--summary", "drops rows on parse",
+                              "--where", "src/a.py:1")
+        self.assertEqual(code, 0, out)
+
+        ok, messages = wt.merge(self.layout, self.config, self.slug, "01-a")
+        joined = " ".join(messages)
+        self.assertFalse(ok, joined)
+        self.assertIn("blocking review finding", joined)
+        self.assertIn(
+            "--skip-gate", joined,
+            "a ctx merge refusal must name ctx merge's own override flag, "
+            "not ctx unit's --force",
+        )
+        self.assertNotIn("--force", joined)
+
+        # Positive control: the same merge succeeds once the finding is
+        # closed, so the refusal above is about the open finding and nothing
+        # else.
+        code, out = self.cli("findings", "01-a", "--set", "1",
+                              "--status", "addressed",
+                              "--evidence", "fixed the parser")
+        self.assertEqual(code, 0, out)
+        ok, messages = wt.merge(self.layout, self.config, self.slug, "01-a")
+        self.assertTrue(ok, " ".join(messages))
+
+    def test_a_bug_unit_with_no_recorded_phases_blocks_the_merge(self):
+        self.bug_unit()
+        self.plan_ready()
+        _path, _branch, created, error = wt.create(self.layout, self.slug, "01-a")
+        self.assertEqual(error, "")
+        self.assertTrue(created)
+        self.work_in("01-a", "src/a.py", "x = 1\n")
+
+        ok, messages = wt.merge(self.layout, self.config, self.slug, "01-a")
+        joined = " ".join(messages)
+        self.assertFalse(ok, joined)
+        self.assertIn("no recorded outcome", joined)
+        self.assertIn("reproduce", joined)
+        self.assertIn("--skip-gate", joined)
+        self.assertNotIn("--force", joined)
+
+        # Positive control: recording all four required phases un-blocks it.
+        for phase, extra in (
+            ("reproduce", ["--command", FAILS, "--exit-code", "1",
+                            "--evidence", "crashed as expected"]),
+            ("locate", ["--evidence", "src/a.py:1 empty input unguarded"]),
+            ("fix", ["--command", OK, "--exit-code", "0"]),
+            ("guard", ["--exit-code", "0", "--evidence", "verifier: pass"]),
+        ):
+            code, out = self.cli("phase", "01-a", phase, "--plan", self.slug, *extra)
+            self.assertEqual(code, 0, out)
+
+        ok, messages = wt.merge(self.layout, self.config, self.slug, "01-a")
+        self.assertTrue(ok, " ".join(messages))
 
 
 class TestConflictReporting(MergeSafetyFixture):
