@@ -11,7 +11,7 @@ import re
 import tempfile
 import warnings
 
-from . import atomic, miniyaml
+from . import atomic, log, miniyaml
 
 FENCE = "---"
 _HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*$")
@@ -193,12 +193,11 @@ class Document:
         try:
             atomic.fsync_parent_dir(path)
         except OSError as exc:
-            warnings.warn(
-                f"frontmatter: wrote {path} but could not fsync its parent "
-                f"directory ({exc}) — the new content is on disk, its "
-                "durability against a crash is not guaranteed",
-                RuntimeWarning,
-            )
+            # The same durable, off-by-default `ctx.log` channel
+            # `atomic.write_text` and `state.save` report this exact failure
+            # through, not `warnings.warn` — a process-global mechanism any
+            # other code in the same process can silence with one call.
+            log.failure("frontmatter.write.fsync_parent_dir", exc, path=str(path))
         return path
 
 

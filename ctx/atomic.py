@@ -10,9 +10,8 @@ behind if the process dies mid-write — can route through the same path.
 import os
 import time
 import tempfile
-import warnings
 
-
+from . import log
 
 def _replace(temp, destination):
     """`os.replace`, retried briefly on Windows.
@@ -112,10 +111,13 @@ def write_text(path, text, encoding="utf-8"):
     try:
         fsync_parent_dir(path)
     except OSError as exc:
-        warnings.warn(
-            f"atomic: wrote {path} but could not fsync its parent directory "
-            f"({exc}) — the new content is on disk, its durability against a "
-            "crash is not guaranteed",
-            RuntimeWarning,
-        )
+        # `warnings.warn` used to carry this: default-once-per-callsite, and
+        # trivially silenced process-wide by anything else in the same
+        # process calling `warnings.simplefilter("ignore")` — invisible to
+        # exactly the operator who turned `CTX_LOG` on to watch for this
+        # class of problem. `log.failure` is the same durable, off-by-default
+        # channel `state.save` already uses for this exact failure
+        # (`ctx/state.py:88`) — silent unless asked for, but never silenced
+        # by accident.
+        log.failure("atomic.write_text.fsync_parent_dir", exc, path=str(path))
     return path

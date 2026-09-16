@@ -26,6 +26,7 @@ from pathlib import Path
 from unittest import mock
 
 from ctx import atomic, frontmatter, state  # noqa: E402
+from ctx import log as log_mod  # noqa: E402
 from ctx.paths import Layout  # noqa: E402
 
 
@@ -235,24 +236,59 @@ class TestAFailedDirectoryFsyncIsNotAWriteFailure(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
+        # `atomic.write_text` reports this failure through `ctx.log` (the same
+        # off-by-default, `CTX_LOG`-gated channel `lock.py`'s fail-open paths
+        # use) rather than `warnings.warn` — a process-global mechanism any
+        # other code in the same process can silence with one call, unlike a
+        # destination the operator explicitly asked for.
+        log_mod.reset_notices()
+        self.addCleanup(log_mod.reset_notices)
+        self.log_file = self.root / "diagnostics.log"
+        env = dict(os.environ)
+
+        def restore_env():
+            os.environ.clear()
+            os.environ.update(env)
+
+        self.addCleanup(restore_env)
+        os.environ[log_mod.ENV_LEVEL] = "warn"
+        os.environ[log_mod.ENV_FILE] = str(self.log_file)
+
+    def logged(self):
+        if not self.log_file.exists():
+            return ""
+        return self.log_file.read_text(encoding="utf-8")
 
     def test_atomic_write_text_still_returns_and_the_content_still_lands(self):
         path = self.root / "doc.md"
         with mock.patch("ctx.atomic.fsync_parent_dir",
                         side_effect=OSError("EMFILE")):
-            with self.assertWarns(RuntimeWarning):
-                result = atomic.write_text(path, "content\n")
+            result = atomic.write_text(path, "content\n")
         self.assertEqual(result, path)
         self.assertEqual(path.read_text(encoding="utf-8"), "content\n")
+        self.assertIn("atomic.write_text.fsync_parent_dir", self.logged())
 
     def test_frontmatter_document_write_still_returns_and_the_content_still_lands(self):
         path = self.root / "unit.md"
         doc = frontmatter.Document({"status": "pending"}, "Body text.\n")
         with mock.patch("ctx.atomic.fsync_parent_dir",
                         side_effect=OSError("EMFILE")):
-            with self.assertWarns(RuntimeWarning):
-                doc.write(path)
+            doc.write(path)
         self.assertIn("status: pending", path.read_text(encoding="utf-8"))
+        self.assertIn("frontmatter.write.fsync_parent_dir", self.logged())
+
+    def test_the_failure_is_silent_without_ctx_log(self):
+        """Off by default is the same bargain `lock.py`'s fail-open logging
+        makes — this is the regression that would slip through if the two
+        tests above mocked `ctx.log.warn` directly instead of reading the real
+        destination `CTX_LOG_FILE` points at."""
+        del os.environ[log_mod.ENV_LEVEL]
+        del os.environ[log_mod.ENV_FILE]
+        path = self.root / "doc.md"
+        with mock.patch("ctx.atomic.fsync_parent_dir",
+                        side_effect=OSError("EMFILE")):
+            atomic.write_text(path, "content\n")
+        self.assertFalse(self.log_file.exists())
 
     def test_state_save_still_returns_and_the_content_still_lands(self):
         layout = Layout(self.root)
