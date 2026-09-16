@@ -377,7 +377,7 @@ def cmd_init(args):
                    (existing.get("verify_candidates") or []) if str(entry).strip()}
     accepted, rejected, needs_review = [], [], []
     for command in candidates:
-        available, why = detect.availability(command)
+        available, why = detect.availability(command, root)
         if not available:
             rejected.append((command, why))
             continue
@@ -1172,7 +1172,7 @@ def cmd_doctor(args):
             check("ok", "no command to probe", kind=kind)
             continue
         command = str(entry.get("run") or "")
-        available, why = detect.availability(command)
+        available, why = detect.availability(command, layout.root.parent)
         if not available:
             say(f"  MISS {command} — {why}")
             check("miss", why, kind=kind, command=command)
@@ -3373,7 +3373,7 @@ def cmd_ci(args):
         if verify_entry_problem(entry) or entry.get("kind") != "cmd":
             continue
         command = str(entry.get("run") or "")
-        available, why = detect.availability(command)
+        available, why = detect.availability(command, layout.root.parent)
         report(f"available: {command}", available, why)
     if not entries:
         say("  none configured")

@@ -99,8 +99,9 @@ class TestProjectDetection(Fixture):
 
     def test_runnable_rejects_a_module_that_cannot_be_imported(self):
         exe = cli._python_exe()
-        self.assertFalse(cli._runnable(f"{exe} -m definitely_not_a_module_xyz"))
-        self.assertTrue(cli._runnable(f"{exe} -m json.tool"))
+        self.assertFalse(
+            cli._runnable(f"{exe} -m definitely_not_a_module_xyz", self.root))
+        self.assertTrue(cli._runnable(f"{exe} -m json.tool", self.root))
 
 
 # --------------------------------------------------------------------------- #

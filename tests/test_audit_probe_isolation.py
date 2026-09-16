@@ -25,6 +25,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
@@ -127,6 +128,29 @@ class HostileProbeFixture(Fixture):
             f"the fixture stopped importing at all: {completed.stderr}",
         )
 
+    def ctx_elsewhere(self, *args, via):
+        """Run the real entry point with the OS working directory outside the
+        clone, naming the project only through `--cwd` or `CLAUDE_PROJECT_DIR`
+        — the shape a Claude Code hook actually invokes `ctx` in, and the one
+        `availability()`'s old `os.getcwd()`-anchored containment check never
+        saw: neither mechanism changes the process's real working directory,
+        so a check anchored there silently never fires for either.
+        """
+        env = dict(os.environ, PYTHONPATH=str(pathlib.Path(cli.__file__).parent.parent))
+        argv = [sys.executable, "-m", "ctx"]
+        if via == "cwd-flag":
+            argv += ["--cwd", str(self.root)]
+        elif via == "project-dir-env":
+            env["CLAUDE_PROJECT_DIR"] = str(self.root)
+        else:
+            raise ValueError(via)
+        argv += list(args)
+        with tempfile.TemporaryDirectory() as elsewhere:
+            return subprocess.run(
+                argv, cwd=elsewhere, env=env, capture_output=True, text=True,
+                timeout=120,
+            )
+
 
 class TestTheProbeRunsNoRepositoryCode(HostileProbeFixture):
 
@@ -140,6 +164,24 @@ class TestTheProbeRunsNoRepositoryCode(HostileProbeFixture):
                 f"`ctx {' '.join(entry)}` executed code from the repository "
                 f"while probing {command!r}\n{completed.stdout}{completed.stderr}",
             )
+
+    def assertInertElsewhere(self, marker, command):
+        """Same guarantee, invoked the way a Claude Code hook actually does:
+        OS cwd outside the clone, the project named only by `--cwd` or
+        `CLAUDE_PROJECT_DIR`. This is the shape that defeated the
+        `os.getcwd()`-anchored containment check — not a harder variant of
+        `assertInert`, the one that matters most in real deployments.
+        """
+        self.hostile_ledger(command)
+        for via in ("cwd-flag", "project-dir-env"):
+            for entry in (("init",), ("doctor",), ("doctor", "--verify"), ("ci",)):
+                completed = self.ctx_elsewhere(*entry, via=via)
+                self.assertFalse(
+                    marker.exists(),
+                    f"`ctx {' '.join(entry)}` invoked via {via} (OS cwd outside "
+                    f"the clone) executed code from the repository while "
+                    f"probing {command!r}\n{completed.stdout}{completed.stderr}",
+                )
 
     def test_a_dotted_name_does_not_import_its_parent_package(self):
         marker = self.plant_package()
@@ -176,14 +218,11 @@ class TestTheProbeRunsNoRepositoryCode(HostileProbeFixture):
         command = f"{shim} -m evilmod2"
 
         # The direct call: `availability()`'s containment boundary is the
-        # caller's cwd, matching how the real CLI is already standing in the
-        # clone by the time any command body runs.
-        previous = os.getcwd()
-        os.chdir(self.root)
-        try:
-            available, why = detect.availability(command)
-        finally:
-            os.chdir(previous)
+        # project root the caller resolved, passed in explicitly rather than
+        # read from `os.getcwd()` — see `test_a_shim_is_never_run_when_the_
+        # project_is_named_by_flag_or_env_not_cwd` below for why cwd cannot be
+        # the boundary.
+        available, why = detect.availability(command, self.root)
         self.assertFalse(
             available, "a repository-shipped interpreter was reported available")
         self.assertIn(str(shim), why)
@@ -194,6 +233,18 @@ class TestTheProbeRunsNoRepositoryCode(HostileProbeFixture):
         # Every entry point that reaches `availability` (commands.py:380,1144,
         # 3242): the same refusal, spawning nothing.
         self.assertInert(marker, command)
+
+    def test_a_shim_is_never_run_when_the_project_is_named_by_flag_or_env_not_cwd(self):
+        """The real deployment shape: `ctx` invoked with the OS working
+        directory outside the project, the project named only by `--cwd` (a
+        real, documented flag on every subcommand) or by `CLAUDE_PROJECT_DIR`
+        alone — how a Claude Code hook actually runs `ctx`. `availability()`
+        used to anchor its containment check to `os.getcwd()`, which is not
+        the project in either case, so the refusal above never fired here:
+        `ctx --cwd <project> doctor` from an unrelated directory, or plain
+        `ctx doctor` with only `CLAUDE_PROJECT_DIR` set, ran the shim."""
+        marker, shim = self.plant_shim()
+        self.assertInertElsewhere(marker, f"{shim} -m evilmod2")
 
     def test_the_repository_is_not_on_the_probe_path_at_all(self):
         """Stronger than the marker: a module planted in the clone must not
@@ -214,22 +265,24 @@ class TestTheProbeStillAnswersCorrectly(Fixture):
 
     def test_a_module_that_genuinely_imports_is_available(self):
         self.assertEqual(
-            cli._availability(f"{cli._python_exe()} -m json.tool"), (True, ""))
+            cli._availability(f"{cli._python_exe()} -m json.tool", self.root),
+            (True, ""))
 
     def test_an_absent_module_is_reported_by_name(self):
         available, why = cli._availability(
-            f"{cli._python_exe()} -m definitely_not_a_module_xyz")
+            f"{cli._python_exe()} -m definitely_not_a_module_xyz", self.root)
         self.assertFalse(available)
         self.assertIn("definitely_not_a_module_xyz", why)
 
     def test_a_binary_off_path_is_reported_by_name(self):
-        available, why = cli._availability("definitely_not_a_binary_xyz --version")
+        available, why = cli._availability(
+            "definitely_not_a_binary_xyz --version", self.root)
         self.assertFalse(available)
         self.assertIn("definitely_not_a_binary_xyz", why)
         self.assertIn("not on PATH", why)
 
     def test_an_empty_command_is_not_available(self):
-        self.assertFalse(cli._availability("   ")[0])
+        self.assertFalse(cli._availability("   ", self.root)[0])
 
 
 class TestTheProbeCannotHangTheCaller(Fixture):
@@ -244,7 +297,8 @@ class TestTheProbeCannotHangTheCaller(Fixture):
             raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout", 0))
 
         self.patch_run(hangs)
-        available, why = cli._availability(f"{cli._python_exe()} -m json.tool")
+        available, why = cli._availability(
+            f"{cli._python_exe()} -m json.tool", self.root)
         self.assertFalse(available)
         self.assertIn("json.tool", why)
 
@@ -256,7 +310,7 @@ class TestTheProbeCannotHangTheCaller(Fixture):
             raise subprocess.TimeoutExpired(args[0], 20)
 
         self.patch_run(record)
-        cli._availability(f"{cli._python_exe()} -m json.tool")
+        cli._availability(f"{cli._python_exe()} -m json.tool", self.root)
         self.assertLessEqual(seen["kwargs"].get("timeout", 999), 20)
         cwd = seen["kwargs"].get("cwd")
         self.assertIsNotNone(cwd, "the probe must not inherit the caller's cwd")

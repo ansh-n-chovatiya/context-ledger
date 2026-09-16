@@ -213,7 +213,7 @@ _PROBE = (
 )
 
 
-def availability(command):
+def availability(command, project_root):
     """(can_it_start, why_not). The reason is user-facing, so it must be true.
 
     PATH alone is not enough for the interpreter forms: `python3 -m pytest` with
@@ -231,6 +231,17 @@ def availability(command):
     nothing checked `tool`; the alternative is importing `json` to ask, and the
     cost of that trade is a command that fails at the gate instead of at the
     probe, one layer later and with the trust store already passed.
+
+    `project_root` is required, not defaulted to `os.getcwd()`: this runs
+    inside Claude Code hooks, where the OS working directory routinely differs
+    from the ledger's project root (an explicit `--cwd`, or `CLAUDE_PROJECT_DIR`
+    alone, are the *normal* way a caller reaches this function, not an edge
+    case) — a `getcwd()`-anchored containment check refused nothing in either
+    of those, which is exactly how the repository-shipped-interpreter refusal
+    below was bypassed. Every caller must resolve the same root `paths.
+    project_root()` gives its command (`layout.root.parent`, or the value
+    already threaded through as `root`) and pass it in, so the boundary this
+    function enforces is the boundary the caller is actually operating in.
     """
     parts = command.split()
     if not parts:
@@ -251,8 +262,8 @@ def availability(command):
             # project (a real system interpreter, not something the
             # repository itself shipped and pointed `run:` at).
             real = os.path.realpath(resolved)
-            cwd = os.path.realpath(os.getcwd())
-            inside_project = real == cwd or real.startswith(cwd + os.sep)
+            root = os.path.realpath(str(project_root))
+            inside_project = real == root or real.startswith(root + os.sep)
             if inside_project and real != os.path.realpath(sys.executable):
                 return False, (
                     f"refusing to run {parts[0]}: it resolves inside this "
@@ -271,5 +282,5 @@ def availability(command):
     return True, ""
 
 
-def runnable(command):
-    return availability(command)[0]
+def runnable(command, project_root):
+    return availability(command, project_root)[0]

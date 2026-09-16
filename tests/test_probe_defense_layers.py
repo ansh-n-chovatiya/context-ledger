@@ -34,8 +34,8 @@ sys.path.insert(0, str(ROOT))
 from ctx import detect  # noqa: E402
 
 _SOURCE = (ROOT / "ctx" / "detect.py").read_text(encoding="utf-8")
-_START = "def availability(command):"
-_END = "\n\ndef runnable(command):"
+_START = "def availability(command, project_root):"
+_END = "\n\ndef runnable(command, project_root):"
 _AVAILABILITY_BLOCK = _SOURCE[_SOURCE.index(_START):_SOURCE.index(_END)]
 
 # `ctx/detect.py:243-245` at last check — the module-name validation.
@@ -125,7 +125,8 @@ class TestProbeDropsSysPathZero(unittest.TestCase):
         `availability()` runs the probe with `cwd` set to a fresh, empty
         scratch directory rather than the caller's real working directory."""
         self.patch_probe(self.mutated_probe)
-        available, why = detect.availability(f"{sys.executable} -m evilpkg")
+        available, why = detect.availability(
+            f"{sys.executable} -m evilpkg", self.hostile.name)
         self.assertFalse(available)
         self.assertIn("evilpkg", why)
 
@@ -141,7 +142,8 @@ class TestProbeDropsSysPathZero(unittest.TestCase):
         detect.tempfile = _FakeTempfileModule(self.hostile.name)
         self.addCleanup(setattr, detect, "tempfile", original_tempfile)
 
-        available, why = detect.availability(f"{sys.executable} -m evilpkg")
+        available, why = detect.availability(
+            f"{sys.executable} -m evilpkg", self.hostile.name)
         self.assertTrue(available, why)
 
 
@@ -171,7 +173,8 @@ class TestProbeModuleNameValidation(unittest.TestCase):
         availability = _load_availability(
             self.no_validation_block, probe=detect._PROBE, label="no_validation",
         )
-        available, why = availability(f"{sys.executable} -m {self.hostile_top}")
+        available, why = availability(
+            f"{sys.executable} -m {self.hostile_top}", self.marker_dir)
 
         self.assertFalse(available)
         self.assertFalse(
@@ -200,7 +203,7 @@ class TestProbeModuleNameValidation(unittest.TestCase):
             vulnerable_block, probe=detect._PROBE, label="shell_interpolated",
         )
 
-        availability(f"{sys.executable} -m {self.hostile_top}")
+        availability(f"{sys.executable} -m {self.hostile_top}", self.marker_dir)
 
         self.assertTrue(
             os.path.exists(self.marker),
