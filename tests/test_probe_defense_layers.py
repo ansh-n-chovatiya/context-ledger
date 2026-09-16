@@ -164,7 +164,20 @@ class TestProbeModuleNameValidation(unittest.TestCase):
         self.marker = os.path.join(self.marker_dir, "pwned")
         # No spaces: `availability()` tokenises the whole command on
         # whitespace, so the hostile name has to survive that as one token.
-        self.hostile_top = f"x;touch${{IFS}}{self.marker}"
+        #
+        # OS-native, because the positive control below interpolates this
+        # into a real `subprocess.run(..., shell=True)` call: POSIX `;`
+        # chains commands and `${IFS}` expands to a space, both only once an
+        # actual `/bin/sh` reads them — `cmd.exe` has neither, so the POSIX
+        # payload is simply inert text there, and the positive control it is
+        # meant to prove would fail to demonstrate the vulnerability rather
+        # than demonstrating it, on the one platform in the CI matrix that
+        # never runs `/bin/sh`. `&` chains commands in cmd.exe the way `;`
+        # does in sh, and `echo.>path` needs no space to create an empty file.
+        if os.name == "nt":
+            self.hostile_top = f"x&echo.>{self.marker}"
+        else:
+            self.hostile_top = f"x;touch${{IFS}}{self.marker}"
 
     def test_mutant_is_still_safe_because_argv_is_never_shell_interpreted(self):
         """Mutant: the regex validation is gone. The hostile name still does
