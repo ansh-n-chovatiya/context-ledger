@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.1.0
+
+An independent adversarial audit of everything between `v1.0.0` and this tag
+found two live gate bypasses and one intake-gate bypass; all three are closed
+here, alongside the packaging hygiene the audit itself was missing.
+
+### Fixed
+
+- `ctx merge` never consulted the open-findings or required-phases refusals
+  `verify.gate_check` grew after `ctx merge` was first routed through a gate:
+  a unit with an open `critical` review finding, or a `kind: bug` fix with no
+  recorded reproduction, could merge and land `done` with no override in the
+  output. `worktree._contract_guard` now calls the same shared preflight
+  (`verify.gate_preflight`) `ctx unit --status done` does, instead of a
+  hand-picked subset of it — so the two done-transitions cannot drift apart
+  like this again.
+- The availability probe's repository-shipped-interpreter refusal
+  (`ctx/detect.py`) anchored its containment check to the process's OS
+  working directory. Every real invocation resolves the project root through
+  `--cwd` or `CLAUDE_PROJECT_DIR` instead — the normal shape a Claude Code
+  hook runs `ctx` in — so the refusal never fired outside a bare terminal
+  session standing in the project directory. `availability()` now takes the
+  caller's resolved project root explicitly rather than reading `os.getcwd()`.
+- `ctx infer` accepted an empty answer or `--because`, and `intake_status`
+  only checked that a Resolved line started with the category's prefix — so
+  three blank inferred answers satisfied `ctx spec-ready`'s intake gate as
+  well as three real ones. `record_inferred` now refuses an empty answer or
+  rationale.
+
+### Changed
+
+- `verify.gate_check`'s dispatch-seal, contract-intact, usable-checks,
+  findings and phases refusals (steps 0-4) are now a separate function,
+  `verify.gate_preflight`, shared by `ctx merge`.
+
 ## 1.0.0
 
 The first tagged release. Everything before this was installed from a branch,
