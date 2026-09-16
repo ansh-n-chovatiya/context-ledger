@@ -94,7 +94,13 @@ jobs:
           # suite to 1849, and 429 tests of slack is the same drift again. The
           # remaining 14 is headroom for the matrix, where a platform-specific
           # module can legitimately contribute a few tests fewer.
-          SUITE_FLOOR = 1835
+          #
+          # Raised from 1835 to 2145 for the v1.0.0..HEAD adversarial audit
+          # (1.1.0): the suite it guards reached 2160, unnoticed while this
+          # floor sat 325 tests below it — this pair exists to catch exactly
+          # that gap, and it had grown four times wider than the "14 tests of
+          # headroom" this comment claimed. Same 15-test margin as before.
+          SUITE_FLOOR = 2145
 
           command = [sys.executable, "-m"] + "unittest discover -s tests".split()
           proc = subprocess.run(command, capture_output=True, text=True,

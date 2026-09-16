@@ -46,7 +46,12 @@ WORKFLOW = ROOT / ".github/workflows/ci.yml"
 # The preview page took the suite to 1849, which left 1420 with 429 tests of
 # slack -- the same drift, one wave later. 1835 keeps 14 tests of headroom for
 # the matrix and nothing more.
-REQUIRED_FLOOR = 1835
+#
+# The v1.0.0..HEAD adversarial audit (1.1.0) took the suite to 2160, which
+# left 1835 with 325 tests of slack -- the same drift the previous two raises
+# each closed, found this time by the audit rather than by this pair. 2145
+# keeps the same 15-test margin as before.
+REQUIRED_FLOOR = 2145
 
 
 # --------------------------------------------------------------------------
