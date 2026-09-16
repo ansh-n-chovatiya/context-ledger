@@ -211,7 +211,12 @@ class TestTheGateHoldsOnOpenFindings(ReviewFixture):
         ledger = findings_mod.load(self.layout, self.slug, unit.name)
         finding = ledger.add("important", "swallowed error", where="src/a.py:9")
         self.assertEqual(self.run_gate(unit)[1], verify.FAIL)
-        ok, problem = ledger.set_status(finding.id, "addressed")
+        # `addressed` needs evidence, exactly as `disputed` does: closing a
+        # finding by naming the status is the one close the state machine used
+        # to accept on trust.
+        ok, problem = ledger.set_status(
+            finding.id, "addressed", evidence="src/a.py:9 now re-raises",
+        )
         self.assertTrue(ok, problem)
         self.assertEqual(self.run_gate(unit)[1], verify.PASS)
 

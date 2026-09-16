@@ -425,7 +425,7 @@ def commands():
             PLAN,
             flag("--status", choices=list(plan_mod.STATUSES), default="running"),
             flag("--force", action="store_true",
-                 help="mark done even though the unit's gate did not pass"),
+                 help="override a failed done-gate, or an unmet depends_on"),
         ),
         command("handoff", "write a resume packet for a session or person", cmd_handoff,
                 NAME),

@@ -939,11 +939,21 @@ def check(layout, slug):
     return grouped, problems
 
 
-def apply_waves(grouped):
-    """Write the computed wave back into each unit so it is visible on disk."""
+def apply_waves(grouped, is_sealed=None):
+    """Write the computed wave back into each unit so it is visible on disk.
+
+    `is_sealed(unit)`, when given, is consulted before a rewrite: a unit
+    already dispatched is left alone even when the freshly computed level
+    disagrees with what is on disk. `wave` is a sealed contract field, so
+    rewriting it here for a unit whose seal predates the edit that shifted an
+    unrelated ancestor's depends_on would manufacture exactly the "contract
+    changed after dispatch" refusal the seal exists to report honestly — for
+    a change the unit's own work never caused. The plan graph itself (and any
+    not-yet-dispatched unit) is still recomputed and written normally.
+    """
     for level, units in grouped.items():
         for unit in units:
-            if unit.wave != level:
+            if unit.wave != level and not (is_sealed and is_sealed(unit)):
                 unit.set(wave=level)
 
 

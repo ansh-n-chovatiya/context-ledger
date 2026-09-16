@@ -307,6 +307,23 @@ class Ledger:
                 "user's judgement on their behalf, so say what was decided and why, "
                 "and it stays in the file for them to overturn."
             )
+        if wanted == "addressed" and not note:
+            # The same bar `disputed` and `parked` already clear, and for the
+            # same reason. `addressed` used to be the one status that accepted
+            # itself: a caller could close a critical finding by naming it, with
+            # nothing written about what changed. That is the performative
+            # agreement this module's docstring rules out, wearing the one label
+            # the state machine did not check — and it is the *most* attractive
+            # label, because unlike `acknowledged` it is real and it closes the
+            # gate. So a fix says what fixed it: the commit, the diff, the
+            # command that now passes.
+            return False, (
+                f"addressing finding {finding.id} needs evidence — say what "
+                "changed and how you know it worked (the commit, the file:line, "
+                "or the command that now passes). Naming the status is not "
+                "fixing the finding, and this is the one place that difference "
+                "can still be told."
+            )
 
         finding.status = wanted
         if decision:
@@ -474,6 +491,36 @@ class Ledger:
         if not self.findings and not self.escalations:
             return "\n".join(lines) + "\n"
         return "\n".join(lines).rstrip() + "\n"
+
+
+def unresolved(ledger):
+    """The findings that hold the done-gate shut, for a gate to refuse on.
+
+    `Ledger.blocking()` answers the narrower question the opt-in `kind: review`
+    check asks — `critical`/`important` and still `open`. This is the question
+    the done-gate asks, and it is one case wider: a blocking finding whose
+    status says it was resolved but carries none of the justification
+    `_set_status` requires for that exact status was not closed through the
+    CLI — `_set_status` refuses all three of `addressed` with no evidence,
+    `disputed` with no evidence and `parked` with no ruling — so it was closed
+    by an edit to the file instead. The gate does not take that edit's word
+    for it, for any of the three; checking only `addressed` would leave
+    `disputed`/`parked` as the loophole `addressed` used to be.
+
+    A module-level function rather than a `Ledger` method on purpose: it is a
+    policy about who may pass a gate, and `Ledger` is a store.
+    """
+    out = []
+    for finding in ledger.findings:
+        if finding.severity not in BLOCKING:
+            continue
+        if finding.status == "open":
+            out.append(finding)
+        elif finding.status in ("addressed", "disputed") and not finding.evidence:
+            out.append(finding)
+        elif finding.status == "parked" and not finding.ruling:
+            out.append(finding)
+    return out
 
 
 @contextlib.contextmanager

@@ -41,7 +41,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ctx import (  # noqa: E402
-    cli, frontmatter, lock, plan as plan_mod, state, worktree as wt,
+    cli, contract as contract_mod, frontmatter, lock, plan as plan_mod, state,
+    worktree as wt,
 )
 from support import OK, Fixture  # noqa: E402
 from test_ledger_locks import LockTrace  # noqa: E402
@@ -330,19 +331,38 @@ class TestTheLockSpansTheWriteAndNothingElse(GateWindowFixture):
         self.assertLess(elapsed, lock.LOCK_TIMEOUT,
                         "a whole timeout elapsed — something waited on itself")
 
-    def test_the_plan_lock_is_taken_exactly_once(self):
-        """One acquisition, around one read-modify-write. Two would mean the
-        re-read and the write had drifted apart again."""
+    def test_the_plan_lock_is_taken_exactly_once_for_the_status_write(self):
+        """One acquisition, around one read-modify-write. Two around *this* one
+        would mean the re-read and the write had drifted apart again.
+
+        The done path now performs a second, separate read-modify-write on the
+        same plan: `contract.seal_findings` reads the seal, merges the findings
+        ledger into it and writes it back, and it holds `plan-<slug>` across
+        that pair for the same reason this write does — two processes sealing
+        concurrently used to render each other's findings out of the seal. It
+        is its own span, sequential rather than nested (`max_depth_for` above
+        pins that), so the acquisitions taken inside it are discounted here
+        rather than counted against the status write.
+        """
         self.make_unit([{"kind": "cmd", "run": OK}])
         trace = LockTrace()
-        with trace.patched():
+        real_seal = contract_mod.seal_findings
+        during_seal = []
+
+        def traced_seal(*args, **kwargs):
+            before = len(trace.names)
+            try:
+                return real_seal(*args, **kwargs)
+            finally:
+                during_seal.append(len(trace.names) - before)
+
+        with unittest.mock.patch.object(contract_mod, "seal_findings",
+                                        traced_seal), trace.patched():
             self.assertEqual(
                 self.cli("unit", self.UNIT, "--plan", self.SLUG,
                          "--status", "done")[0], 0)
-        self.assertEqual(
-            [n for n in trace.names if n == f"plan-{self.SLUG}"],
-            [f"plan-{self.SLUG}"],
-        )
+        taken = len([n for n in trace.names if n == f"plan-{self.SLUG}"])
+        self.assertEqual(taken - sum(during_seal), 1)
 
     def test_the_gate_itself_runs_outside_the_lock(self):
         """Asserted by the checks themselves, from inside `verify.run`.

@@ -1074,6 +1074,30 @@ def _doctor_policy(layout):
     return problems, lines, rows
 
 
+def verify_entry_problem(entry):
+    """One sentence naming what is wrong with a `verify:` entry, or None.
+
+    `ctx doctor` and `ctx ci` both judge the `verify:` block, and they used to
+    judge it in two places with two different answers. Doctor counted a
+    non-mapping entry as a problem; ci filtered non-mappings out of the list
+    *before* looking at it, and then — given nothing else — printed "none
+    configured". So `verify:` with a bare `- "pytest -q"` in it made `ctx
+    doctor` exit 1 and `ctx ci` exit 0 with "all checks passed": the headless
+    command, the one nobody is watching, was the one that called an unusable
+    gate fine. Worse, ci never asked `plan.kind_problem` at all, so a typo'd
+    `kind:` was invisible to it in both directions.
+
+    One function, two callers, so the two cannot re-diverge. The wording is
+    doctor's, unchanged — it was already accurate, and ci had none of its own.
+    """
+    if not isinstance(entry, dict):
+        return f"{entry!r} is not a mapping"
+    # An unregistered kind is dropped by `verify.ordered` at gate time, so a
+    # check nobody registered reads as a check that passed. Both commands are
+    # places that are supposed to notice.
+    return plan_mod.kind_problem(entry.get("kind"))
+
+
 def cmd_doctor(args):
     layout, config = _loaded(args)
     problems = 0
@@ -1130,22 +1154,19 @@ def cmd_doctor(args):
     if not entries:
         say("  none configured (fine at L0; required for L1/L2 gates)")
     for entry in entries:
-        if not isinstance(entry, dict):
-            say(f"  BAD  {entry!r} is not a mapping")
-            check("bad", f"{entry!r} is not a mapping")
+        # Both halves of this — "not a mapping" and "not a registered kind" —
+        # are `verify_entry_problem`'s, shared with `ctx ci` so that the two
+        # commands cannot answer the same question differently again.
+        trouble = verify_entry_problem(entry)
+        if trouble:
+            say(f"  BAD  {trouble}")
+            if isinstance(entry, dict):
+                check("bad", trouble, kind=entry.get("kind"))
+            else:
+                check("bad", trouble)
             problems += 1
             continue
         kind = entry.get("kind")
-        # An unregistered kind used to land in the branch below and print `ok`,
-        # so a typo'd `kind: rubrik` read as a check that had been looked at
-        # and found fine — while `verify.ordered` silently dropped it at gate
-        # time. Doctor is the place that is supposed to notice.
-        trouble = plan_mod.kind_problem(kind)
-        if trouble:
-            say(f"  BAD  {trouble}")
-            check("bad", trouble, kind=kind)
-            problems += 1
-            continue
         if kind != "cmd":
             say(f"  ok   {kind} (no command to probe)")
             check("ok", "no command to probe", kind=kind)
@@ -1787,7 +1808,10 @@ def cmd_plan_check(args):
         )
         return 1
 
-    plan_mod.apply_waves(grouped)
+    plan_mod.apply_waves(
+        grouped,
+        is_sealed=lambda u: contract_mod.load_seal(layout, slug, u.name) is not None,
+    )
     path, revision = plan_mod.write_graph(layout, slug, grouped)
     plan_mod.render_readme_units(layout, slug, grouped)
     # After the graph and the README, and on every run: see `_plan_check_preview`
@@ -2803,6 +2827,20 @@ def cmd_unit(args):
         _list_units(layout, slug)
         return 1
 
+    if args.status == "running" and not args.force:
+        # `ctx start --wave N` has had this guard since the wave-prerequisites
+        # fix; this is the other door to the same room. A unit set running by
+        # hand bypasses `dispatch.prepare` entirely, so without this check
+        # here too, "a unit cannot start before its depends_on is done" was
+        # true for one command and false for a second one that reaches the
+        # exact same state transition.
+        unmet = dispatch.unmet_prerequisites(layout, slug, unit)
+        if unmet:
+            _echo(f"refusing to mark {unit.name} running — depends_on "
+                  "prerequisite(s) not done yet: " + ", ".join(unmet))
+            _echo("pass --force if you are deliberately starting it out of order")
+            return 1
+
     note = args.status
     if args.status == "done":
         if not args.force:
@@ -3257,6 +3295,23 @@ def cmd_telemetry(args):
     return 0
 
 
+def _gateable_units(grouped):
+    """The units of a plan a headless run holds to the done-gate.
+
+    Dispatched and not finished — `running`, `blocked`, `verify_failed`. The
+    two exclusions are deliberate:
+
+      * `pending` units have not been sent out. `gate_check` would refuse them
+        for having no dispatch seal the moment a sibling has one, which is the
+        normal state of a plan mid-wave: wave 2 is always pending while wave 1
+        runs, and a pipeline that went red for that would be turned off.
+      * `done` units were gated when they were marked done, and their `diff`
+        checks are answered against a dispatch point that is now behind them.
+    """
+    return [unit for level in sorted(grouped) for unit in grouped[level]
+            if unit.status not in ("pending", "done")]
+
+
 def cmd_ci(args):
     """Everything checkable, headless, in one exit code. Written for pipelines."""
     layout, config = _loaded(args)
@@ -3267,13 +3322,20 @@ def cmd_ci(args):
     out, rows = [], []
     say = out.append
 
-    def report(name, ok, detail=""):
+    def report(name, ok, detail="", silent_ok=False):
         # Detail explains a failure. Printed next to `ok` it reads as advice to
         # act on something that is fine.
+        #
+        # `silent_ok` records the row and stays quiet in the prose when the
+        # check passed. It exists for the per-unit done-gate below: a plan in
+        # flight would otherwise add a line per running unit to output that is
+        # read line by line, to say only that nothing is wrong. The row is
+        # written either way, so `--json` still shows that the gate ran.
         rows.append({"section": section, "name": name, "ok": bool(ok),
                      "detail": detail if not ok else ""})
         if ok:
-            say(f"  ok   {name}")
+            if not silent_ok:
+                say(f"  ok   {name}")
         else:
             say(f"  FAIL {name}" + (f" — {detail}" if detail else ""))
             failures.append(name)
@@ -3298,9 +3360,17 @@ def cmd_ci(args):
 
     section = "verify"
     say("## verify commands")
-    entries = [e for e in (config.get("verify") or []) if isinstance(e, dict)]
+    # Every entry, not only the mappings. Filtering the malformed ones away
+    # first is what let `verify:\n  - "pytest -q"` reach "none configured" here
+    # while `ctx doctor` called the same block a problem — see
+    # `verify_entry_problem`, which is now the single answer both commands give.
+    entries = config.get("verify") or []
+    troubles = [t for t in (verify_entry_problem(e) for e in entries) if t]
+    if entries:
+        report("every verify entry is a usable check", not troubles,
+               "; ".join(troubles))
     for entry in entries:
-        if entry.get("kind") != "cmd":
+        if verify_entry_problem(entry) or entry.get("kind") != "cmd":
             continue
         command = str(entry.get("run") or "")
         available, why = detect.availability(command)
@@ -3360,11 +3430,33 @@ def cmd_ci(args):
     for slug in plans if isinstance(plans, list) else [plans]:
         section = f"plan {slug}"
         say(f"## plan {slug}")
-        _grouped, problems = plan_mod.check(layout, slug)
+        grouped, problems = plan_mod.check(layout, slug)
         report("graph is valid and collision-free", not problems,
                f"{len(problems)} problem(s)")
         for problem in problems:
             say(f"       {problem}")
+        # The gate itself, which `ctx ci` never ran. `verify_plan`'s docstring
+        # says "this is what CI runs", and its only callers were inside
+        # `ctx verify --plan`: nothing here called it, or `gate_check`, so a
+        # plan holding a unit whose contract had been rewritten after dispatch,
+        # or whose reviewer raised a blocking finding, or whose `kind: bug`
+        # phases were never recorded, went green in the pipeline while the
+        # local `ctx unit --status done` refused it outright. Two commands
+        # disagreeing about whether work is acceptable is the disagreement that
+        # matters, and this is the side that no human reads the output of.
+        #
+        # Skipped when the graph is invalid: `plan.check` has just said the
+        # plan does not describe a runnable wave, and gating units inside a
+        # broken graph reports the same problem a second time in a worse voice.
+        if not problems:
+            for unit in _gateable_units(grouped):
+                ok, reason, lines = verify.gate_check(
+                    layout, config, slug, unit, record=False)
+                report(f"{unit.name} would pass the done-gate", ok, str(reason),
+                       silent_ok=True)
+                if not ok:
+                    for line in lines:
+                        say(f"       {line}")
 
     say("")
     if failures:

@@ -43,6 +43,7 @@ seal or strengthen an entry, never drop one. That asymmetry is what makes
 file a detectable deletion.
 """
 
+import contextlib
 import hashlib
 import json
 import os
@@ -50,7 +51,8 @@ import re
 import subprocess
 import time
 
-from . import atomic, findings as findings_mod, frontmatter, review, snapshot
+from . import (atomic, findings as findings_mod, frontmatter, lock, review,
+               snapshot)
 
 SCHEMA = 1
 STORE_SUBDIR = "contracts"
@@ -58,8 +60,17 @@ STORE_SUBDIR = "contracts"
 # The promise. `status` is absent on purpose (see the module docstring); so are
 # `budget_tokens`, `model` and `tier`, which say what the work costs and who
 # runs it, not what it has to achieve.
+#
+# `wave` is in the promise, and it is not a cost or a tier: it says *who else is
+# writing to this tree at the same time*, which is the one input
+# `review.wave_scope` trusts verbatim when it decides which changed paths this
+# unit has to answer for. A unit dispatched into wave 1 that rewrites itself
+# into wave 2 is claiming a different set of concurrent siblings than the one it
+# was dispatched with — and since a sibling's `owns` excuses a changed path, that
+# edit turns a scope violation into somebody else's declared work, prints "Scope
+# violations: None", and takes the diff out of the review package with it.
 FIELDS = ("verify", "owns", "reads", "forbid", "depends_on", "verified",
-          "acceptance criteria")
+          "wave", "acceptance criteria")
 
 # What each field is called in a refusal. The gate prints these to a human who
 # has to go and put the file back.
@@ -70,6 +81,7 @@ LABELS = {
     "forbid": "forbid",
     "depends_on": "depends_on",
     "verified": "verified (recorded sign-offs)",
+    "wave": "wave (which units run alongside this one)",
     "acceptance criteria": "acceptance criteria",
 }
 
@@ -112,6 +124,22 @@ def _entries(meta, key):
     return sorted(_stable(entry) for entry in value)
 
 
+def _wave(meta):
+    """`Unit.wave`'s rules, applied to a bare mapping.
+
+    Normalised through `int` for the same reason the lists are sorted: `wave: 1`
+    and `wave: "1"` schedule identically, and `review._concurrent_siblings`
+    compares `u.wave == unit.wave` on exactly this value — so the digest has to
+    move when, and only when, that comparison would answer differently. An
+    absent or unparseable `wave` is `None`, which is what the scheduler reads it
+    as too.
+    """
+    try:
+        return int(meta.get("wave"))
+    except (TypeError, ValueError):
+        return None
+
+
 def _criteria(doc):
     """The acceptance-criteria section, whitespace-normalised.
 
@@ -133,6 +161,7 @@ def field_digests(doc):
         "forbid": _sha(_stable(_list(meta, "forbid"))),
         "depends_on": _sha(_stable(_list(meta, "depends_on"))),
         "verified": _sha(_stable(_list(meta, "verified"))),
+        "wave": _sha(_stable(_wave(meta))),
         "acceptance criteria": _sha(_criteria(doc)),
     }
 
@@ -384,6 +413,24 @@ def _stronger(old, new):
     return new
 
 
+@contextlib.contextmanager
+def _plan_lock(layout, slug):
+    """`lock.held(layout, f"plan-{slug}")`, or a no-op without a layout.
+
+    Deliberately the same lock, under the same name, that `findings._plan_lock`
+    takes: the seal and the findings file are two halves of one record, and two
+    locks would serialise each half against its own kind while leaving the pair
+    to interleave. Nothing here nests inside a findings mutation — every caller
+    of `seal_findings` has finished its `ledger.add`/`set_status` before it
+    calls, so the lock is taken once and `lock.held` never has to be re-entrant.
+    """
+    if layout is None or getattr(layout, "runtime", None) is None:
+        yield False
+        return
+    with lock.held(layout, f"plan-{slug}") as taken:
+        yield taken
+
+
 def seal_findings(layout, slug, unit_name, ledger, authoritative=False):
     """Record the findings against a unit as ctx currently sees them.
 
@@ -392,6 +439,35 @@ def seal_findings(layout, slug, unit_name, ledger, authoritative=False):
     observes: it may add an entry or strengthen one, never drop or soften one,
     so a hand-edit of the findings file cannot launder itself by running a
     read-only ctx command afterwards.
+
+    **Locked across the read and the write**, for the reason `findings.Ledger`
+    is: this is a read-modify-write of one file, and all six call sites were
+    outside any lock. Two processes recording a finding each — a reviewer and
+    the done-gate, the pair the findings ledger itself already serialises —
+    would both read the same seal, each add their own id to their own copy, and
+    the second write would render the first one's finding out of the seal. After
+    that `findings_drift` compares the ledger against a seal that never knew the
+    lost finding existed, so deleting it from the findings file by hand is
+    invisible: the exact hole the seal exists to close, opened by a race.
+
+    The re-read inside the lock is the point, exactly as in
+    `findings.Ledger._exclusive`. Waiting on the lock means somebody else has
+    just written this seal, so a copy read before the wait is stale by
+    definition.
+    """
+    with _plan_lock(layout, slug):
+        return _seal_findings_locked(layout, slug, unit_name, ledger,
+                                     authoritative)
+
+
+def _seal_findings_locked(layout, slug, unit_name, ledger, authoritative=False):
+    """`seal_findings` with the plan lock already held — the read, the merge and
+    the write, in one acquisition.
+
+    Split out rather than inlined so a test can call the unlocked half directly
+    and force the interleaving that used to lose a finding
+    (`tests/test_contract_seal_findings_lock.py`), the same way
+    `tests/test_ledger_locks.py` calls `telemetry._rotate`.
     """
     data = load_seal(layout, slug, unit_name)
     if data is None:

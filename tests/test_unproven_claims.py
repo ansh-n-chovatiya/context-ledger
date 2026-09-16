@@ -525,7 +525,7 @@ ledger.add("important", "no test covers the expiry path",
 
 # The implementer closes one of them, and the loop moves to round 2 with the
 # other still open. This is the state a session is in when it is interrupted.
-ok, problem = ledger.set_status(2, "addressed")
+ok, problem = ledger.set_status(2, "addressed", evidence="tests/test_auth.py:80 covers expiry")
 assert ok, problem
 ledger.bump_round()
 

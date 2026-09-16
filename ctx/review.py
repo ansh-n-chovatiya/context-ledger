@@ -19,11 +19,19 @@ context, which is what keeps a twenty-unit plan affordable.
 """
 
 import difflib
+import hashlib
+import json
+import re
 import subprocess
 
-from . import plan, redact, snapshot
+from . import atomic, plan, redact, snapshot
 
 REVIEW_SUBDIR = "reviews"
+
+# Where a unit's own uncommitted work is fingerprinted while it is still
+# running, so that a `done` sibling's excuse can be checked against what that
+# sibling actually wrote rather than against "something under there is dirty".
+OWNS_SUBDIR = "owns"
 
 # Enough context to judge a hunk without re-reading the file. Ten lines is what
 # a reviewer needs to see the function a change sits in; three is not.
@@ -66,8 +74,16 @@ def capture_before(layout, config, unit, slug, root, force=False):
     )
 
 
-def wave_scope(layout, slug, unit):
+def wave_scope(layout, slug, unit, record=True):
     """(patterns, siblings) — the paths this unit's review may treat as declared.
+
+    `record=False` is for a caller asking this question about a unit that is
+    not the one being decided right now — `ctx verify --plan` and `ctx ci`
+    both ask it for every in-flight unit of a plan just to report a verdict,
+    not to gate one specific unit toward `done`. Recording "own work" from
+    those read-only passes would fingerprint a unit's mid-flight state as its
+    frozen baseline before its own gate ever ran, which is the wrong moment —
+    see `_concurrent_siblings`.
 
     `snapshot.capture` fingerprints the whole project, on purpose: that is what
     makes a write to a path nobody declared visible at all. But `subagent`-tier
@@ -102,16 +118,36 @@ def wave_scope(layout, slug, unit):
     unit's gate runs, and excluding them outright reproduces the exact failure
     this function exists to prevent — a sibling's legitimate, finished write
     reported as this unit's scope violation — just moved from "running" to
-    "done but not yet committed". So a `done` sibling is excused for exactly as
-    long as its own `owns` paths are still uncommitted (`_uncommitted_paths`
-    below), and reverts to fully excluded the moment those paths are committed
-    — which is exactly where the exclusion was already correct. This is
-    narrower than treating a `done` sibling as still running: a *fresh*
-    uncommitted write to its `owns` after it was reviewed — nobody else's, its
-    own — would also show up as uncommitted and would also, correctly, still
-    not be this unit's problem to report; it is the done unit's contract that
-    answers for it, and the done-gate already refuses a contract that changes
-    after dispatch.
+    "done but not yet committed". So a `done` sibling is excused while its own
+    `owns` paths are still uncommitted (`_uncommitted_paths` below), and reverts
+    to fully excluded once those paths are committed — which is exactly where
+    the exclusion was already correct.
+
+    "Uncommitted under its `owns`" is not by itself enough, and used to be: the
+    excuse said *this dirt is the done unit's own leftover work*, but tested
+    only that dirt existed. A still-running sibling that overwrites a path an
+    already-`done` unit owns produces exactly the same `git status` line, so the
+    violator's write was reclassified as the done unit's leftovers and
+    disappeared from the package — "Scope violations: None", diff withheld. The
+    old reasoning was that the done-gate's contract-changed check covers a stray
+    edit under a done unit's paths; it does not. `contract.compare` hashes the
+    unit's *frontmatter* — what it declared it owns — never the content of the
+    files it owns, so nothing in it can see a byte of `src/01-a.py` change.
+
+    What closes it is `_own_work` below: while a unit is still running — which
+    includes the moment its own gate calls this function — ctx records the
+    digest of every uncommitted path under its `owns`. Once it is `done` that
+    record is frozen, and its `owns` excuse anything only while the dirt under
+    them still digests to what it wrote. The moment a path diverges, it is
+    somebody else's write and the whole sibling stops excusing, so the change is
+    reported against whichever unit is actually under review. A unit whose own
+    fresh write lands after its gate diverges too, and is reported the same way:
+    the two are indistinguishable on disk, and the choice between reporting a
+    finished unit's afterthought and silently swallowing a live sibling's stray
+    write is not a close one. A `done` sibling with no record at all — marked
+    done by `--force`, or by a ctx that predates the record — keeps the old,
+    laxer excuse, because refusing there would deadlock exactly the waves this
+    function exists to unblock.
 
     When git itself cannot answer whether a path is committed — no repository,
     or the command failed — nothing is excused on its account. Failing towards
@@ -123,18 +159,19 @@ def wave_scope(layout, slug, unit):
     the pre-fix behaviour: noisy, but it fails towards reporting too much
     rather than towards silently excusing a stray write.
     """
-    siblings = _concurrent_siblings(layout, slug, unit)
+    siblings = _concurrent_siblings(layout, slug, unit, record=record)
     patterns = list(unit.owns)
     for _name, owns in siblings:
         patterns.extend(owns)
     return patterns, siblings
 
 
-def _concurrent_siblings(layout, slug, unit):
+def _concurrent_siblings(layout, slug, unit, record=True):
     """[(name, owns)] for the wave's other units that are still writing to this
     tree, sorted by name — "still writing" meaning not `done`, or `done` with
-    its `owns` still uncommitted. See `wave_scope`'s docstring for why the
-    second half exists.
+    its `owns` still uncommitted *and still holding what that unit itself
+    wrote*. See `wave_scope`'s docstring for why the second half exists and why
+    the content check is part of it.
 
     The wave is read from the unit's own `wave:` field where it has one, which
     is what `ctx plan-check` writes back to disk and what the board and the
@@ -157,9 +194,24 @@ def _concurrent_siblings(layout, slug, unit):
     if not members:
         return []
 
-    # Computed at most once, and only if a `done` sibling is in the wave at
-    # all — most gates have none, and this is a subprocess call.
-    dirty = None
+    # One subprocess call at most, and only when something actually needs the
+    # answer: a `done` sibling to judge, or this unit's own work to record.
+    state = {"dirty": None}
+
+    def dirty_paths():
+        if state["dirty"] is None:
+            state["dirty"] = _uncommitted_paths(layout) or []
+        return state["dirty"]
+
+    # Recorded here rather than at the gate because here is the last moment the
+    # unit is still running: `verify.gate_before_done` calls `wave_scope` before
+    # it decides, so the digest taken now is the one the work was gated on. A
+    # `done` unit records nothing — freezing it is what makes it evidence.
+    # `record=False` (a read-only `ctx verify --plan`/`ctx ci` pass over a unit
+    # nobody is deciding right now) skips this — see `wave_scope`'s docstring.
+    if record and unit.owns and unit.status != "done":
+        _record_own_work(layout, slug, unit, dirty_paths())
+
     out = []
     for u in sorted(members, key=lambda u: u.name):
         if u.name == unit.name or not u.owns:
@@ -167,11 +219,92 @@ def _concurrent_siblings(layout, slug, unit):
         if u.status != "done":
             out.append((u.name, list(u.owns)))
             continue
-        if dirty is None:
-            dirty = _uncommitted_paths(layout) or []
-        if any(snapshot.covers(path, u.owns) for path in dirty):
+        under = [path for path in dirty_paths() if snapshot.covers(path, u.owns)]
+        if under and _still_its_own_work(layout, slug, u, under):
             out.append((u.name, list(u.owns)))
     return out
+
+
+# --------------------------------------------------------------------------- #
+# what a done unit left behind
+# --------------------------------------------------------------------------- #
+
+def owns_record_path(layout, slug, unit_name):
+    """Where a unit's own uncommitted work is fingerprinted."""
+    safe = re.sub(r"[^A-Za-z0-9._@-]", "-", f"{slug}@{unit_name}") or "unnamed"
+    return review_dir(layout) / OWNS_SUBDIR / f"{safe}.json"
+
+
+def _digest(root, relpath):
+    """The digest of one path's bytes now, or None when it is not a readable
+    file — a deletion and an unreadable file are both "not what was recorded"."""
+    try:
+        return hashlib.sha256((root / relpath).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _record_own_work(layout, slug, unit, dirty):
+    """Fingerprint the uncommitted paths under this unit's own `owns`.
+
+    Only the uncommitted ones: a committed path is already excused by nothing —
+    the `done` exclusion reverts to absolute once the work lands — so its digest
+    would never be consulted. Best-effort like every other thing this package
+    writes; a record that cannot be written leaves the old, laxer excuse in
+    place rather than failing a gate on a bookkeeping error.
+    """
+    root = layout.root.parent
+    paths = {}
+    for relpath in dirty:
+        if not snapshot.covers(relpath, unit.owns):
+            continue
+        sha = _digest(root, relpath)
+        if sha is not None:
+            paths[relpath] = sha
+    path = owns_record_path(layout, slug, unit.name)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic.write_text(path, json.dumps(
+            {"plan": slug, "unit": unit.name, "paths": paths},
+            indent=2, sort_keys=True,
+        ))
+    except OSError:
+        return None
+    return paths
+
+
+def _own_work(layout, slug, unit_name):
+    """`{relpath: sha}` as this unit last left it, or None when nothing was
+    recorded — which is not the same as "it left nothing", and callers keep the
+    old behaviour rather than inventing an answer."""
+    path = owns_record_path(layout, slug, unit_name)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+    paths = data.get("paths") if isinstance(data, dict) else None
+    return paths if isinstance(paths, dict) else None
+
+
+def _still_its_own_work(layout, slug, unit, dirty_under_owns):
+    """Is the dirt under this `done` unit's `owns` still the dirt it left?
+
+    True with no record on file: a unit forced done, or done under a ctx that
+    did not keep one, is excused exactly as it was before — see `wave_scope`.
+    A path that is dirty now but was not dirty when the unit was gated is
+    somebody else's by construction, so an absent entry is a divergence, not a
+    missing one.
+    """
+    recorded = _own_work(layout, slug, unit.name)
+    if recorded is None:
+        return True
+    root = layout.root.parent
+    for relpath in dirty_under_owns:
+        if recorded.get(relpath) != _digest(root, relpath):
+            return False
+    return True
 
 
 def _uncommitted_paths(layout):

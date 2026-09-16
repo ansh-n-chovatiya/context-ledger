@@ -480,7 +480,7 @@ class TestTheGateLivesBesideRun(Fixture):
         self.assertEqual(str(inspect.signature(verify.gate_before_done)),
                          "(layout, config, slug, unit)")
         self.assertEqual(str(inspect.signature(verify.gate_check)),
-                         "(layout, config, slug, unit)")
+                         "(layout, config, slug, unit, record=True)")
 
     def test_cli_no_longer_carries_a_copy(self):
         for name in ("_verify_plan", "_gate_before_done", "_gate_check",

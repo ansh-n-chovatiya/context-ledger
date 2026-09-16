@@ -942,7 +942,7 @@ SURFACE = {
              None),
             ('--force', 'force', 0, True, False, None, None, False, None,
              '_StoreTrueAction',
-             "mark done even though the unit's gate did not pass"),
+             "override a failed done-gate, or an unmet depends_on"),
             ('--strict', 'strict', 0, True, '<SUPPRESS>', None, None, False,
              None, '_StoreTrueAction',
              'escalate advisory conditions to exit 1'),

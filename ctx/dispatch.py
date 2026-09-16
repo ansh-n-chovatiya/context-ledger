@@ -122,12 +122,48 @@ def model_for(config, unit=None, role="runner", *, stats=None, round=1,
     return picked
 
 
+def unmet_prerequisites(layout, slug, unit, grouped=None):
+    """Sorted `depends_on` names of `unit` that exist in this plan and are not
+    `done` — `[]` when the graph itself has problems, since a caller that
+    cannot compute the graph has no wave to reason about either and
+    `plan.check`'s own problems already block whatever called this.
+
+    The one place both dispatch paths ask "is this unit actually unblocked
+    yet" before doing anything to it — factored out so a caller outside
+    `prepare` (a manual `ctx unit --status running`, say) can ask the same
+    question rather than skip it. `grouped`, when the caller already has it
+    (`prepare` does, for the whole wave), skips recomputing the graph once
+    per unit.
+    """
+    if grouped is None:
+        grouped, problems = plan_mod.check(layout, slug)
+        if problems:
+            return []
+    by_name = {u.name: u for members in grouped.values() for u in members}
+    return sorted({
+        dependency
+        for dependency in unit.depends_on
+        if by_name.get(dependency) is not None
+        and by_name[dependency].status != "done"
+    })
+
+
 def prepare(layout, config, slug, level=None):
     """(level, units, problems, budget). Problems mean nothing may be dispatched."""
     grouped, problems = plan_mod.check(layout, slug)
     if problems:
         return None, [], problems, 0
 
+    # `level is None` is automatic selection: `plan_mod.next_wave` only ever
+    # returns the *lowest* wave still carrying an unfinished unit, so by the
+    # time it hands back wave N every earlier wave — and therefore every
+    # `depends_on` a wave-N unit could name, since `plan.waves` only ever
+    # places a dependency in a strictly earlier wave — is already done. An
+    # explicit `--wave N` skips straight past that guard: nothing before this
+    # point has asked whether the wave being named is actually unblocked, so
+    # the check below is the one place that still can, before anything is
+    # sealed, snapshotted or dispatched.
+    explicit = level is not None
     if level is None:
         level = plan_mod.next_wave(layout, slug)
     if level is None:
@@ -136,6 +172,19 @@ def prepare(layout, config, slug, level=None):
         return level, [], [f"no wave {level} in this plan"], 0
 
     units = [u for u in grouped[level] if u.status != "done"]
+
+    if explicit:
+        unmet = sorted({
+            dependency
+            for unit in units
+            for dependency in unmet_prerequisites(layout, slug, unit, grouped)
+        })
+        if unmet:
+            return level, [], [
+                f"wave {level} is blocked — depends_on prerequisite(s) not "
+                "done yet: " + ", ".join(unmet)
+            ], 0
+
     budget = sum(unit.budget for unit in units)
     cap = int((config.get("plan") or {}).get("wave_budget_tokens", 0) or 0)
     problems = []

@@ -28,6 +28,25 @@ wave declared is still a violation even with a dirty `done` sibling sitting in
 the same tree, a `done` sibling's *committed* work still excuses nothing (the
 rule this file's fix must not disturb), and a unit in a different wave is never
 an excuse regardless of its status or its git state.
+
+**And a second gap, underneath that one.** "Uncommitted under a `done` unit's
+`owns`" was taken to mean "the done unit's own leftover work", but it only ever
+tested that *something* under there was dirty. A still-running sibling that
+writes into a path an already-`done` unit owns produces the same `git status`
+line, so its write was reclassified as the done unit's leftovers: excused,
+"Scope violations: None", and the diff withheld from the package, because a
+sibling's path is deliberately left to that sibling's own review. The docstring
+argued the done-gate's contract check covered it; it does not, and cannot —
+`contract.compare` hashes the unit's frontmatter, never the contents of the
+files it owns.
+
+`TestAnotherUnitsWriteUnderADoneUnitsOwns` is that scene, in the report's own
+sequence: `01-api` finishes, gates and commits, and then `02-store` overwrites
+a file `01-api` owns. It must be reported against `02-store`. What tells the
+two apart is the digest `review._record_own_work` takes of a unit's uncommitted
+`owns` while it is still running — at its own gate, among other moments — and
+freezes when it goes `done`: dirt that still digests to what the unit wrote is
+its own, and dirt that does not is somebody else's.
 """
 
 import subprocess
@@ -209,6 +228,149 @@ class TestTheProtectionIsNotWidenedIntoUselessness(WaveFixture):
         patterns, siblings = review_mod.wave_scope(self.layout, self.slug, subject)
         self.assertEqual(siblings, [])
         self.assertEqual(patterns, ["src/01-api.py"])
+
+    def edit(self, name, **changes):
+        path = plan_mod.units_dir(self.layout, self.slug) / f"{name}.md"
+        doc = frontmatter.read(path)
+        doc.meta.update(changes)
+        doc.write(path)
+
+
+# --------------------------------------------------------------------------- #
+# the second gap — somebody else's write under a done unit's owns
+# --------------------------------------------------------------------------- #
+
+class TestAnotherUnitsWriteUnderADoneUnitsOwns(WaveFixture):
+    """The report's sequence, and the two tighter variants of it.
+
+    The excuse has to distinguish "this done sibling's own work is still sitting
+    here uncommitted" from "something under this sibling's owns is no longer
+    what the sibling wrote". Only the first is the done unit's to answer for.
+    """
+
+    def test_an_overwrite_after_the_done_unit_committed_is_reported(self):
+        """Verbatim from the report: `01-api` finishes, gates, commits; then
+        `02-store` — same wave, still running — overwrites a path `01-api`
+        owns. The overwrite is `02-store`'s, and it must be named."""
+        self.plan()
+        self.dispatch()
+
+        self.write("src/01-api.py", "# 01-api\n")
+        self.assertEqual(self.done("01-api")[0], 0)
+        self.git("add", "-A")
+        self.git("commit", "-qm", "land 01-api's work")
+
+        # `02-store` does its own declared work, and also writes where it may
+        # not. Nothing in the tree says which unit's hand did either.
+        self.write("src/02-store.py", "# 02-store\n")
+        self.write("src/01-api.py", "# 02-store was here\n")
+
+        code, out = self.done("02-store")
+        self.assertEqual(code, 1, out)
+        self.assertIn("src/01-api.py", out)
+        self.assertEqual(self.status_of("02-store"), "running")
+
+    def test_the_same_overwrite_before_the_done_unit_committed_is_reported(self):
+        """The harder half. `01-api`'s own work is *still uncommitted* — the
+        case the done-sibling excuse exists for — and `02-store` overwrites it
+        anyway. "Something under there is dirty" cannot tell this from the
+        legitimate case; the digest of what `01-api` actually wrote can."""
+        self.plan()
+        self.dispatch()
+
+        self.write("src/01-api.py", "# 01-api\n")
+        self.assertEqual(self.done("01-api")[0], 0)
+
+        self.write("src/01-api.py", "# 02-store was here\n")
+
+        store = plan_mod.find_unit(self.layout, self.slug, "02-store")
+        _patterns, siblings = review_mod.wave_scope(self.layout, self.slug, store)
+        self.assertEqual(
+            [name for name, _owns in siblings], ["03-cli"],
+            "a done sibling whose owns no longer hold what it wrote must stop "
+            "excusing anything",
+        )
+
+        self.write("src/02-store.py", "# 02-store\n")
+        code, out = self.done("02-store")
+        self.assertEqual(code, 1, out)
+        self.assertIn("src/01-api.py", out)
+
+    def test_a_new_file_under_a_done_units_owns_is_reported(self):
+        """The done unit never wrote this path at all, so there is no digest of
+        it to match — an absent entry is a divergence, not a missing one."""
+        self.plan(names=("01-api", "02-store"))
+        # `01-api` owns a directory, so a file can appear under it that `01-api`
+        # itself never touched. Declared before dispatch, so the contract it is
+        # sealed with is this one.
+        self.edit("01-api", owns=["src/api/"])
+        self.dispatch()
+        self.write("src/api/core.py", "# 01-api\n")
+        self.assertEqual(self.done("01-api")[0], 0)
+        self.git("add", "-A")
+        self.git("commit", "-qm", "land 01-api's work")
+
+        self.write("src/api/extra.py", "# 02-store was here\n")
+        store = plan_mod.find_unit(self.layout, self.slug, "02-store")
+        _patterns, siblings = review_mod.wave_scope(self.layout, self.slug, store)
+        self.assertEqual(siblings, [])
+
+    def test_the_review_package_shows_the_violation_instead_of_None(self):
+        """Where the defect was actually read: the package printed "Scope
+        violations: None" and left the overwrite out of the diff, because a
+        sibling's path is deliberately not this unit's to show."""
+        self.plan()
+        self.dispatch()
+        self.write("src/01-api.py", "# 01-api\n")
+        self.assertEqual(self.done("01-api")[0], 0)
+        self.git("add", "-A")
+        self.git("commit", "-qm", "land 01-api's work")
+
+        self.write("src/02-store.py", "# 02-store\n")
+        self.write("src/01-api.py", "# 02-store was here\n")
+
+        store = plan_mod.find_unit(self.layout, self.slug, "02-store")
+        path, stats, problem = review_mod.build(
+            self.layout, self.config, store, self.slug, self.root)
+        self.assertEqual(problem, "")
+        self.assertEqual(stats["out_of_scope"], 1)
+        package = path.read_text(encoding="utf-8")
+        self.assertIn("- src/01-api.py", package)
+        self.assertNotIn("None — every changed path", package)
+
+    def test_a_done_sibling_with_no_record_keeps_the_old_excuse(self):
+        """The deliberate fallback, pinned so it stays deliberate. A unit
+        marked done by `--force` never ran the gate that takes the digest, and
+        one done under an older ctx has none on disk. Refusing there would
+        deadlock the waves this whole exclusion exists to unblock, so the
+        pre-digest behaviour stands: dirty under its `owns` is excused."""
+        self.plan()
+        self.dispatch()
+        self.write("src/01-api.py", "# 01-api\n")
+        self.assertEqual(self.done("01-api")[0], 0)
+        review_mod.owns_record_path(self.layout, self.slug, "01-api").unlink()
+
+        self.write("src/01-api.py", "# somebody else was here\n")
+        store = plan_mod.find_unit(self.layout, self.slug, "02-store")
+        _patterns, siblings = review_mod.wave_scope(self.layout, self.slug, store)
+        self.assertEqual([name for name, _owns in siblings], ["01-api", "03-cli"])
+
+    def test_the_done_units_own_untouched_work_is_still_excused(self):
+        """The behaviour that must survive the narrowing, restated here beside
+        the tests that narrow it: nothing else changed, so `01-api`'s own
+        uncommitted work is still `01-api`'s to answer for."""
+        self.plan()
+        self.dispatch()
+        self.write("src/01-api.py", "# 01-api\n")
+        self.assertEqual(self.done("01-api")[0], 0)
+
+        store = plan_mod.find_unit(self.layout, self.slug, "02-store")
+        _patterns, siblings = review_mod.wave_scope(self.layout, self.slug, store)
+        self.assertEqual([name for name, _owns in siblings], ["01-api", "03-cli"])
+
+    def done(self, name, *extra):
+        return self.cli("unit", name, "--status", "done", "--plan", self.slug,
+                        *extra)
 
     def edit(self, name, **changes):
         path = plan_mod.units_dir(self.layout, self.slug) / f"{name}.md"

@@ -65,7 +65,7 @@ import time
 from pathlib import Path
 from types import MappingProxyType, ModuleType
 
-from . import atomic, paths, redact, snapshot, trust
+from . import atomic, paths, phases, redact, snapshot, trust
 
 PASS, FAIL, ERROR, PENDING = "pass", "fail", "error", "pending"
 
@@ -1454,6 +1454,16 @@ def verify_plan(layout, config, slug):
 
     Mechanical checks only: `rubric` and `human` need a model or a person, so an
     unattended run reports them pending rather than pretending to judge them.
+
+    Exit codes are `cmd_verify`'s, applied to the whole plan rather than to one
+    item: **0** pass, **1** a criterion failed, **2** nothing could be run. The
+    third used to be folded into the first — the return was `1 if failed else 0`
+    — so a CI pipeline following `docs/operations.md` and running this over a
+    plan where *every* check ERRORed (a runner that has never seen `ctx trust`,
+    a missing interpreter, a plan with no units at all) got a green build out of
+    a run that verified nothing. `gate_check` already refuses that exact state
+    for a single unit ("ungated is not done"); this is the same refusal for the
+    headless path, which is the one nobody is watching.
     """
     # Imported here, not at the top: `plan` imports this module, and
     # `contract` reaches it through `review` -> `plan`. By the time any of
@@ -1482,7 +1492,7 @@ def verify_plan(layout, config, slug):
             # dispatched, and forgiving of the siblings running beside it. A CI
             # run that judged a wave in flight by each unit's `owns` alone would
             # report N−1 scope violations for work that is entirely in scope.
-            wave, _siblings = review_mod.wave_scope(layout, slug, unit)
+            wave, _siblings = review_mod.wave_scope(layout, slug, unit, record=False)
             results, verdict = run(
                 layout, config, unit.checks, cwd=layout.root.parent,
                 key=f"ci-{unit.name}", owns=unit.owns, recorded=unit.recorded,
@@ -1515,7 +1525,19 @@ def verify_plan(layout, config, slug):
         layout, config, "verify", slug,
         f"plan run: {len(passed)}p/{len(pending)}w/{len(warned)}e/{len(failed)}f",
     )
-    return 1 if failed else 0
+    if failed:
+        return 1
+    if not passed and not pending:
+        # Nothing in this plan actually ran: either every unit ERRORed, or the
+        # plan held no units to run. `pending` counts, because a judged check
+        # reporting "a person has to look at this" is a check that ran and said
+        # something; an ERROR is a check that could not speak at all.
+        echo(
+            "not one check could run in this plan — that is a configuration "
+            "problem, not a green build"
+        )
+        return 2
+    return 0
 
 
 def _missing_commit_advice(results, unit):
@@ -1580,7 +1602,7 @@ def _untracked_within(cwd, owns):
     return found
 
 
-def gate_check(layout, config, slug, unit):
+def gate_check(layout, config, slug, unit, record=True):
     """(ok, reason, lines) — may this unit be marked `done`, and if not, why.
 
     Ordered by what invalidates what, and by cost. A forged contract makes every
@@ -1591,8 +1613,18 @@ def gate_check(layout, config, slug, unit):
     overriding. An escape hatch that records "forced" and nothing else leaves no
     trace of the thing it stepped over, which is exactly the trace that matters
     later.
+
+    `record=False` forwards to `review.wave_scope`: `ctx ci` calls this for
+    every in-flight unit of a plan just to report whether each one *would*
+    pass, not to decide one unit's `done` — and asking that question must not
+    fingerprint the unit's mid-flight state as though its gate had just run.
+    `gate_before_done`, the real decision, never passes this.
     """
-    from . import contract as contract_mod, review as review_mod
+    # `phases` is imported at the top of this module, not here: it depends on
+    # nothing that depends on `verify`, so there is no cycle to break, and the
+    # deferred-import list is a statement about cycles rather than a habit.
+    from . import (contract as contract_mod, findings as findings_mod,
+                   review as review_mod)
 
     lines = []
 
@@ -1656,7 +1688,79 @@ def gate_check(layout, config, slug, unit):
             "add a `verify` block to the unit file, or pass --force to override",
         ]
 
-    # 3. The checks themselves.
+    # 3. Findings a reviewer raised against this unit.
+    #
+    # Unconditional, and that is the change. Blocking findings used to reach the
+    # gate only through an opt-in `kind: review` check in the unit's own
+    # `verify:` block — which the overwhelming majority of units do not declare
+    # (7 of the 84 in this repository's own plans, at the time of writing). Any
+    # of the other 77 could be reviewed, have a `critical` finding raised
+    # against it, and walk to `done` with the finding still open.
+    # Worse, `findings.PREAMBLE` is written into the head of every findings file
+    # and states flatly that "`critical` and `important` block the done-gate
+    # while they are open": the ledger was telling reviewers a guarantee the
+    # gate did not enforce. The `review` check still exists and still reports
+    # per-unit detail; this is the floor underneath it.
+    #
+    # Another file read, so it sits with the other cheap steps and ahead of
+    # anything that spawns a process. It is deliberately *after* the contract
+    # comparison above: a findings file that was edited behind ctx's back is a
+    # forged contract, and saying "you edited the ledger" is more useful than
+    # saying "you have an open finding" about a finding someone just rewrote.
+    blockers = findings_mod.unresolved(findings_mod.load(layout, slug, unit.name))
+    if blockers:
+        return False, "open review findings", lines + [
+            f"refusing to mark {unit.name} done — {len(blockers)} blocking review "
+            "finding(s) are still open:",
+            *[f"  {finding.line()}" for finding in blockers],
+            "",
+            "A finding leaves `open` by being fixed, refuted with evidence, or "
+            "parked with a ruling:",
+            f"  ctx findings {unit.name} --set «id» --status addressed "
+            "--evidence «what changed»",
+            f"  ctx findings {unit.name} --set «id» --status disputed "
+            "--evidence «why it is wrong»",
+            f"  ctx findings {unit.name} --set «id» --status parked "
+            "--ruling «what was decided»",
+            "Or pass --force, which records that you overrode a review finding.",
+        ]
+
+    # 4. Phases the unit declared, or that its `kind` imposes.
+    #
+    # `phases.can_enter` calls itself "the only door, and it is closed by
+    # default", and `phases.record` refuses to write a phase whose prerequisite
+    # is missing — but nothing asked either of them at the end. A `kind: bug`
+    # unit could therefore record no phases at all and reach `done`: never
+    # running the door is not the same as the door letting you through, and the
+    # preset's whole claim ("no fix before a failing reproduction") evaporates
+    # if skipping the ledger entirely is free. Presence is what is checked here;
+    # the *quality* bar for each phase (a reproduction that actually failed,
+    # `file:line` evidence for `locate`) was already enforced by `record` at the
+    # moment each entry was written.
+    required = [phase.name for phase in phases.for_unit(unit)]
+    if required:
+        ledger = phases.load(layout, slug, unit.name)
+        missing = [name for name in required if not ledger.for_phase(name)]
+        if missing:
+            kind = str(getattr(unit, "kind", "") or "")
+            source = ("the `bug` preset" if kind == "bug"
+                      else "this unit's `phases:` list")
+            return False, "phases not recorded", lines + [
+                f"refusing to mark {unit.name} done — {source} requires "
+                f"{', '.join(required)}, and "
+                f"{', '.join(missing)} {'has' if len(missing) == 1 else 'have'} "
+                "no recorded outcome:",
+                *[f"  missing: {name}" for name in missing],
+                "",
+                "Each phase is recorded as it is cleared, with what proved it:",
+                f"  ctx phase {unit.name} {missing[0]} --command «…» "
+                "--exit-code «…» --evidence «…»",
+                "A phase nobody recorded is a phase nobody ran. Pass --force if "
+                "you are deliberately",
+                "completing this unit without the discipline its kind asks for.",
+            ]
+
+    # 5. The checks themselves.
     #
     # `since` is where the unit started, so the `diff` check sees what it
     # *committed* as well as what is still in the working tree; `wave` is what
@@ -1670,7 +1774,7 @@ def gate_check(layout, config, slug, unit):
             f"note: no dispatch commit recorded for {unit.name}, so anything it "
             "committed was not checked for scope — /ctx:start records one from now on"
         )
-    wave, _siblings = review_mod.wave_scope(layout, slug, unit)
+    wave, _siblings = review_mod.wave_scope(layout, slug, unit, record=record)
     # Step 3 is the only part of this gate a sibling can have done already, and
     # only the `cmd` checks inside it, and only against this exact tree. Steps 0
     # to 2 above, and the refusals below, are this unit's alone and ran here.
