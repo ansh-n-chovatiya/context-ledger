@@ -167,6 +167,19 @@ class _DirFsyncSpy:
         return self._real_fsync(fd)
 
     def assert_directory_was_fsynced(self, test):
+        if os.name == "nt":
+            # `fsync_parent_dir` documents itself as a deliberate no-op here
+            # — `os.open` on a directory raises on Windows, so there is no fd
+            # for this spy to see opened or fsynced. Asserting that directly
+            # is what actually exercises the Windows branch, rather than
+            # skipping the file on the one platform in the CI matrix this
+            # spy never ran real assertions against before.
+            test.assertEqual(
+                self.opened_dir_fds, [],
+                f"parent directory {self.directory!r} was opened on Windows, "
+                "where fsync_parent_dir is documented to no-op",
+            )
+            return
         test.assertTrue(
             self.opened_dir_fds,
             f"parent directory {self.directory!r} was never opened read-only",
