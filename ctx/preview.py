@@ -612,7 +612,10 @@ def _plain_from_objective(unit):
         "", unit.doc.section("objective") or "").strip()
     background = _HTML_COMMENT.sub(
         "", unit.doc.section("background") or "").strip()
-    usable = lambda text: bool(text) and not _has_technical_vocabulary(text)
+
+    def usable(text):
+        return bool(text) and not _has_technical_vocabulary(text)
+
     # The scaffold's own hint is not an objective. `plan.is_unwritten_objective`
     # is the same predicate `plan.validate` refuses on, asked here rather than
     # restated, so the gate and the page cannot disagree about whether anybody
