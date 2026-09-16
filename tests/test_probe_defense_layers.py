@@ -1,7 +1,7 @@
 """Mutation coverage for two of the availability probe's four defence layers
 (`ctx/detect.py:194-205`).
 
-report.md §3.7 mutation-tested the probe and found two of its four layers
+docs/history/ENTERPRISE-READINESS-REVIEW.md §3.7 mutation-tested the probe and found two of its four layers
 armed by the existing suite (`tests/test_audit_probe_isolation.py`) and two
 watched by nothing:
 

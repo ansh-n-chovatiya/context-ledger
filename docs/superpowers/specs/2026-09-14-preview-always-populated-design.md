@@ -121,7 +121,7 @@ writes a placeholder for it).
 Both are code-level gates, not skill-instruction conventions — which is the
 difference between this holding "always" and this holding "usually, until
 someone runs the raw CLI or a different session skips the doc." That
-distinction is the entire lesson of this session's `report.md` findings
+distinction is the entire lesson of this session's `docs/history/ENTERPRISE-READINESS-REVIEW.md` findings
 (silent gate holes that only worked because a convention was followed), and
 this design does not repeat it.
 

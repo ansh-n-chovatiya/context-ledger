@@ -39,7 +39,7 @@ CI = ROOT / ".github" / "workflows" / "ci.yml"
 RELEASE = ROOT / ".github" / "workflows" / "release.yml"
 
 # The fail-green escape hatches this repository's CI has never used. Their
-# absence is what makes a red step actually stop a job; see report.md's
+# absence is what makes a red step actually stop a job; see docs/history/ENTERPRISE-READINESS-REVIEW.md's
 # assessment of both workflows.
 FORBIDDEN = ("continue-on-error", "if: always()", "set +e", "|| true")
 

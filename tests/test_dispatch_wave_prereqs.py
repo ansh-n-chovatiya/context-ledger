@@ -7,7 +7,7 @@ strictly earlier wave — so by the time wave N is auto-selected, every wave
 before it, and therefore every prerequisite a wave-N unit could name, is
 already done.
 
-An explicit `--wave N` walks straight past that guard (report.md §3.8):
+An explicit `--wave N` walks straight past that guard (docs/history/ENTERPRISE-READINESS-REVIEW.md §3.8):
 nothing between the CLI flag and `dispatch.prepare`'s seal/snapshot/dispatch
 sequence ever asked whether the *named* wave is actually unblocked. Once
 dispatched, the unit and its still-open prerequisite are free to run

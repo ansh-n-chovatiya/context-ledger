@@ -1,6 +1,6 @@
 """Mutation coverage for `_confined`'s absolute-path fast path (`ctx/verify.py`).
 
-report.md §3.7 mutation-tested this guard by deleting it and found the suite
+docs/history/ENTERPRISE-READINESS-REVIEW.md §3.7 mutation-tested this guard by deleting it and found the suite
 did not notice — but the deletion turned out to be harmless: `_confined`
 re-checks the resolved pair with `_inside()` after `realpath`, so an absolute
 path such as `/etc/hosts` is still refused even without the fast path. That
@@ -38,7 +38,7 @@ _START = "def resolve_cwd(check, cwd):"
 _END = "\n\ndef _remaining(deadline):"
 _BLOCK = _SOURCE[_SOURCE.index(_START):_SOURCE.index(_END)]
 
-# `ctx/verify.py:591-593` at last check — the guard report.md calls
+# `ctx/verify.py:591-593` at last check — the guard docs/history/ENTERPRISE-READINESS-REVIEW.md calls
 # `_confined`'s absolute-path fast path.
 _FAST_PATH = (
     '    if raw.startswith("~") or os.path.isabs(raw) or (os.name == "nt" and ":" in raw):\n'

@@ -235,7 +235,7 @@ Expected: `OK` (9 tests).
 - [ ] **Step 5: Run the full suite for regressions, then commit**
 
 Run: `python3 -m unittest discover -s tests -q`
-Expected: same one pre-existing, unrelated failure as before this plan started (`test_docs_currency.ArchivedDocumentTests.test_they_are_archived_and_not_deleted` — `report.md` at repo root), nothing new.
+Expected: same one pre-existing, unrelated failure as before this plan started (`test_docs_currency.ArchivedDocumentTests.test_they_are_archived_and_not_deleted` — `docs/history/ENTERPRISE-READINESS-REVIEW.md` at repo root), nothing new.
 
 ```bash
 git add ctx/spec.py tests/test_spec_intake.py
@@ -410,7 +410,7 @@ Expected: `OK` (5 tests).
 - [ ] **Step 5: Run the full suite for regressions, then commit**
 
 Run: `python3 -m unittest discover -s tests -q`
-Expected: only the one pre-existing `report.md`-at-root failure.
+Expected: only the one pre-existing `docs/history/ENTERPRISE-READINESS-REVIEW.md`-at-root failure.
 
 ```bash
 git add ctx/commands.py ctx/cli.py tests/test_infer_cli.py
@@ -756,7 +756,7 @@ Expected: `OK`.
 - [ ] **Step 5: Run the full suite for regressions, then commit**
 
 Run: `python3 -m unittest discover -s tests -q`
-Expected: only the one pre-existing `report.md` failure. Pay particular attention to `tests/test_docs_currency.py` (it counts fields in the view-model schema) and `tests/test_preview_cli.py` — if either asserts an exact key set for `plain`/`generated`, add `provenance` to its expected set rather than loosening the assertion.
+Expected: only the one pre-existing `docs/history/ENTERPRISE-READINESS-REVIEW.md` failure. Pay particular attention to `tests/test_docs_currency.py` (it counts fields in the view-model schema) and `tests/test_preview_cli.py` — if either asserts an exact key set for `plain`/`generated`, add `provenance` to its expected set rather than loosening the assertion.
 
 ```bash
 git add ctx/preview.py tests/test_preview_model.py
@@ -864,7 +864,7 @@ Run the same test module. Expected: `OK`.
 - [ ] **Step 5: Run the full suite for regressions, then commit**
 
 Run: `python3 -m unittest discover -s tests -q`
-Expected: only the one pre-existing `report.md` failure.
+Expected: only the one pre-existing `docs/history/ENTERPRISE-READINESS-REVIEW.md` failure.
 
 ```bash
 git add ctx/preview_page.py <the test file you edited>
@@ -1021,7 +1021,7 @@ fix once per shared helper. Do not weaken the new check to avoid fixing a
 fixture.
 
 Run: `python3 -m unittest discover -s tests -q`
-Expected: back down to exactly the one pre-existing, unrelated `report.md`
+Expected: back down to exactly the one pre-existing, unrelated `docs/history/ENTERPRISE-READINESS-REVIEW.md`
 failure.
 
 ```bash
@@ -1125,7 +1125,7 @@ If this test fails after Tasks 1-6 are all merged, that is a real gap in the cha
 - [ ] **Step 4: Run the full suite, then commit**
 
 Run: `python3 -m unittest discover -s tests -q`
-Expected: only the one pre-existing `report.md` failure.
+Expected: only the one pre-existing `docs/history/ENTERPRISE-READINESS-REVIEW.md` failure.
 
 ```bash
 git add tests/test_preview_never_placeholder.py
