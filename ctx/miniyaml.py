@@ -233,7 +233,9 @@ def _scalar(text, lineno, depth=0):
         raise MiniYamlError(
             f"line {lineno}: anchors, aliases and tags are not supported"
         )
-    if text.startswith("[") and text.endswith("]"):
+    if text.startswith("["):
+        if not text.endswith("]"):
+            raise MiniYamlError(f"line {lineno}: unterminated list {text!r}")
         inner = text[1:-1].strip()
         if not inner:
             return []

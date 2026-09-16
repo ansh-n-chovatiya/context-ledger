@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ctx import config as config_mod  # noqa: E402
+from test_policy import PolicyFixture  # noqa: E402
 
 
 class NotALevel:
@@ -192,6 +193,68 @@ class TestBriefingCapInteraction(unittest.TestCase):
         for level in config_mod.LEVELS:
             with self.subTest(level=level):
                 self.assertIn(f"l{level}", config_mod.DEFAULTS["briefing_chars"])
+
+
+class TestLockingSurvivesVoidingTheParentKey(PolicyFixture):
+    """`_lock_holder` matches a lock on `dotted` or any prefix of it, so
+    `locked: [gate]` correctly covers `gate.enabled`. The reverse was
+    unguarded — a lock on `gate.allow_override` did not cover an assignment
+    to `gate` itself, and `_assign` replaces the whole mapping. A repo
+    `ctx.yaml` setting `gate: []` collapsed the locked value along with
+    everything else under `gate`, with no refusal recorded anywhere.
+
+    `PolicyFixture` (and the prefix-lock test this mirrors,
+    `test_locking_a_parent_key_locks_everything_under_it`) live in
+    `test_policy.py`, a widely-shared file this plan's wave leaves to no
+    single unit — imported here rather than edited there.
+    """
+
+    def test_voiding_the_parent_key_does_not_clear_the_locked_child(self):
+        self.write_policy(
+            "user", gate={"allow_override": True}, locked=["gate.allow_override"]
+        )
+        self.write_repo_config(gate=[])
+        config, _err = self.load()
+        self.assertIs(config["gate"]["allow_override"], True)
+
+    def test_the_refusal_is_visible_on_stderr(self):
+        self.write_policy(
+            "user", gate={"allow_override": True}, locked=["gate.allow_override"]
+        )
+        self.write_repo_config(gate=[])
+        _config, err = self.load()
+        self.assertIn("gate.allow_override", err)
+        self.assertIn("user policy locks it", err)
+
+    def test_the_refusal_is_recorded_for_doctor_to_report(self):
+        self.write_policy(
+            "user", gate={"allow_override": True}, locked=["gate.allow_override"]
+        )
+        self.write_repo_config(gate=[])
+        refusals = config_mod.resolve_policy(self.layout).refusals
+        self.assertEqual(len(refusals), 1)
+        source, key, _attempted, held, holder = refusals[0]
+        self.assertEqual((source, key, held, holder),
+                         ("repo", "gate.allow_override", True, "user"))
+
+    def test_doctor_names_the_refusal_and_counts_it_as_a_problem(self):
+        self.write_policy(
+            "user", gate={"allow_override": True}, locked=["gate.allow_override"]
+        )
+        self.write_repo_config(gate=[])
+        code, out = self.cli("doctor")
+        self.assertIn("gate.allow_override", out)
+        self.assertEqual(code, 1, "a setting that cannot apply is a problem")
+
+    def test_locking_a_parent_still_covers_the_child_unchanged(self):
+        """The working direction (`locked: [gate]` covers `gate.enabled`) is
+        untouched by this fix — it does not go through `_locked_descendants`
+        at all, since the assigned key there (`gate.enabled`) is what is
+        locked, not an ancestor of it."""
+        self.write_policy("user", gate={"max_attempts": 4}, locked=["gate"])
+        self.write_repo_config(gate={"max_attempts": 11})
+        config, _err = self.load()
+        self.assertEqual(config["gate"]["max_attempts"], 4)
 
 
 if __name__ == "__main__":

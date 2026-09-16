@@ -13,6 +13,13 @@ those are the ones a diff has to be reconstructed from. Nothing is committed,
 nothing is branched, and a project with no repository at all reviews exactly the
 same way as one with a hundred thousand commits.
 
+A repo-supplied `ignore:` cannot buy its way out of this: the ledger's own
+directory is fingerprinted regardless of what `review: {ignore: [...]}` says,
+because the one mechanical check this project has against a scope violation
+depends on the write having actually been captured. `.ctx/runtime` is the one
+exception, always excluded — it holds the snapshots themselves, so protecting
+it would mean a capture fingerprinting its own half-written manifest.
+
 Snapshots live under `.ctx/runtime/`, which the ledger's own `.gitignore`
 excludes — they are scratch, not history. Content is stored raw and scrubbed at
 render time rather than at capture: redacting on the way in would make every
@@ -95,21 +102,88 @@ def _ignored(relpath, name, ignore):
     )
 
 
-def walk(root, ignore=DEFAULT_IGNORE, max_files=MAX_FILES):
-    """Relative paths of every file worth fingerprinting. (paths, truncated)."""
+# The one subtree `protect` never covers, even when `protect` names its parent.
+# It holds the snapshots a capture is in the middle of writing, so fingerprinting
+# it would mean a capture reading its own half-written manifest.
+_RUNTIME_SUBTREE = paths.LEDGER_PREFIX + "runtime"
+
+
+def _is_runtime_subtree(relpath):
+    """True for `.ctx/runtime` or anything under it, however `relpath` is
+    spelled.
+
+    Exclusion here used to depend entirely on `DEFAULT_IGNORE` still carrying
+    a matching pattern — `_protected` deliberately does *not* cover this one
+    subtree (see `_RUNTIME_SUBTREE`), so once a repo-supplied `review:
+    {ignore: [...]}` replaced the whole ignore set with something that never
+    mentioned `.ctx/runtime`, nothing else stopped `walk` from descending into
+    a capture's own in-progress manifest. This check is unconditional and
+    config cannot turn it off, the same way `_protected` makes the rest of
+    `.ctx/` unconditionally *visible*.
+    """
+    normalised = str(relpath).replace("\\", "/")
+    return normalised == _RUNTIME_SUBTREE or normalised.startswith(_RUNTIME_SUBTREE + "/")
+
+
+def _protected(relpath, protect):
+    """True when no `ignore` pattern, however the config spells it, may hide
+    this path from the walk.
+
+    Exists so a repo-supplied `review: {ignore: [...]}` — which `settings()`
+    lets *replace* the whole default ignore set — cannot blind `capture` to
+    the one directory the scope-violation check depends on having actually
+    been fingerprinted. `.ctx/runtime` is carved back out even here: see
+    `_RUNTIME_SUBTREE`.
+    """
+    normalised = str(relpath).replace("\\", "/")
+    if _is_runtime_subtree(normalised):
+        return False
+    return any(
+        normalised == prefix.rstrip("/") or normalised.startswith(prefix)
+        for prefix in protect
+    )
+
+
+def walk(root, ignore=DEFAULT_IGNORE, max_files=MAX_FILES, protect=()):
+    """Relative paths of every file worth fingerprinting. (paths, truncated).
+
+    `protect` names prefixes `ignore` is never allowed to exclude, however it
+    is spelled — empty by default, because most callers (`tree_token`, most
+    notably) want the opposite of this: a path genuinely absent from the walk,
+    not merely one `ignore` cannot be trusted to hide.
+    """
     root = Path(root)
     found, truncated = [], False
     for dirpath, dirnames, filenames in os.walk(root):
         rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
         rel_dir = "" if rel_dir == "." else rel_dir
         # Pruning in place is what keeps `node_modules` from costing anything.
+        # The runtime-subtree exclusion comes first and unconditionally: it is
+        # never a function of `ignore`, so a repo-supplied ignore list that
+        # never mentions it cannot let a capture read its own in-progress
+        # manifest (see `_is_runtime_subtree`).
+        #
+        # Ordered dot-directories-last, not alphabetically: `.ctx/` cannot be
+        # excluded from this walk any more (see `_protected`), and a plain
+        # alphabetical sort visits it — ledger bookkeeping, not anyone's
+        # source — ahead of every ordinary directory at this level, since `.`
+        # sorts before any letter. A project with a long-lived, large `.ctx/`
+        # history could exhaust `max_files` there before a real source
+        # directory like `src/` is ever entered, silently truncating the one
+        # thing the cap exists to protect. Visiting real content first means
+        # the cap, when it bites, bites on ledger bookkeeping rather than on
+        # the source tree the scope check actually depends on.
         dirnames[:] = [
-            d for d in sorted(dirnames)
-            if not _ignored(f"{rel_dir}/{d}".lstrip("/"), d, ignore)
+            d for d in sorted(dirnames, key=lambda name: (name.startswith("."), name))
+            if not _is_runtime_subtree(f"{rel_dir}/{d}".lstrip("/"))
+            and (_protected(f"{rel_dir}/{d}".lstrip("/"), protect)
+                 or not _ignored(f"{rel_dir}/{d}".lstrip("/"), d, ignore))
         ]
         for name in sorted(filenames):
             relpath = f"{rel_dir}/{name}".lstrip("/")
-            if _ignored(relpath, name, ignore):
+            if _is_runtime_subtree(relpath):
+                continue
+            if not _protected(relpath, protect) and _ignored(relpath, name, ignore):
                 continue
             if len(found) >= max_files:
                 truncated = True
@@ -238,9 +312,12 @@ def capture(layout, config, key, root, content_paths=(), force=False):
     blobs = directory / "files"
     blobs.mkdir(parents=True, exist_ok=True)
 
-    paths, truncated = walk(root, options["ignore"], options["max_files"])
+    relpaths, truncated = walk(
+        root, options["ignore"], options["max_files"],
+        protect=(paths.LEDGER_PREFIX,),
+    )
     files, stored = {}, []
-    for relpath in paths:
+    for relpath in relpaths:
         target = root / relpath
         try:
             data = target.read_bytes()

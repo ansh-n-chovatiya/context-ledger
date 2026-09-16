@@ -9,8 +9,9 @@ import os
 import time
 import re
 import tempfile
+import warnings
 
-from . import miniyaml
+from . import atomic, miniyaml
 
 FENCE = "---"
 _HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*$")
@@ -151,6 +152,10 @@ class Document:
 
         No lock is taken, unlike `state.save`: callers render a whole document
         and replace it, so there is no read-modify-write window to serialise.
+
+        After the rename, the parent directory is fsynced too (via
+        `atomic.fsync_parent_dir`) so the new directory entry is durable
+        against a crash, not just the file's own bytes.
         """
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = self.render()
@@ -181,6 +186,19 @@ class Document:
             except OSError:
                 pass
             raise
+        # Best-effort, and deliberately outside the rollback above: by now the
+        # new content is already the durable truth on disk, so a transient
+        # failure to also fsync the directory is not the write failing, and
+        # must not be reported as though it were (see `atomic.write_text`).
+        try:
+            atomic.fsync_parent_dir(path)
+        except OSError as exc:
+            warnings.warn(
+                f"frontmatter: wrote {path} but could not fsync its parent "
+                f"directory ({exc}) — the new content is on disk, its "
+                "durability against a crash is not guaranteed",
+                RuntimeWarning,
+            )
         return path
 
 
@@ -193,7 +211,19 @@ def parse(text):
             raw = "\n".join(lines[1:index])
             try:
                 meta = miniyaml.loads(raw) or {}
-            except miniyaml.MiniYamlError:
+            except miniyaml.MiniYamlError as exc:
+                # miniyaml raises on purpose ("fails loudly ... instead of
+                # silently") — tolerant-on-read must not turn that back into
+                # silence. A malformed field (e.g. an unterminated inline
+                # list) would otherwise reset every field in this document —
+                # status, verify, owns, depends_on — to nothing, with no
+                # visible sign anything went wrong.
+                warnings.warn(
+                    f"frontmatter: malformed YAML block ({exc}) — every "
+                    "field in this document reset to empty",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
                 meta = {}
             body = "\n".join(lines[index + 1:]).lstrip("\n")
             return Document(meta if isinstance(meta, dict) else {}, body)

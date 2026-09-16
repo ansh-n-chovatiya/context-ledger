@@ -18,6 +18,7 @@ numbers back, never a shared or last-writer value.
 import sys
 import threading
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -116,12 +117,24 @@ class TestDispatchStatsReadsWhatBuildAlreadyWrote(TelemetryFixture):
 class TestTwoUnitsInTheSameWaveDoNotContaminate(TelemetryFixture):
     """The hazard the criterion names: cache stats by anything less specific
     than (slug, unit, round) and a concurrent wave hands one unit's numbers to
-    another. `dispatch_stats` carries no module-level state at all, so this
-    pins that concurrent calls for different units never cross."""
+    another. `dispatch_stats` carries no module-level state and no lock —
+    there is nothing to serialise, because every key it reads
+    (`package_path`, `after_key`, `before_key`) already carries `slug`,
+    `unit.name` and `round_number`. So the thing worth pinning here is not
+    "two threads happened not to collide" — a sequential pair of calls would
+    never collide either, proving nothing — but that the *scoping itself* is
+    what keeps them apart. `_read_concurrently` forces the two reads to be
+    genuinely inside `dispatch_stats` at the same instant via a
+    `threading.Barrier` seated in the read path (`snapshot.load`), and the
+    positive control below breaks the scoping directly — via monkeypatch,
+    since there is no lock to disable — to prove this test would notice."""
 
-    def test_two_packages_built_and_read_concurrently_stay_distinct(self):
-        alpha = self.unit("01-alpha", owns=["src/alpha.py"])
-        beta = self.unit("02-beta", owns=["src/beta.py"])
+    # Long enough that a loaded CI box never times out a real rendezvous;
+    # short enough that a genuinely deadlocked barrier fails the test instead
+    # of hanging the suite.
+    RENDEZVOUS_TIMEOUT = 30.0
+
+    def _build_both(self, alpha, beta):
         self.write("src/alpha.py", "a = 1\n")
         self.write("src/beta.py", "b = 1\n")
         review_mod.capture_before(self.layout, self.config, alpha, self.slug, self.root)
@@ -131,24 +144,51 @@ class TestTwoUnitsInTheSameWaveDoNotContaminate(TelemetryFixture):
         # value is detectable rather than accidentally matching.
         self.write("src/alpha.py", "a = 1\n" + ("# padding\n" * 40))
         self.write("src/beta.py", "b = 2\n")
+        self.build(alpha)
+        self.build(beta)
+
+    def _read_concurrently(self, alpha, beta):
+        """Call `dispatch_stats` for both units from two threads, with a
+        rendezvous seated inside `snapshot.load` — the call `dispatch_stats`
+        makes, twice, to pull back the head and base manifests it reports on.
+        Both threads must arrive at each `snapshot.load` call before either
+        is allowed to proceed past it, so the two reads are provably
+        overlapping rather than one finishing before the other was even
+        scheduled — the failure mode a plain "start two threads" test can't
+        rule out on a fast filesystem.
+        """
+        barrier = threading.Barrier(2, timeout=self.RENDEZVOUS_TIMEOUT)
+        real_load = review_mod.snapshot.load
+
+        def gated_load(*args, **kwargs):
+            barrier.wait()
+            return real_load(*args, **kwargs)
 
         results = {}
         errors = []
 
         def run(unit):
             try:
-                self.build(unit)
                 results[unit.name] = review_mod.dispatch_stats(
                     self.layout, self.slug, unit
                 )
             except Exception as exc:  # pragma: no cover - surfaced via errors
                 errors.append(exc)
 
-        threads = [threading.Thread(target=run, args=(u,)) for u in (alpha, beta)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        with unittest.mock.patch.object(review_mod.snapshot, "load", gated_load):
+            threads = [threading.Thread(target=run, args=(u,)) for u in (alpha, beta)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        return results, errors
+
+    def test_two_packages_read_concurrently_stay_distinct(self):
+        alpha = self.unit("01-alpha", owns=["src/alpha.py"])
+        beta = self.unit("02-beta", owns=["src/beta.py"])
+        self._build_both(alpha, beta)
+
+        results, errors = self._read_concurrently(alpha, beta)
 
         self.assertEqual(errors, [])
         alpha_stats = results["01-alpha"]
@@ -167,6 +207,49 @@ class TestTwoUnitsInTheSameWaveDoNotContaminate(TelemetryFixture):
         beta_again = review_mod.dispatch_stats(self.layout, self.slug, beta)
         self.assertEqual(alpha_again, alpha_stats)
         self.assertEqual(beta_again, beta_stats)
+
+    def test_collapsing_the_per_unit_key_leaks_one_units_bytes_into_the_other(self):
+        """The positive control the criterion asks for. `dispatch_stats`
+        needs no lock because `after_key`/`package_path` already scope every
+        read to `(slug, unit.name, round_number)` — so the way to prove this
+        suite would catch a regression is to break that scoping directly,
+        the same way the module docstring's hazard describes: cache (here,
+        name) the package by anything less specific than the full key, and a
+        concurrent wave hands one unit's numbers to another.
+
+        With `after_key` and `package_path` collapsed to ignore `unit_name`,
+        both units' builds land on the same manifest directory and the same
+        package file — deterministically, since the second `build()` call
+        (forced with `force=True` for the head capture) simply overwrites
+        what the first one wrote, with no race needed to make that happen.
+        Reading both back — even with the same forced-overlap rendezvous
+        used above — then reports the identical, last-writer size for both
+        units: exactly the failure `test_two_packages_read_concurrently_stay_
+        distinct`'s `assertNotEqual` exists to catch.
+        """
+        alpha = self.unit("01-alpha", owns=["src/alpha.py"])
+        beta = self.unit("02-beta", owns=["src/beta.py"])
+
+        def shared_after_key(slug, unit_name, round_number=1):
+            return f"{slug}@shared@r{round_number}"
+
+        def shared_package_path(layout, slug, unit_name, round_number=1):
+            return review_mod.review_dir(layout) / f"{slug}-shared-r{round_number}.md"
+
+        with unittest.mock.patch.object(review_mod, "after_key", shared_after_key), \
+                unittest.mock.patch.object(review_mod, "package_path", shared_package_path):
+            self._build_both(alpha, beta)
+            results, errors = self._read_concurrently(alpha, beta)
+
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(results["01-alpha"])
+        self.assertIsNotNone(results["02-beta"])
+        self.assertEqual(
+            results["01-alpha"]["bytes"], results["02-beta"]["bytes"],
+            "collapsing the per-unit key should have produced a shared, "
+            "last-writer value for both units — if this ever fails, the "
+            "per-unit scoping this suite depends on is protecting nothing",
+        )
 
 
 if __name__ == "__main__":

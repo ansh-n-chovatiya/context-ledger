@@ -10,7 +10,7 @@ import json
 import os
 import tempfile
 
-from . import config as config_mod, lock as lock_mod, log
+from . import atomic, config as config_mod, lock as lock_mod, log
 
 # A wave means several `ctx` processes writing this file at once. `os.replace`
 # already made each *write* atomic, but load-then-save is not: two processes that
@@ -60,6 +60,16 @@ def load(layout):
 
 
 def save(layout, data):
+    """Write the state pointer atomically, including the directory entry.
+
+    After `os.replace`, the runtime directory is fsynced too (via
+    `atomic.fsync_parent_dir`) so the new entry survives a crash, not just
+    the file's own bytes — see `ctx.atomic` for why the rename alone isn't
+    enough. By the time that runs, `os.replace` has already durably written
+    the new content, so a failure there is not this write failing — it is
+    logged, not raised, the same way every other swallow point in this
+    codebase reports an exception it deliberately does not propagate.
+    """
     layout.runtime.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(data, indent=2, sort_keys=True) + "\n"
     handle = tempfile.NamedTemporaryFile(
@@ -72,6 +82,10 @@ def save(layout, data):
     finally:
         handle.close()
     os.replace(handle.name, layout.state)
+    try:
+        atomic.fsync_parent_dir(layout.state)
+    except OSError as exc:
+        log.failure("state.save.fsync_parent_dir", exc, path=str(layout.state))
     return data
 
 

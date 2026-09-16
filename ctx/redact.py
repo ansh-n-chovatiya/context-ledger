@@ -16,13 +16,23 @@ words has little of it. Length and variety describe source paths at least as
 well as they describe credentials, so entropy scoring is gone rather than
 tuned.
 
-Every pattern below is anchored on something a human can point at: a vendor
+Most patterns below are anchored on something a human can point at: a vendor
 prefix, a URL structure, a PEM header, or a secret-ish key immediately followed
-by an assignment. Precision is preferred to recall on purpose — a credential
-this misses is a risk, but a file path it eats is a certainty.
+by an assignment. `_HEX32` is the one exception — it has no anchor at all, only
+a length-and-charset test (exactly 32 hex characters with a word boundary on
+both sides), which is why `scrub('md5 d41d8cd98f00b204e9800998ecf8427e')`
+redacts a hash that was never a secret. That false positive is accepted on
+purpose: most API secrets with no vendor prefix are 32 hex characters, and
+loosening the pattern to require an anchor would under-redact the credentials
+it exists to catch. Precision is preferred to recall everywhere else on
+purpose — a credential this misses is a risk, but a file path it eats is a
+certainty.
 """
 
 import re
+import subprocess
+import sys
+import warnings
 
 PLACEHOLDER = "<<redacted>>"
 
@@ -127,6 +137,66 @@ _BUILTIN = (
 )
 
 
+# 0: substitution ran and its result is on stdout. Anything else: the child
+# failed to answer, and stdout must not be trusted.
+_SUB_PROBE = (
+    "import re, sys\n"
+    "raw = sys.stdin.buffer.read().decode('utf-8', 'replace')\n"
+    "pattern, _, text = raw.partition('\\0')\n"
+    f"sys.stdout.buffer.write(re.sub(pattern, {PLACEHOLDER!r}, text).encode('utf-8'))\n"
+)
+
+# How long a single extra pattern gets to finish a substitution over the whole
+# text before it is skipped. `scrub` runs on the journal write path inside
+# PostToolUse/Stop hooks, so this has to be short enough that a hostile
+# pattern degrades a hook rather than hanging it.
+_EXTRA_PATTERN_TIMEOUT_SECONDS = 3.0
+
+
+def _bounded_sub(pattern, text, timeout):
+    """`pattern.sub(PLACEHOLDER, text)`, bounded by `timeout`. `(text, problem)`.
+
+    A pattern sourced from `ctx.yaml` is attacker-controlled input to a
+    backtracking engine — `re.sub(r'(a+)+$', 'x', 'a'*40 + 'X')` does not
+    return. Python cannot interrupt a running `re.sub` from inside the same
+    process (it holds the GIL, so a worker thread cannot be timed out either),
+    so — mirroring `ctx.verify._match_within`, which solved this exact shape
+    for the gate — the substitution runs in a child process that can actually
+    be killed. On timeout, or any other failure to get an answer back, `text`
+    is returned unchanged: a pattern that cannot be proven safe must not be
+    allowed to run unbounded, but it also must not take the rest of the
+    patterns down with it.
+    """
+    try:
+        re.compile(pattern)
+    except re.error as exc:
+        return text, f"bad pattern: {exc}"
+    if "\0" in pattern:
+        return text, "pattern may not contain a NUL byte"
+    if not sys.executable:
+        # No interpreter to fork: an unbounded substitution is still better
+        # than silently skipping every extra pattern, and this path is not
+        # reachable from a normal install.
+        return re.sub(pattern, PLACEHOLDER, text), ""
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", _SUB_PROBE],
+            input=(pattern + "\0" + text).encode("utf-8", "replace"),
+            capture_output=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return text, (
+            f"pattern /{pattern}/ did not finish within {timeout}s — it "
+            "backtracks; the pattern was skipped for this write"
+        )
+    except OSError as exc:
+        return text, f"could not evaluate pattern: {exc}"
+    if completed.returncode != 0:
+        detail = (completed.stderr or b"").decode("utf-8", "replace").strip()
+        return text, f"could not evaluate pattern: {detail or completed.returncode}"
+    return completed.stdout.decode("utf-8", "replace"), ""
+
+
 def scrub(text, extra_patterns=()):
     """Return `text` with anything that looks like a credential removed."""
     if not text:
@@ -135,8 +205,11 @@ def scrub(text, extra_patterns=()):
     for pattern, replacement in _BUILTIN:
         out = pattern.sub(replacement, out)
     for raw in extra_patterns or ():
-        try:
-            out = re.sub(raw, PLACEHOLDER, out)
-        except re.error:
-            continue  # a bad user pattern must not break the write path
+        out, problem = _bounded_sub(raw, out, _EXTRA_PATTERN_TIMEOUT_SECONDS)
+        if problem:
+            # A bad or hostile user pattern must not break the write path, but
+            # it also must not fail silently — the pattern was skipped, and
+            # whoever configured it should be able to find out why.
+            warnings.warn(f"redact: skipping pattern {raw!r}: {problem}",
+                          RuntimeWarning, stacklevel=2)
     return out

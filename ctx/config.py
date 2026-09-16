@@ -337,6 +337,21 @@ def _lock_holder(locks, dotted):
     return None, None
 
 
+def _locked_descendants(locks, dotted):
+    """Locked keys nested *under* `dotted`, sorted.
+
+    The reverse of `_lock_holder`: that walks from `dotted` upward, so
+    `locked: [gate]` covers an assignment to `gate.enabled`. Nothing walked the
+    other way — a lock on `gate.allow_override` did not stop an assignment to
+    `gate` itself, and `_assign` replaces the whole subtree at the key it is
+    given rather than merging into it. `gate: []` therefore erased
+    `allow_override` along with everything else under `gate`, silently, with
+    no refusal recorded anywhere `ctx doctor` looks.
+    """
+    prefix = dotted + "."
+    return sorted(key for key in locks if key.startswith(prefix))
+
+
 def _locked_keys(parsed):
     """What this layer refuses to let a later one change.
 
@@ -380,6 +395,20 @@ def _apply_layer(policy, source, parsed, allow_locks=True):
             policy.refusals.append(
                 (source, dotted, value, None if held is _MISSING else held, holder)
             )
+            continue
+        descendants = _locked_descendants(policy.locks, dotted)
+        if descendants:
+            # `dotted` is not itself locked, but replacing it wholesale (as
+            # `_assign` does) would carry off a lock nested underneath it —
+            # `gate: []` voiding a `gate.allow_override` lock. One refusal per
+            # buried lock, in the same shape a direct assignment gets, so
+            # nothing new is needed for `ctx doctor` (or stderr) to report it.
+            for locked_key in descendants:
+                held = _lookup(policy.config, locked_key)
+                policy.refusals.append((
+                    source, locked_key, value,
+                    None if held is _MISSING else held, policy.locks[locked_key],
+                ))
             continue
         _assign(policy.config, dotted, value)
         policy.origin[dotted] = source

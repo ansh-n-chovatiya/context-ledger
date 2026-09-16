@@ -30,12 +30,18 @@ import os
 import time
 import uuid
 
-# The one import this module makes from the package, for the one rule it must
-# not re-invent: `spec.avoid_reserved_name`. Top-level and not deferred —
-# `spec` reaches only `config`, `frontmatter`, `log`, `miniyaml` and `paths`,
-# none of which import `lock`, so there is no cycle to break here and
-# `tests/test_no_import_cycles.py` keeps it that way.
-from . import spec
+# Two imports from the package, both top-level and not deferred, and both
+# picked for the same reason: `log` imports nothing from `ctx`, and `spec`
+# reaches only `config`, `frontmatter`, `log`, `miniyaml` and `paths` — none of
+# which import `lock` — so neither introduces a cycle for
+# `tests/test_no_import_cycles.py` to catch.
+#
+# `spec.avoid_reserved_name` is the one rule this module must not re-invent.
+# `log` is how the fail-open paths below stop being silent: `held` still
+# yields False and every caller still proceeds unlocked exactly as before, but
+# now `CTX_LOG=warn` (or above) shows why, which nothing did until this file
+# had this import.
+from . import log, spec
 
 # Five seconds is the general default: long enough to outlast any single
 # read-modify-write in this codebase, short enough that a session never appears
@@ -174,6 +180,19 @@ def _reclaim(path, stale):
     return True
 
 
+def _fail_open(reason, path, **fields):
+    """Record a fail-open decision. `held` still yields False either way —
+    this is the trace that used to not exist anywhere.
+
+    One site, one shape: every `return None, None` below calls this first, so
+    a normal, contended-but-eventually-acquired lock — which never reaches a
+    `return None, None` at all — logs nothing, and only a genuine fail-open
+    does. `CTX_LOG` off (the default) means this costs one comparison and
+    writes nothing, exactly like every other call into `log`.
+    """
+    log.warn("lock.fail_open", reason, path=str(path), **fields)
+
+
 def _acquire(path, timeout, stale):
     """Take the lock, or return `(None, None)` having failed open."""
     deadline = time.monotonic() + timeout
@@ -183,6 +202,7 @@ def _acquire(path, timeout, stale):
         except FileExistsError:
             reclaimed = _reclaim(path, stale)
             if time.monotonic() >= deadline:
+                _fail_open("timed out waiting for a contended lock", path)
                 return None, None
             if not reclaimed:
                 time.sleep(_POLL)  # a reclaim retries at once; a live lock waits
@@ -202,13 +222,21 @@ def _acquire(path, timeout, stale):
                 #
                 # Writability tells the two apart in one cheap call.
                 if not os.access(str(path.parent), os.W_OK):
+                    _fail_open("unwritable locks directory", path,
+                               errno=exc.errno)
                     return None, None
                 if time.monotonic() >= deadline:
+                    _fail_open("timed out waiting for a contended lock", path,
+                               errno=exc.errno)
                     return None, None
                 time.sleep(_POLL)
                 continue
             if exc.errno == errno.EROFS:
-                return None, None  # read-only filesystem: nothing to serialise
+                # read-only filesystem: nothing to serialise against
+                _fail_open("read-only filesystem", path, errno=exc.errno)
+                return None, None
+            _fail_open("unclassified OSError opening the lock file", path,
+                       errno=exc.errno)
             return None, None
         token = ("%d %s" % (os.getpid(), uuid.uuid4().hex)).encode("ascii")
         try:
@@ -248,14 +276,21 @@ def held(layout, name):
     taken is a reason to risk a lost update, never a reason to break a session.
     EACCES and EROFS break immediately (a read-only checkout has nothing to
     serialise against).
+
+    Every fail-open decision also goes through `_fail_open`, which is a
+    `log.warn` call: silent by default, visible with `CTX_LOG=warn`. That does
+    not change what this yields or what a caller does with it — a caller that
+    discards the boolean today still discards it — it only means the decision
+    is no longer invisible to everyone.
     """
     timeout, stale = limits(name)
     path = path_for(layout, name)
     handle = token = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass  # cannot even make the directory: proceed unserialised
+    except OSError as exc:
+        # cannot even make the directory: proceed unserialised
+        _fail_open("cannot create the locks directory", path, errno=exc.errno)
     else:
         handle, token = _acquire(path, timeout, stale)
     try:

@@ -15,6 +15,16 @@ bitten by both:
 * redaction runs *before* escaping and over prose only (run it afterwards and
   `redact.scrub`'s value class, which excludes `&`, matches nothing; run it
   unguarded and it eats `budget_tokens: 60000` and inverts `credential: none`).
+
+`TestExternalReferenceVectors` below covers a third property of the same
+page but a different module: `ctx/preview_page.py`'s `check()` claims to
+refuse *any* external reference, and its own docstring's lead example is "no
+image URL" — not "no image URL with an `https://` in front of it". A
+scheme-shaped pattern (`https?:`) already caught the obvious form; a bare or
+protocol-relative value in `srcset`, `<base href>`, `<object data>`,
+`<embed src>` or `<use href>` fetches exactly as eagerly and spelled out
+neither, so it is exercised here rather than left to look covered by
+resemblance to the `<img src>` case.
 """
 
 import ast
@@ -27,7 +37,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ctx import preview_html, redact  # noqa: E402
+from ctx import preview_html, preview_page, redact  # noqa: E402
 
 
 # The complete set of element names this module is allowed to emit. Anything
@@ -497,7 +507,91 @@ class TestAttr(SafetyAssertions):
         self.assertEqual(preview_html.attr(True), "True")
 
 
-class TestProjectRules(unittest.TestCase):
+class TestExternalReferenceVectors(unittest.TestCase):
+    """`preview_page.check()` refuses every reference vector it claims to.
+
+    Report finding: the docstring's own lead example is "no image URL", and
+    `<use href>`, `<object data>`, `<embed src>`, `srcset` and `<base href>`
+    all carried a reference straight past `check()` when the value had no
+    `https?:` in it — a bare `evil.example/x` or protocol-relative
+    `//evil.example/x` fetches identically to `https://evil.example/x` in a
+    browser, and neither spells out a scheme the old check matched against.
+    Each vector below is run twice: with a scheme (already caught by the
+    `https?:` pattern before this fix) and without one (the actual gap), so
+    a reader can see which half of the report's claim was already false and
+    which half was not.
+    """
+
+    def _refused(self, fragment):
+        html = "<html><body>%s</body></html>" % fragment
+        return preview_page.check(html, {})
+
+    def test_srcset_with_a_scheme(self):
+        self.assertTrue(self._refused(
+            '<img srcset="https://evil.example/x 1x">'))
+
+    def test_srcset_without_a_scheme(self):
+        self.assertTrue(self._refused('<img srcset="evil.example/x 1x">'))
+
+    def test_base_href_with_a_scheme(self):
+        self.assertTrue(self._refused(
+            '<base href="https://evil.example/">'))
+
+    def test_base_href_without_a_scheme(self):
+        self.assertTrue(self._refused('<base href="evil.example/">'))
+
+    def test_object_data_with_a_scheme(self):
+        self.assertTrue(self._refused(
+            '<object data="https://evil.example/x"></object>'))
+
+    def test_object_data_without_a_scheme(self):
+        self.assertTrue(self._refused(
+            '<object data="evil.example/x"></object>'))
+
+    def test_embed_src_with_a_scheme(self):
+        self.assertTrue(self._refused(
+            '<embed src="https://evil.example/x">'))
+
+    def test_embed_src_without_a_scheme(self):
+        self.assertTrue(self._refused('<embed src="evil.example/x">'))
+
+    def test_svg_use_href_with_a_scheme(self):
+        self.assertTrue(self._refused(
+            '<svg><use href="https://evil.example/x"></use></svg>'))
+
+    def test_svg_use_href_without_a_scheme(self):
+        self.assertTrue(self._refused(
+            '<svg><use href="evil.example/x"></use></svg>'))
+
+    def test_a_same_document_fragment_is_not_a_reference(self):
+        # The one value these attributes may legitimately carry: a pointer
+        # to something else in the same file, not a second file.
+        self.assertEqual(
+            self._refused('<svg><use href="#icon-1"></use></svg>'), [])
+
+    def test_render_of_a_real_plan_still_checks_clean(self):
+        # Closing the vectors must not make the checker refuse a page it
+        # already had no complaint about.
+        vm = {
+            "schema": 1,
+            "plan": {"slug": "demo", "title": "Demo", "counts": {}},
+            "steps": [],
+        }
+        html = preview_page.render(vm)
+        self.assertEqual(preview_page.check(html, vm), [])
+
+    def test_a_duplicate_attribute_is_judged_by_its_first_value_not_its_last(self):
+        """A browser uses the *first* of two same-named attributes on one
+        tag (the WHATWG parsing rule); building `dict(attrs)` naively keeps
+        the *last* instead. `<img src="evil" src="#">` then looked internal
+        to this check — `#` has no reference — while a real browser still
+        fetches `evil`, the value the check never looked at."""
+        self.assertTrue(self._refused('<img src="evil.example/x" src="#">'))
+
+    def test_a_duplicate_attribute_where_the_first_value_is_internal_is_clean(self):
+        # The other direction, so this isn't just "always refuse duplicates":
+        # a first value that is genuinely internal must still pass.
+        self.assertEqual(self._refused('<img src="#icon" src="evil.example/x">'), [])
     def test_standard_library_only(self):
         tree = ast.parse(MODULE.read_text(encoding="utf-8"))
         absolute, relative = set(), set()

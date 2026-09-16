@@ -241,6 +241,7 @@ class TestLimitsAndRefusals(unittest.TestCase):
     def test_the_parser_refuses_what_it_cannot_represent(self):
         for name, text in (
             ("unterminated quote", 'a: "abc'),
+            ("unterminated list", "a: [1,2"),
             ("anchor", "a: &base 1"),
             ("alias", "a: *base"),
             ("tag", "a: !!str 1"),
@@ -257,6 +258,15 @@ class TestLimitsAndRefusals(unittest.TestCase):
             with self.subTest(case=name):
                 with self.assertRaises(miniyaml.MiniYamlError):
                     miniyaml.loads(text)
+
+    def test_an_unterminated_list_raises_instead_of_becoming_a_truncated_string(self):
+        """`a: [1,2` used to come back as `{'a': '[1,2'}` — the truncated list
+        literal silently became a string value instead of raising."""
+        with self.assertRaises(miniyaml.MiniYamlError) as caught:
+            miniyaml.loads("a: [1,2")
+        message = str(caught.exception)
+        self.assertIn("unterminated list", message)
+        self.assertIn("line 1", message)
 
     def test_a_ten_megabyte_line_still_parses_quickly(self):
         import time
@@ -321,6 +331,29 @@ class TestMultiLineMetaDoesNotWipeFrontmatter(unittest.TestCase):
         self.assertEqual(parsed.meta["owns"], ["src/keys.py"])
         self.assertEqual(parsed.meta["note"], "line one\nline two\n\nline four")
         self.assertIn("Objective", parsed.body)
+
+
+class TestAnUnterminatedListWarnsInsteadOfSilentlyWipingEverything(unittest.TestCase):
+    """The measured consequence of making `loads` raise on a truncated list.
+
+    Before that fix, `owns: [src/a.py` silently became the *string*
+    `'[src/a.py'` and every sibling field survived. After it, the same typo
+    raises inside `frontmatter.parse`'s try block, which was already known to
+    swallow `MiniYamlError` into an empty meta dict (see
+    `TestMultiLineMetaDoesNotWipeFrontmatter` above) — so the one bracket typo
+    now costs the document *every* key, not just `owns`: `status`, `verify`,
+    `depends_on`, all reset to nothing. `frontmatter.parse` stays tolerant on
+    read (its own contract), but must not stay silent about it.
+    """
+
+    def test_the_reset_is_not_silent(self):
+        text = (
+            "---\nctx_schema: 1\nunit: 01-a\nstatus: done\n"
+            "owns: [src/a.py\nverify:\n  - kind: cmd\n---\nbody\n"
+        )
+        with self.assertWarns(RuntimeWarning):
+            parsed = frontmatter.parse(text)
+        self.assertEqual(parsed.meta, {})
 
 
 if __name__ == "__main__":

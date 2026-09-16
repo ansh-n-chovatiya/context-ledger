@@ -36,9 +36,12 @@ produced a suite that passes on a laptop and fails on a CI runner.
 
 import errno
 import os
+import stat
+import time
 import unittest
 
 from ctx import lock as lock_mod
+from ctx import log as log_mod
 
 from support import Fixture
 
@@ -133,6 +136,148 @@ class TestAReadOnlyCheckoutStillFailsOpenAtOnce(Fixture):
             with lock_mod.held(self.layout, "demo") as taken:
                 self.assertFalse(taken)
         self.assertEqual(forced.calls, 1, "EROFS is permanent; it must not retry")
+
+
+class LogCapture(Fixture):
+    """A `Fixture` with `CTX_LOG` turned on and captured to a file.
+
+    Local to this file rather than shared with `tests/test_logging.py`: the
+    only two things needed here are "turn logging on" and "read what landed",
+    and duplicating those two lines keeps this file independent of that one's
+    fixture shape.
+    """
+
+    def setUp(self):
+        super().setUp()
+        log_mod.reset_notices()
+        self.addCleanup(log_mod.reset_notices)
+        self.log_file = self.root / "diagnostics.log"
+        os.environ[log_mod.ENV_LEVEL] = "warn"
+        os.environ[log_mod.ENV_FILE] = str(self.log_file)
+
+    def logged(self):
+        if not self.log_file.exists():
+            return ""
+        return self.log_file.read_text(encoding="utf-8")
+
+
+class TestFailOpenIsObservable(LogCapture):
+    """docs/history/ENTERPRISE-READINESS-REVIEW.md §3.3: the four fail-open returns in `_acquire` — an
+    unwritable locks directory, `EROFS`, an unclassified `OSError` and a
+    timeout — used to produce `(None, None)` and nothing else anywhere. Every
+    one of the five call sites in this codebase binds that as `taken` and
+    drops it when it is False, so a wave that lost an increment because two
+    processes ran unlocked left no trace. Each test below forces one
+    condition and asserts a record landed; none of them assert on `taken`,
+    which every real caller already discards.
+    """
+
+    def test_an_unwritable_locks_directory_is_logged(self):
+        calls = {"n": 0}
+        real_access = lock_mod.os.access
+
+        def fake_access(path, mode):
+            calls["n"] += 1
+            return False
+
+        lock_mod.os.access = fake_access
+        try:
+            with RaisesOnce(times=10_000):
+                with lock_mod.held(self.layout, "demo") as taken:
+                    self.assertFalse(taken)
+        finally:
+            lock_mod.os.access = real_access
+        text = self.logged()
+        self.assertIn("lock.fail_open", text)
+        self.assertIn("unwritable locks directory", text)
+
+    def test_a_read_only_filesystem_is_logged(self):
+        with RaisesOnce(times=10_000, err=errno.EROFS):
+            with lock_mod.held(self.layout, "demo") as taken:
+                self.assertFalse(taken)
+        text = self.logged()
+        self.assertIn("lock.fail_open", text)
+        self.assertIn("read-only filesystem", text)
+
+    def test_an_unclassified_oserror_is_logged(self):
+        """Anything that is not EACCES/EPERM/EROFS/FileExistsError — a full
+        disk (`ENOSPC`) stands in for the class."""
+        with RaisesOnce(times=10_000, err=errno.ENOSPC):
+            with lock_mod.held(self.layout, "demo") as taken:
+                self.assertFalse(taken)
+        text = self.logged()
+        self.assertIn("lock.fail_open", text)
+        self.assertIn("unclassified OSError", text)
+
+    def test_a_timeout_is_logged(self):
+        """A live, non-stale lock file nobody ever releases: `held` waits out
+        its deadline through the plain `FileExistsError` retry loop, not
+        through the EACCES branch the other timeout test in this file uses."""
+        path = lock_mod.path_for(self.layout, "demo")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"999999 not-us")
+        real_limits = lock_mod.limits
+        lock_mod.limits = lambda name: (0.05, lock_mod.LOCK_STALE_SECONDS)
+        try:
+            with lock_mod.held(self.layout, "demo") as taken:
+                self.assertFalse(taken)
+        finally:
+            lock_mod.limits = real_limits
+        text = self.logged()
+        self.assertIn("lock.fail_open", text)
+        self.assertIn("timed out", text)
+
+    def test_cannot_create_the_locks_directory_is_logged(self):
+        """A fifth fail-open path — `held`'s own `mkdir` failing before
+        `_acquire` ever runs — not one of docs/history/ENTERPRISE-READINESS-REVIEW.md's four, but exactly as
+        silent before this test existed. Skips where `chmod` cannot make a
+        directory refuse writes (root, or a platform that ignores the bit),
+        the same accommodation `tests/test_logging.py` makes for the same
+        reason.
+        """
+        runtime = self.layout.runtime
+        runtime.mkdir(parents=True, exist_ok=True)
+        mode = runtime.stat().st_mode
+        os.chmod(runtime, stat.S_IREAD | stat.S_IEXEC)
+        probe = runtime / "locks"
+        try:
+            if probe.exists():
+                self.skipTest("locks directory already exists")
+            try:
+                probe.mkdir()
+            except OSError:
+                pass
+            else:
+                probe.rmdir()
+                self.skipTest("chmod did not make the directory read-only here")
+            with lock_mod.held(self.layout, "demo") as taken:
+                self.assertFalse(taken)
+        finally:
+            os.chmod(runtime, mode)
+        text = self.logged()
+        self.assertIn("lock.fail_open", text)
+        self.assertIn("cannot create the locks directory", text)
+
+
+class TestNormalContentionIsNotLogged(LogCapture):
+    """The other half of "distinguishable": a lock that recovers inside its
+    deadline is not a fail-open, and must not look like one in the log."""
+
+    def test_a_transient_denial_that_recovers_logs_nothing(self):
+        with RaisesOnce(times=1):
+            with lock_mod.held(self.layout, "demo") as taken:
+                self.assertTrue(taken)
+        self.assertNotIn("lock.fail_open", self.logged())
+
+    def test_a_stale_lock_that_is_reclaimed_logs_nothing(self):
+        path = lock_mod.path_for(self.layout, "demo")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"999999 stale-holder")
+        old = time.time() - lock_mod.LOCK_STALE_SECONDS - 1
+        os.utime(path, (old, old))
+        with lock_mod.held(self.layout, "demo") as taken:
+            self.assertTrue(taken)
+        self.assertNotIn("lock.fail_open", self.logged())
 
 
 class TestTheForcingItselfWorks(Fixture):

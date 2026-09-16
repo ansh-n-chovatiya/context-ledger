@@ -10,6 +10,7 @@ behind if the process dies mid-write — can route through the same path.
 import os
 import time
 import tempfile
+import warnings
 
 
 
@@ -41,14 +42,47 @@ def _replace(temp, destination):
                 raise
             time.sleep(0.01)
 
+def fsync_parent_dir(path):
+    """fsync `path`'s parent directory so a new/updated entry in it survives
+    a crash, not just the file's own bytes.
+
+    `os.replace` makes the rename atomic — a reader always sees the old file
+    or the new one — but that says nothing about durability: the directory
+    entry pointing at the new inode is only guaranteed to survive a power
+    loss once the *directory* itself has been fsynced, separately from the
+    file. Skipping this step is how a crash right after `os.replace` can
+    leave the entry pointing at the old (or no) inode on some filesystems,
+    even though the temp file's own `fsync` already landed its bytes.
+
+    Windows has no directory file descriptor to fsync — `os.open` on a
+    directory raises there — so this is a deliberate no-op on `os.name ==
+    "nt"`, the same way `_replace` above special-cases Windows rather than
+    erroring on a platform that cannot do the thing being asked.
+    """
+    if os.name == "nt":
+        return
+    fd = os.open(os.path.dirname(str(path)) or ".", os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def write_text(path, text, encoding="utf-8"):
     """Write `text` to `path` atomically. Returns `path`.
 
     Creates parent directories. The temp file is made in the destination's own
     directory (os.replace is atomic only within one filesystem) with a `.ctx-`
     prefix and `.tmp` suffix, so it is not picked up by the `*.md` and
-    `*.json` globs that scan the ledger. On any exception the temp file is
-    removed and the original is left byte-identical.
+    `*.json` globs that scan the ledger. On any exception *before* the rename,
+    the temp file is removed and the original is left byte-identical — the
+    write either happened or it did not. After the rename, the parent
+    directory is fsynced too (see `fsync_parent_dir`) so the new directory
+    entry is durable, not just the file's own bytes; that fsync is best-effort
+    and deliberately outside the rollback above, because by then the new
+    content is already the durable truth on disk — a transient failure to
+    additionally fsync the directory is not the write failing, and must not
+    be reported as though it were.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile(
@@ -75,4 +109,13 @@ def write_text(path, text, encoding="utf-8"):
         except OSError:
             pass
         raise
+    try:
+        fsync_parent_dir(path)
+    except OSError as exc:
+        warnings.warn(
+            f"atomic: wrote {path} but could not fsync its parent directory "
+            f"({exc}) — the new content is on disk, its durability against a "
+            "crash is not guaranteed",
+            RuntimeWarning,
+        )
     return path

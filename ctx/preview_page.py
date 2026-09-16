@@ -131,6 +131,35 @@ _EXTERNAL = tuple(re.compile(pattern, re.I) for pattern in (
     r"\burl\s*\(",
 ))
 
+# Attribute/tag pairs that reference something outside the element wherever
+# they carry a value — one pass over a set, not a special case per tag. The
+# `_EXTERNAL` patterns above only fire when the value spells out a scheme
+# (`https:`) or names `//cdn`; a bare `evil.example/x` or a protocol-relative
+# `//evil.example/x` fetches exactly as eagerly and spells out neither, so
+# these are flagged regardless of whether they carry a scheme at all. That is
+# the literal reading of this module's own docstring: "no image URL", not "no
+# image URL with an explicit scheme". `srcset` is checked on every element,
+# since it is never legitimate on a page that ships no images; the rest are
+# tied to the one tag where the attribute means "fetch this".
+_ANY_TAG_REFERENCE_ATTRS = frozenset({"srcset"})
+_TAGGED_REFERENCE_ATTRS = frozenset({
+    ("img", "src"),
+    ("base", "href"),
+    ("object", "data"),
+    ("embed", "src"),
+    ("use", "href"),
+    ("use", "xlink:href"),
+})
+
+
+def _is_internal_reference(value):
+    """Empty, or a same-document fragment (`#...`) — the only values these
+    attributes may carry without pointing outside the page itself. `render()`
+    never emits any of these attributes at all, so this exists only to give a
+    future one somewhere to point without failing its own check."""
+    value = str(value or "").strip()
+    return not value or value.startswith("#")
+
 
 # --------------------------------------------------------------------------- #
 # small words
@@ -921,13 +950,19 @@ class Regions(object):
     check, and a URL sitting in a text node fetches nothing. The JSON island
     is exempt for the same reason and no other: it is data the browser parses
     on request, not code it runs.
+
+    `references` is every `(tag, attribute)` pair from `_ANY_TAG_REFERENCE_ATTRS`
+    / `_TAGGED_REFERENCE_ATTRS` whose value is not empty and not a same-document
+    fragment — the reference vectors `_EXTERNAL`'s scheme-shaped patterns miss
+    because the value never spelled out `https:` at all.
     """
 
-    def __init__(self, plain_text, tech_text, criteria, surface):
+    def __init__(self, plain_text, tech_text, criteria, surface, references):
         self.plain_text = plain_text
         self.tech_text = tech_text
         self.criteria = criteria
         self.surface = surface
+        self.references = references
 
 
 class _Reader(HTMLParser):
@@ -938,6 +973,7 @@ class _Reader(HTMLParser):
         self.tech = []
         self.criteria = {}
         self.surface = []
+        self.references = []
         self._stack = []   # [(tag, inside_tech)]
         self._opaque = 0
         self._inert = False
@@ -946,7 +982,15 @@ class _Reader(HTMLParser):
 
     @staticmethod
     def _attrs(attrs):
-        return dict((name, value or "") for name, value in attrs)
+        """First occurrence wins for a duplicate attribute, matching the
+        WHATWG parsing rule real browsers use — `dict(attrs)` would keep the
+        *last* one instead, so `<img src="evil" src="#">` looked internal to
+        this check while a browser still fetches the first, real `src`."""
+        found = {}
+        for name, value in attrs:
+            if name not in found:
+                found[name] = value or ""
+        return found
 
     def _inside_tech(self):
         return bool(self._stack) and self._stack[-1][1]
@@ -960,14 +1004,24 @@ class _Reader(HTMLParser):
                 self.criteria[key] = self.criteria.get(key, 0) + 1
         return "tech" in classes
 
+    def _find_references(self, tag, attrs):
+        found = self._attrs(attrs)
+        for name, value in found.items():
+            wanted = (name in _ANY_TAG_REFERENCE_ATTRS
+                     or (tag, name) in _TAGGED_REFERENCE_ATTRS)
+            if wanted and not _is_internal_reference(value):
+                self.references.append((tag, name))
+
     # -- the parser's own interface --------------------------------------- #
 
     def handle_startendtag(self, tag, attrs):
         self._note(attrs)
+        self._find_references(tag, attrs)
         self.surface.append(self.get_starttag_text() or "")
 
     def handle_starttag(self, tag, attrs):
         tech = self._note(attrs) or self._inside_tech()
+        self._find_references(tag, attrs)
         self.surface.append(self.get_starttag_text() or "")
         if tag in _VOID:
             return
@@ -1009,7 +1063,8 @@ def regions(html):
     except Exception:  # pragma: no cover - html.parser is forgiving by design
         pass
     return Regions("\n".join(reader.plain), "\n".join(reader.tech),
-                   reader.criteria, "\n".join(reader.surface))
+                   reader.criteria, "\n".join(reader.surface),
+                   list(reader.references))
 
 
 # --------------------------------------------------------------------------- #
@@ -1076,5 +1131,10 @@ def check(html, vm):
                 "the page refers to something outside itself, matching %s — it "
                 "has to work from a file with no network"
                 % pattern.pattern)
+
+    for tag, attr in read.references:
+        problems.append(
+            "the page refers to something outside itself, via <%s %s> — it "
+            "has to work from a file with no network" % (tag, attr))
 
     return problems

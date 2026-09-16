@@ -5,7 +5,9 @@ Two properties matter more than anything else here:
 * Writes inject nothing into the model's context. They cost disk, not tokens.
 * The digest is a *tail*, not a summary. Reading it costs the same on a
   three-year-old repo as on a fresh one, and it never makes a model call.
-  Semantic compression is `ctx digest --semantic`, which is explicit and rare.
+  Nothing here summarizes the journal semantically; `ctx digest` only
+  regenerates the mechanical tail, and any compression beyond that is a job
+  for whatever reads it, not for this module.
 
 Entries are pipe-delimited so they diff cleanly in a pull request and parse
 with a `split`. Files are partitioned twice over: by date, and by *author*.
