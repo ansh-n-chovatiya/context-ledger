@@ -38,7 +38,14 @@ jobs:
       # is a mutable pointer, and a release workflow that resolves one at run
       # time executes whatever it was repointed at overnight. The trailing
       # comment carries the human-readable version.
+      # `fetch-tags: true`: the test step below runs the full suite,
+      # including `test_the_ci_recipe_pins_a_ref_that_resolves_in_this_
+      # repository`, which needs `v1.0.0` — a different tag from the one this
+      # job checked out — to resolve. A shallow checkout of just the pushed
+      # tag does not include any other tag's object without this.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-tags: true
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:

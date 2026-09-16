@@ -54,8 +54,17 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
         with:
           fetch-depth: 0
+      # Shallow, but `fetch-tags: true` still resolves any tag by name — it is
+      # not the same knob as full history above. Its absence here is what let
+      # `test_the_ci_recipe_pins_a_ref_that_resolves_in_this_repository` fail
+      # on 8 of 9 matrix jobs the first time this range actually ran in CI:
+      # `git rev-parse v1.0.0` needs the tag object fetched, not the commit
+      # graph between it and HEAD, which a shallow clone of the branch alone
+      # never includes.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: matrix.os != 'ubuntu-latest' || matrix.python != '3.13'
+        with:
+          fetch-tags: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
@@ -263,7 +272,13 @@ jobs:
     permissions:
       contents: read
     steps:
+      # `fetch-tags: true`: this job runs the full suite too, including
+      # `test_the_ci_recipe_pins_a_ref_that_resolves_in_this_repository`,
+      # which needs `v1.0.0` to resolve — see the `test` job's checkout step
+      # for why a shallow checkout otherwise fails it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-tags: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
