@@ -68,7 +68,7 @@ verify what you got:
 ```bash
 claude plugin marketplace add ansh-n-chovatiya/context-ledger
 claude plugin install ctx@context-ledger
-claude plugin list                 # ctx@context-ledger  0.8.0  ✔ enabled
+claude plugin list                 # ctx@context-ledger  1.0.0  ✔ enabled
 claude plugin details ctx          # component inventory + token cost
 ```
 
@@ -91,8 +91,8 @@ are running rather than trusting the output: `claude plugin list`, and `ls
 The CLI is also a distribution, for putting `ctx` on `PATH` without a symlink:
 
 ```bash
-pip install ./context_ledger-0.8.0-py3-none-any.whl   # or: pip install . in a clone
-ctx --version                                          # ctx 0.8.0
+pip install ./context_ledger-1.0.0-py3-none-any.whl   # or: pip install . in a clone
+ctx --version                                          # ctx 1.0.0
 ```
 
 The distribution is **`context-ledger`**; the import package and the console

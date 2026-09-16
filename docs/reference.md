@@ -437,7 +437,7 @@ score wins; ties break toward the profile with commands to propose.
 | `infra` | `main.tf`, `Chart.yaml` | `terraform/` (3) | `human` — review before applying |
 | `docs` | `mkdocs.yml`, `docusaurus.config.js` | `docs/` (2) | `rubric` |
 | `data` | `dbt_project.yml` | `notebooks/` (2) | `human` |
-| `research` | *(explicit `--profile`)* | | `rubric` |
+| `research` | `*.bib`, `*.bibtex` | `references/`, `literature/`, `sources/` (2) | `rubric` |
 
 So a Python service that documents itself is `code`, not `docs`; under the old
 first-match order `docs/` won outright, leaving most repositories with no runnable
@@ -786,15 +786,16 @@ stays clean for whatever is reading it. An unexpected error prints one line, `ct
 «command» failed: «type»: «message»`; `CTX_DEBUG=1` restores the traceback.
 
 Having nothing to do *yet* is different and still exits 0. There are exactly
-three such advisory conditions, and the notice each prints *is* the answer:
+four such advisory conditions, and the notice each prints *is* the answer:
 
 | Advisory | Raised by |
 |---|---|
 | `missing-argument` | no name was typed, and the slash command's prompt body is about to ask for it |
 | `no-active-work` | there is no active task, plan or unit for this command to act on |
 | `snapshot-truncated` | a snapshot hit `review.max_files`; it was written and the review can proceed on it |
+| `plan-slow` | `plan-check` found a file three or more units own, or a test referencing an owned file no unit owns |
 
-`--strict`, or `CTX_STRICT=1`, turns exactly those three into exit 1 and nothing
+`--strict`, or `CTX_STRICT=1`, turns exactly those four into exit 1 and nothing
 else. Having no ledger at all is *not* advisory: `ctx status` with no `.ctx/`
 exits 2 and points at `/ctx:init`. Don't export `CTX_STRICT=1` in your shell
 profile: under it a bare `/ctx:task` exits 1 and Claude Code abandons the command

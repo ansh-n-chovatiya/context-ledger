@@ -65,9 +65,32 @@ jobs:
               sys.exit(1)
           print("OK: %s == v%s == v%s" % (tag, declared, manifest))
 
+      # The worktree tier runs real git, so the runner needs an identity.
+      - name: Configure git
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+          git config --global init.defaultBranch main
+
+      # A tag push builds and publishes a GitHub Release from whatever the
+      # tag points at. `ci.yml` triggers on `branches: [main]` and
+      # `pull_request`, neither of which matches `refs/tags/*`, so a tag is
+      # the one ref this repository's own test suite never runs against
+      # unless this step runs it here. No `continue-on-error`, no
+      # `if: always()` and no `|| true`: a failing suite stops this job
+      # before the build step below, and the release is never built, let
+      # alone attached.
+      - name: Run the test suite
+        run: python -m unittest discover -s tests -q
+
       # Pinned exactly, and the build then runs with `--no-isolation`, so the
       # backend that produces the artefacts is the version named here rather
-      # than whatever PyPI resolved `hatchling>=1.18` to this morning.
+      # than whatever PyPI resolved `hatchling>=1.18` to this morning. Held
+      # equal to the `coverage` job's pin in `ci.yml`: that job is the only
+      # place `SdistContainsWhatTheReadmeLinksTo` (tests/test_lint_and_coverage.py)
+      # actually builds an sdist and reads the archive, and a mismatched pin
+      # there would exercise a different build backend than the one that
+      # produces the artefacts this workflow ships.
       - name: Install the pinned build toolchain
         run: |
           python -m pip install --upgrade --disable-pip-version-check \

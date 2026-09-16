@@ -43,6 +43,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # The workflow reader is shared with the CI-floor tests on purpose: one strict
 # YAML subset for this repository, not two.

@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ctx import cli, config, verify  # noqa: E402
+from ctx import __version__, cli, config, verify  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
@@ -237,6 +237,57 @@ def _flatten(mapping, prefix=""):
 
 
 # --------------------------------------------------------------------------- #
+# the pinned tag and the version strings
+# --------------------------------------------------------------------------- #
+
+_CTX_REF = re.compile(r"^\s*CTX_REF:\s*(\S+)", re.M)
+
+
+class VersionCurrencyTests(unittest.TestCase):
+    def test_the_ci_recipe_pins_a_ref_that_resolves_in_this_repository(self):
+        """`docs/operations.md` names a tag; a tag that got deleted or never
+        existed is a copy-pasteable recipe that fails on the first clone.
+        """
+        text = read(DOCS / "operations.md")
+        match = _CTX_REF.search(text)
+        self.assertIsNotNone(
+            match, "docs/operations.md's CI recipe has no CTX_REF line"
+        )
+        ref = match.group(1)
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+            cwd=str(ROOT), capture_output=True, text=True,
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            f"docs/operations.md's CTX_REF ({ref!r}) does not resolve to a "
+            f"commit in this repository via `git rev-parse`: {result.stderr}",
+        )
+
+    def test_the_readme_version_strings_match_ctx_version(self):
+        """The plugin-list, wheel-filename and `ctx --version` examples all
+        name the version the tool actually reports, not whatever was current
+        when that paragraph was written.
+        """
+        text = read(README)
+        self.assertIn(
+            f"ctx@context-ledger  {__version__}", text,
+            f"README's `claude plugin list` example does not show "
+            f"ctx.__version__ ({__version__})",
+        )
+        self.assertIn(
+            f"context_ledger-{__version__}-py3-none-any.whl", text,
+            f"README's wheel filename does not carry ctx.__version__ "
+            f"({__version__})",
+        )
+        self.assertIn(
+            f"# ctx {__version__}", text,
+            f"README's `ctx --version` example does not match ctx.__version__ "
+            f"({__version__})",
+        )
+
+
+# --------------------------------------------------------------------------- #
 # links, and the documents that moved
 # --------------------------------------------------------------------------- #
 
@@ -296,7 +347,7 @@ class ArchivedDocumentTests(unittest.TestCase):
     """
 
     MOVED = ("AUDIT.md", "PRODUCTION-AUDIT.md", "PREVIEW-PLAN.md",
-             "report.md")
+             "report.md", "ENTERPRISE-READINESS-REVIEW.md")
 
     # Dated records of a past state. Rewriting a changelog entry or an audit to
     # use a path that did not exist when it was written would falsify it, so
