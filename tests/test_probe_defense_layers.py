@@ -162,20 +162,28 @@ class TestProbeModuleNameValidation(unittest.TestCase):
         self.marker_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.marker_dir, ignore_errors=True)
         self.marker = os.path.join(self.marker_dir, "pwned")
-        # No spaces: `availability()` tokenises the whole command on
-        # whitespace, so the hostile name has to survive that as one token.
+        # No spaces AND no dots: `availability()` tokenises the whole command
+        # on whitespace first, so the hostile name has to survive that as one
+        # token — and then, unvalidated or not, `top = module[0].split(".",
+        # 1)[0]` (`ctx/detect.py`) still runs, truncating at the *first* dot
+        # the way a real dotted import name would be. `echo.>path`, the usual
+        # no-space idiom for an empty file on Windows, has exactly that dot
+        # and was silently cut down to `echo` before ever reaching the shell
+        # — the bug in the previous version of this fix, caught only because
+        # the positive control it was meant to arm still failed. `echo>path`
+        # (no dot) creates the file the same way and survives the split.
         #
-        # OS-native, because the positive control below interpolates this
-        # into a real `subprocess.run(..., shell=True)` call: POSIX `;`
+        # OS-native otherwise, because the positive control below interpolates
+        # this into a real `subprocess.run(..., shell=True)` call: POSIX `;`
         # chains commands and `${IFS}` expands to a space, both only once an
         # actual `/bin/sh` reads them — `cmd.exe` has neither, so the POSIX
         # payload is simply inert text there, and the positive control it is
         # meant to prove would fail to demonstrate the vulnerability rather
         # than demonstrating it, on the one platform in the CI matrix that
         # never runs `/bin/sh`. `&` chains commands in cmd.exe the way `;`
-        # does in sh, and `echo.>path` needs no space to create an empty file.
+        # does in sh.
         if os.name == "nt":
-            self.hostile_top = f"x&echo.>{self.marker}"
+            self.hostile_top = f"x&echo>{self.marker}"
         else:
             self.hostile_top = f"x;touch${{IFS}}{self.marker}"
 
