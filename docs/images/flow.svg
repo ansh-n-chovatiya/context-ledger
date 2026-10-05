@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" role="img" aria-labelledby="t d">
+<title id="t">From idea to finished work in five steps</title>
+<desc id="d">Spec, questions, plan, build, review: the five steps Context Ledger walks a big piece of work through.</desc>
+<rect width="1200" height="420" fill="#FAFAF8"/>
+<g font-family="Outfit, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" text-anchor="middle">
+<path d="M130 170 H1070" stroke="#E4E4DF" stroke-width="6" stroke-linecap="round"/>
+<path d="M130 170 H1070" stroke="#0E7C86" stroke-width="6" stroke-linecap="round" stroke-dasharray="2 14"/>
+<circle cx="130" cy="170" r="46" fill="#0E7C86"/><text x="130" y="182" font-size="34" font-weight="700" fill="#fff">1</text>
+<circle cx="365" cy="170" r="46" fill="#0E7C86"/><text x="365" y="182" font-size="34" font-weight="700" fill="#fff">2</text>
+<circle cx="600" cy="170" r="46" fill="#0E7C86"/><text x="600" y="182" font-size="34" font-weight="700" fill="#fff">3</text>
+<circle cx="835" cy="170" r="46" fill="#0E7C86"/><text x="835" y="182" font-size="34" font-weight="700" fill="#fff">4</text>
+<circle cx="1070" cy="170" r="46" fill="#171E1D"/><text x="1070" y="182" font-size="34" font-weight="700" fill="#fff">5</text>
+<g font-size="26" font-weight="700" fill="#171E1D">
+<text x="130" y="262">Describe</text><text x="365" y="262">Answer</text><text x="600" y="262">Plan</text><text x="835" y="262">Build</text><text x="1070" y="262">Review</text>
+</g>
+<g font-size="18" fill="#6B7775">
+<text x="130" y="296">What "done"</text><text x="130" y="320">looks like</text>
+<text x="365" y="296">Open questions</text><text x="365" y="320">get asked first</text>
+<text x="600" y="296">Split into safe,</text><text x="600" y="320">separate pieces</text>
+<text x="835" y="296">Each piece gets</text><text x="835" y="320">its own helper</text>
+<text x="1070" y="296">A second pair of</text><text x="1070" y="320">eyes checks it</text>
+</g>
+<text x="600" y="70" font-size="30" font-weight="700" fill="#171E1D">The big-work path (L2)</text>
+</g>
+</svg>

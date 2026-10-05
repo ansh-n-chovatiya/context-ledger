@@ -1,5 +1,7 @@
 # Context Ledger
 
+<p align="center"><img src="docs/images/thumbnail-terminal.webp" alt="Context Ledger for Claude Code: a terminal showing ctx status with a wave board of finished units and one blocked unit" width="720"></p>
+
 **Durable project state for Claude Code.** Specs, plans, decisions and memory live
 on disk instead of in the context window — so sessions become disposable,
 compaction stops losing your work, and "done" becomes something a gate can refuse
@@ -12,7 +14,7 @@ tree, and the plugin is completely silent in any project that hasn't opted in.
 [Installation](#installation) · [Quick start](#quick-start) ·
 **[The three levels](#the-three-levels)** — the one concept to understand ·
 [Command reference](#command-reference) · [Where the rest lives](#where-the-rest-lives)
-· new to it? [GUIDE.md](GUIDE.md) explains the same tool without jargon.
+· new to it? [GUIDE.md](GUIDE.md) and the [illustrated blog post](docs/blog.md) explain the same tool without jargon.
 
 ## Why this exists
 

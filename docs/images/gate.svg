@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520" role="img" aria-labelledby="t d">
+<title id="t">The done-gate: work only counts once the checks pass</title>
+<desc id="d">Claude says it is finished, a gate runs the checks, a failed check sends it back, a passed check lets it through.</desc>
+<rect width="1200" height="520" fill="#FAFAF8"/>
+<g font-family="Outfit, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" text-anchor="middle">
+<text x="600" y="68" font-size="30" font-weight="700" fill="#171E1D">"Done" has to be proven</text>
+<rect x="60" y="150" width="260" height="170" rx="22" fill="#fff" stroke="#E4E4DF" stroke-width="2"/>
+<text x="190" y="215" font-size="26" font-weight="700" fill="#171E1D">Claude says</text>
+<text x="190" y="256" font-size="32" font-weight="700" fill="#0E7C86">"I'm finished"</text>
+<path d="M330 235 H430" stroke="#171E1D" stroke-width="5" stroke-linecap="round"/><path d="M412 217 L432 235 L412 253" fill="none" stroke="#171E1D" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="450" y="120" width="300" height="230" rx="26" fill="#171E1D"/>
+<rect x="530" y="165" width="40" height="40" rx="10" fill="#0E7C86"/><path d="M540 185 l8 8 l14 -16" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="580" y="165" width="40" height="40" rx="10" fill="#0E7C86"/><path d="M590 185 l8 8 l14 -16" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="630" y="165" width="40" height="40" rx="10" fill="#0E7C86"/><path d="M640 185 l8 8 l14 -16" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="600" y="258" font-size="28" font-weight="700" fill="#fff">The gate</text>
+<text x="600" y="294" font-size="19" fill="#C9D3D2">runs your checks</text>
+<text x="600" y="322" font-size="19" fill="#C9D3D2">before saying yes</text>
+<path d="M760 190 L860 120" stroke="#0E7C86" stroke-width="5" stroke-linecap="round"/><path d="M838 118 L862 119 L856 142" fill="none" stroke="#0E7C86" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M760 285 L860 360" stroke="#B4412F" stroke-width="5" stroke-linecap="round"/><path d="M838 364 L862 361 L852 340" fill="none" stroke="#B4412F" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="870" y="90" width="300" height="110" rx="22" fill="#E3F1F2" stroke="#0E7C86" stroke-width="3"/>
+<circle cx="918" cy="145" r="22" fill="#0E7C86"/><path d="M908 145 l7 7 l13 -15" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="952" y="138" text-anchor="start" font-size="24" font-weight="700" fill="#0A5F67">All checks pass</text>
+<text x="952" y="170" text-anchor="start" font-size="19" fill="#171E1D">Truly done.</text>
+<rect x="870" y="300" width="300" height="130" rx="22" fill="#FBEDEA" stroke="#B4412F" stroke-width="3"/>
+<circle cx="918" cy="365" r="22" fill="#B4412F"/><path d="M909 356 l18 18 M927 356 l-18 18" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+<text x="952" y="352" text-anchor="start" font-size="24" font-weight="700" fill="#8A2F20">A check fails</text>
+<text x="952" y="382" text-anchor="start" font-size="19" fill="#171E1D">Sent back with</text>
+<text x="952" y="406" text-anchor="start" font-size="19" fill="#171E1D">what broke.</text>
+<path d="M1020 432 C1020 520 190 540 190 326" fill="none" stroke="#B4412F" stroke-width="3" stroke-dasharray="8 8" stroke-linecap="round"/>
+<path d="M177 344 L190 324 L203 344" fill="none" stroke="#B4412F" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+</svg>
