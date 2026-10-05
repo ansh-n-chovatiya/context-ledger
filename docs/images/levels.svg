@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520" role="img" aria-labelledby="t d">
+<title id="t">Three levels of process, from none to a full plan</title>
+<desc id="d">A staircase with three steps: L0 a quick note, L1 one checklist, L2 a full plan for big work.</desc>
+<rect width="1200" height="520" fill="#FAFAF8"/>
+<g font-family="Outfit, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+<rect x="60" y="300" width="340" height="170" rx="22" fill="#fff" stroke="#E4E4DF" stroke-width="2"/>
+<rect x="430" y="210" width="340" height="260" rx="22" fill="#fff" stroke="#E4E4DF" stroke-width="2"/>
+<rect x="800" y="110" width="340" height="360" rx="22" fill="#fff" stroke="#0E7C86" stroke-width="3"/>
+<rect x="84" y="324" width="64" height="40" rx="12" fill="#EEF4F4"/><text x="116" y="352" font-size="22" font-weight="700" fill="#0A5F67" text-anchor="middle">L0</text>
+<rect x="454" y="234" width="64" height="40" rx="12" fill="#E3F1F2"/><text x="486" y="262" font-size="22" font-weight="700" fill="#0A5F67" text-anchor="middle">L1</text>
+<rect x="824" y="134" width="64" height="40" rx="12" fill="#0E7C86"/><text x="856" y="162" font-size="22" font-weight="700" fill="#fff" text-anchor="middle">L2</text>
+<text x="84" y="406" font-size="28" font-weight="700" fill="#171E1D">Just work</text>
+<text x="84" y="440" font-size="19" fill="#6B7775">Quick jobs. No paperwork.</text>
+<text x="454" y="316" font-size="28" font-weight="700" fill="#171E1D">One checklist</text>
+<text x="454" y="350" font-size="19" fill="#6B7775">One job, with a clear</text>
+<text x="454" y="376" font-size="19" fill="#6B7775">"this is done when..."</text>
+<g stroke="#0E7C86" stroke-width="3" stroke-linecap="round"><path d="M454 414 h200"/><path d="M454 436 h140"/></g>
+<text x="824" y="216" font-size="28" font-weight="700" fill="#171E1D">A full plan</text>
+<text x="824" y="250" font-size="19" fill="#6B7775">Big work, split into</text>
+<text x="824" y="276" font-size="19" fill="#6B7775">pieces that can run</text>
+<text x="824" y="302" font-size="19" fill="#6B7775">side by side.</text>
+<g fill="#0E7C86"><rect x="824" y="340" width="90" height="26" rx="8"/><rect x="926" y="340" width="90" height="26" rx="8" opacity=".7"/><rect x="1028" y="340" width="90" height="26" rx="8" opacity=".45"/></g>
+<g fill="#171E1D"><rect x="824" y="382" width="150" height="26" rx="8" opacity=".85"/><rect x="986" y="382" width="132" height="26" rx="8" opacity=".5"/></g>
+<text x="60" y="76" font-size="30" font-weight="700" fill="#171E1D">Start small. Add structure only when it earns its place.</text>
+<path d="M60 96 H300" stroke="#0E7C86" stroke-width="5" stroke-linecap="round"/>
+</g>
+</svg>
