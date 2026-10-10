@@ -3,7 +3,6 @@
 The sign-off still clears for them; only the journal line is suppressed.
 """
 
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -11,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ctx import hooks, journal  # noqa: E402
+from ctx import hooks  # noqa: E402
 from support import Fixture  # noqa: E402
 
 # Recorded before the change; `_bash_targets` must keep returning exactly these.
@@ -34,6 +33,13 @@ TARGETS = [
 ]
 
 
+# `_bash_targets` recognises a path by a `/` or a `.`, so a Windows absolute path
+# (`C:\Users\...`) is not seen as a target at all and these three cases would
+# pass, or fail, for a reason unrelated to the suppression they exist to check.
+needs_posix_paths = unittest.skipIf(
+    sys.platform == "win32", "shell targets are POSIX-style paths; see above")
+
+
 class TestShellNoise(Fixture):
     def journal_text(self):
         return "\n".join(
@@ -43,12 +49,14 @@ class TestShellNoise(Fixture):
     def bash(self, command):
         self.run_hook("PostToolUse", tool_name="Bash", tool_input={"command": command})
 
+    @needs_posix_paths
     def test_project_root_target_is_not_journalled(self):
         before = self.journal_text()
         self.bash(f"mkdir -p {self.root}")  # positive control: was `shell | .`
         self.assertNotIn("shell | .", self.journal_text()[len(before):])
         self.assertEqual(self.journal_text(), before)
 
+    @needs_posix_paths
     def test_outside_target_is_not_journalled(self):
         before = self.journal_text()
         self.bash(f"touch {self.untracked}/x.txt")
@@ -62,6 +70,7 @@ class TestShellNoise(Fixture):
         for rel in ("out/a.txt", "src/b.py", "src/c.py"):
             self.assertIn(f"shell | {rel}", text)
 
+    @needs_posix_paths
     def test_signoff_still_cleared_when_journal_suppressed(self):
         self.assertEqual(self.cli("task", "new", "t1")[0], 0)
         from ctx import state, work

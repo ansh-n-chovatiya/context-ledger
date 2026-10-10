@@ -344,9 +344,7 @@ class Performance(unittest.TestCase):
             "Tests " * 30000,
         ):
             with self.subTest(line=line[:20]):
-                text = "\n".join(["=== FAILURES ===", "___ t ___", "E assert 0", line,
-                                  "=== 1 failed in 1s ===", "Ran 1 test in 1s", line,
-                                  "test result: FAILED", line])
+                text = f"=== FAILURES ===\n___ t ___\nE assert 0\n{line}\n=== 1 failed in 1s ===\nRan 1 test in 1s\n{line}\ntest result: FAILED\n{line}"
                 self._fast(reduce_output, text)
                 for rx in (R._PY_ANY_SECTION, R._PY_TEST, R._UT_RESULT, R._CARGO_HEAD,
                            R._RULE, R._JEST_SUMMARY, R._PY_SHORT, R._PY_SECTION):
@@ -369,7 +367,7 @@ class Bookkeeping(unittest.TestCase):
 
     def test_block_start_is_trimmed_start(self):
         lines = ["head", "", "", "-" * 20, "body 1", "body 2", "", "END", "x"]
-        blocks = R._blocks_between(lines, [1], lambda l: l == "END")
+        blocks = R._blocks_between(lines, [1], lambda ln: ln == "END")
         self.assertEqual(len(blocks), 1)
         start, block = blocks[0]
         self.assertEqual(block, ["body 1", "body 2"])

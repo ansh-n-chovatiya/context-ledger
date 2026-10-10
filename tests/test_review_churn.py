@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ctx import review as review_mod, snapshot as snapshot_mod  # noqa: E402
+from ctx import review as review_mod  # noqa: E402
 from test_review import ReviewFixture  # noqa: E402
 
 
@@ -73,7 +73,7 @@ class TestChurnInThePackage(ReviewFixture):
         unit = self.prepare("def a():\n    return 1\n", "def a():\n    return 2\n")
         path, _stats, _p = self.build(unit)
         text = section(path.read_text(encoding="utf-8"))
-        self.assertEqual(len([l for l in text.splitlines() if l.strip()]), 1)
+        self.assertEqual(len([ln for ln in text.splitlines() if ln.strip()]), 1)
         self.assertIn("No whitespace-only hunks", text)
 
     def test_churn_never_says_critical_and_leaves_the_gate_alone(self):
@@ -94,7 +94,9 @@ class TestChurnInThePackage(ReviewFixture):
         with mock.patch.object(review_mod, "churn", return_value=empty):
             _path, without_stats, _p = self.build(unit)
         # `bytes` is the package size, which the Churn text itself changes.
-        strip = lambda d: {k: v for k, v in d.items() if k != "bytes"}
+        def strip(d):
+            return {k: v for k, v in d.items() if k != "bytes"}
+
         self.assertEqual(strip(with_stats), strip(without_stats))
 
     def test_binary_file_goes_through_build_without_a_bogus_hunk(self):
@@ -122,7 +124,7 @@ class TestChurnInThePackage(ReviewFixture):
             for i in range(13)
         )
         lines = review_mod.render_churn(review_mod.churn(diff))
-        self.assertEqual(sum(1 for l in lines if l.startswith("- ")), 10)
+        self.assertEqual(sum(1 for ln in lines if ln.startswith("- ")), 10)
         self.assertEqual(lines[-1], "… 3 more")
 
 

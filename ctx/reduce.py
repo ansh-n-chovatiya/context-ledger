@@ -38,7 +38,7 @@ _CSI = r"\x1b\[[0-?]*[ -/]*[@-~]"
 _OSC = r"\x1b\][^\x07\x1b\n]*(?:\x07|\x1b\\)?"  # unterminated: stops at its own line end
 _ESC2 = r"\x1b[@-Z\\-_]"
 _C1_CSI = r"\x9b[0-?]*[ -/]*[@-~]"
-_ANSI = re.compile("|".join((_CSI, _OSC, _ESC2, _C1_CSI)))
+_ANSI = re.compile(f"{_CSI}|{_OSC}|{_ESC2}|{_C1_CSI}")
 
 
 def strip_ansi(text):
@@ -178,11 +178,11 @@ _UT_SEP = re.compile(r"^={10,}\s*$")
 
 
 def _unittest(lines):
-    ran = [i for i, l in enumerate(lines) if l.startswith("Ran ") and _UT_RAN.match(l)]
+    ran = [i for i, ln in enumerate(lines) if ln.startswith("Ran ") and _UT_RAN.match(ln)]
     if not ran:
         return None
     starts = [
-        i for i, l in enumerate(lines) if l.startswith(("FAIL: ", "ERROR: "))
+        i for i, ln in enumerate(lines) if ln.startswith(("FAIL: ", "ERROR: "))
     ]
     if not starts:
         return None
@@ -226,7 +226,7 @@ def _py_section(line):
 
 
 def _pytest(lines):
-    sections = [i for i, l in enumerate(lines) if l.startswith("=") and _PY_SECTION.match(l)]
+    sections = [i for i, ln in enumerate(lines) if ln.startswith("=") and _PY_SECTION.match(ln)]
     if not sections:
         return None
     starts = []
@@ -241,14 +241,14 @@ def _pytest(lines):
 
     blocks = _blocks_between(lines, starts, _py_section)
     summary = []
-    for i, l in enumerate(lines):
-        if l.startswith("=") and _PY_SHORT.match(l):
+    for i, ln in enumerate(lines):
+        if ln.startswith("=") and _PY_SHORT.match(ln):
             j = i + 1
             while j < len(lines) and not _py_section(lines[j]):
                 if lines[j].strip() and len(summary) < _SUMMARY_MAX:
                     summary.append(j)
                 j += 1
-    finals = [i for i, l in enumerate(lines) if _py_final(l)]
+    finals = [i for i, ln in enumerate(lines) if _py_final(ln)]
     if finals:
         summary.append(finals[-1])
     return blocks, summary
@@ -261,10 +261,10 @@ _CARGO_FAILURES = re.compile(r"^failures:\s*$")
 
 
 def _cargo(lines):
-    results = [i for i, l in enumerate(lines) if l.startswith("test result: ")]
+    results = [i for i, ln in enumerate(lines) if ln.startswith("test result: ")]
     if not results:
         return None
-    starts = [i for i, l in enumerate(lines) if l.startswith("---- ") and _CARGO_HEAD.match(l)]
+    starts = [i for i, ln in enumerate(lines) if ln.startswith("---- ") and _CARGO_HEAD.match(ln)]
 
     def end(line):
         if line.startswith("failures:"):
@@ -294,15 +294,15 @@ def _jest_summary(line):
 
 
 def _jest(lines):
-    summary = [i for i, l in enumerate(lines) if _jest_summary(l)]
+    summary = [i for i, ln in enumerate(lines) if _jest_summary(ln)]
     if not any(_JEST_TESTS.match(lines[i]) for i in summary):
         return None
     starts = [
-        i for i, l in enumerate(lines)
-        if "●" in l and _JEST_BULLET.match(l) and not _JEST_CONSOLE.match(l)
+        i for i, ln in enumerate(lines)
+        if "●" in ln and _JEST_BULLET.match(ln) and not _JEST_CONSOLE.match(ln)
     ]
     if not starts:
-        starts = [i for i, l in enumerate(lines) if "FAIL" in l and _JEST_FAIL.match(l)]
+        starts = [i for i, ln in enumerate(lines) if "FAIL" in ln and _JEST_FAIL.match(ln)]
 
     def end(line):
         return bool(
