@@ -28,7 +28,7 @@ import hashlib
 import os
 import subprocess
 
-from . import atomic, log, redact
+from . import atomic, log, redact, reduce
 
 SEP = " | "
 # How much of a day file the read path looks at. The digest is a tail, so the
@@ -173,6 +173,43 @@ def day_file(layout, day, author=None):
 # --------------------------------------------------------------------------- #
 # writing
 # --------------------------------------------------------------------------- #
+
+def excerpt(config, text):
+    """Command output or failure text, cut down to fit one journal line.
+
+    The one route by which anything a command printed reaches the journal: the
+    same reducer the gate uses for the model (failing blocks kept, repeated
+    lines collapsed, ANSI stripped), capped at `journal.max_line_chars`.
+
+    Scrub first, on the whole text, and cut after: a cut that lands inside a
+    fixed-length secret (`AKIA` + 16, `ghp_` + 36) leaves a prefix no pattern
+    matches any more, and that prefix would then reach `.ctx/journal/`.
+    `append` scrubs the note again and still enforces the line bound itself.
+    Never raises — it runs on the done-gate's refusal path, outside `append`'s
+    protection.
+    """
+    try:
+        limit = int((config.get("journal") or {}).get("max_line_chars", 200))
+    except (TypeError, ValueError, AttributeError):
+        limit = 200
+    limit = max(limit, 1)
+    try:
+        patterns = config.get("redact") or []
+    except AttributeError:
+        patterns = []
+    try:
+        scrubbed = redact.scrub(reduce.strip_ansi(str(text or "")), patterns)
+    except Exception:  # never raise; and never let unscrubbed text through
+        return ""
+    try:
+        reduced = reduce.reduce_output(scrubbed, line_cap=limit, char_cap=limit)
+        flat = " ".join(line.strip() for line in reduced.splitlines() if line.strip())
+    except Exception:
+        flat = " ".join(scrubbed.split())
+    # `reduce`'s char cap is a target, not a ceiling — its omission marker is
+    # added on top — so the bound that matters here is enforced here.
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
 
 def append(layout, config, kind, target, note="", when=None):
     """Record one event. Never raises — journalling must not break a session."""

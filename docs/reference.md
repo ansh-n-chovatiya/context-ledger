@@ -51,6 +51,9 @@ gate:
   max_attempts: 3             # blocks before it escalates to you
   output_head: 40             # failure output: leading lines kept
   output_tail: 20             # trailing lines kept
+  output_line_cap: 2000       # longest single line shown to the model before it is cut
+  output_char_cap: 6000       # ceiling on the whole failure excerpt; the full output
+                              # stays in the log
   timeout_seconds: 240        # budget for the whole gate, not per command
   # allow_override: true      # not written by `init`; when a policy sets it
                               # false and locks it, CTX_GATE=off is refused
@@ -136,6 +139,13 @@ defaults live in `ctx/snapshot.py` and almost nobody needs to move them:
 | `review.ignore` | `.git`, `node_modules`, build output, `.ctx/runtime` … | **Replaces** the default exclusion list |
 | `review.max_file_bytes` | 2,000,000 | Larger files are fingerprinted, never stored |
 | `review.max_files` | 20,000 | A bound so a snapshot can't become the slow part of a dispatch; hitting it is reported |
+
+One more key is honoured but not rendered by `init`, and is deliberately not a
+default at all:
+
+| Key | Default | Effect |
+|---|---|---|
+| `footprint.threshold_tokens` | 6000 | Estimated tokens of auto-loaded context above which `ctx doctor` warns — see [Context footprint](#context-footprint-doctor-and-budget). Optional and warn-only; a missing, non-integer, zero or negative value means 6000 |
 
 **On raising `briefing_chars`:** when `ctx doctor` reports a briefing was
 truncated, the fix is to shorten the objective and criteria on disk. Raising the
@@ -454,6 +464,12 @@ Acceptance is therefore recorded per command, machine-locally, in gitignored
 `.ctx/runtime/verify.trust`:
 
 - `ctx init` accepts what it configured — you watched it propose and print them.
+  Commands `ctx.yaml` *declares* but this machine has not accepted (a cloned
+  repository's ledger, say) are printed instead, followed by "To let the
+  done-gate run these, review and accept them with /ctx:trust", and `ctx next`
+  straight after init names `/ctx:trust`. `verify_candidates` are listed once as
+  `review <cmd>`, followed by "read them and run `ctx trust` to allow them";
+  `ctx next` does not name them.
 - Anything else is reported by the gate as a configuration error and **not run**,
   so an unaccepted ledger is *ungated*, never *broken* — the missing-binary rule.
 - `ctx trust` (`/ctx:trust`) lists what is pending and the file each command came
@@ -487,7 +503,14 @@ it and reports local acceptance as a note instead.
 ## Failure policy
 
 - The gate **fails closed** on a failing criterion and feeds back the exact check
-  plus truncated output.
+  plus reduced output (`ctx/reduce.py`): ANSI escapes and carriage-return redraws
+  are stripped, identical consecutive lines collapse to `line (×N)`, and for
+  unittest, pytest, cargo and jest output only the failure blocks and the summary
+  are kept. Output no runner is recognised in gets the old head+tail cut
+  (`gate.output_head` / `gate.output_tail`). Each line is then capped at
+  `gate.output_line_cap` characters and the whole excerpt at
+  `gate.output_char_cap`, keeping head and tail; the final summary line survives.
+  `ctx doctor` warns when either cap is not a positive integer.
 - **Scope enforcement watches the shell too.** `PreToolUse` matches `Bash`
   alongside the edit tools, so a `sed -i` or a redirect outside `owns` raises the
   same nudge. Reading a shell command is a heuristic, so the nudge is advisory;
@@ -514,9 +537,10 @@ it and reports local acceptance as a note instead.
 - **The gate runs on `Stop`, not `SubagentStop`** — it belongs to the session that
   owns the work. Firing on every finishing subagent meant an unrelated search agent
   ran the whole suite and could be blocked against criteria it never touched.
-- Failure output is scrubbed by `redact` before it reaches the model. The full log
-  under `.ctx/runtime/verify/` is left raw: gitignored, local, and redacting it
-  would hide the line you are debugging.
+- Failure output is scrubbed by `redact` before it reaches the model — the whole
+  output before capping, and the excerpt again after. The full log under
+  `.ctx/runtime/verify/` is left raw, unreduced and unredacted: gitignored, local,
+  and redacting it would hide the line you are debugging.
 - **`CTX_GATE=off` is journalled, not silent.** `off`, `0`, `false` and
   `disabled` are one decision, and each use appends a `gate | CTX_GATE` entry
   naming the site that honoured it. A locked `gate.allow_override: false` refuses
@@ -774,6 +798,75 @@ The date is `plan.json`'s own `generated`, carried through as data — the page
 reads no clock, because bytes that change because a day passed are a spurious
 diff on every reviewer's branch. The counter stays in `plan.json`, where a
 counter belongs, and `plan-check --json` still reports it.
+
+## Context footprint (doctor and budget)
+
+Every session pays for the files Claude Code loads on its own. `ctx doctor`'s
+`## context footprint` section lists the ones it knows about — `CLAUDE.md`,
+`CLAUDE.local.md`, `.claude/CLAUDE.md`, `.claude/rules/**.md` and
+`~/.claude/CLAUDE.md` — each with its size and a token **estimate** (characters
+÷ 4, labelled as such), then the total. It is read-only and warn-only:
+
+- `warn` when the total is over `footprint.threshold_tokens` (default 6000). It
+  never adds to `problems`; it is a cost, not a breakage.
+- `info` for large directories (`node_modules`, `dist`, `build`, `.venv`,
+  `venv`, `target`, `__pycache__`) that exist and are not covered by a
+  `Read(...)` permission deny rule in `.claude/settings.json` or
+  `.claude/settings.local.json`.
+- A `note` that `.claudeignore` support could not be verified; a permission deny
+  rule is the documented way to keep a path out of what the model reads.
+
+`ctx budget` ends with the same listing under `## auto-loaded context
+(estimate)`. It writes nothing either.
+
+`ctx doctor` also prints `## hooks` when there is something to say there:
+
+- `warn` when `python3` is not on PATH. The hooks run as `python3 …`, so without
+  it none of them fire. This is mostly a Windows problem; install Python 3 and
+  make `python3` resolvable (the Microsoft Store alias, or a `python3.exe`
+  copy or shim).
+- `info` when `rtk` is on PATH — see [below](#optional-companion-rtk).
+
+The verify-drift warning (`## verify drift`) fires only for **unfinished** work
+whose `verify` block no longer matches `ctx.yaml`: that work's gate will run the
+old commands, so re-scaffold it or update its block. Finished work is left alone.
+
+## Review package: Churn
+
+Every review package has a `## Churn` section between the scope check and the
+diff. It is mechanical and advisory: the severity it suggests is `important`,
+never `critical`.
+
+- **Whitespace-only hunks** — a hunk whose removed and added lines are equal
+  once all whitespace is stripped. Change nobody asked for.
+- **Per file** — hunks, lines added and removed, and the added/removed ratio,
+  for up to ten files, most whitespace-only hunks first.
+- **Overall** added/removed ratio.
+
+A clean diff gets one line. It is computed from the **uncapped** diff, so a
+package that truncates its `## Diff` still counts everything it covers. It covers
+only the files inside the unit's `owns`; stray files and a sibling's files are
+left out of the counts and the ratio (the scope section reports those).
+Limits: binary files are not analysed (they have no diff text), and a re-indent
+within 10 lines of a real edit merges into that edit's hunk and is not counted.
+
+## Optional companion: rtk
+
+rtk compresses the output of the shell commands
+an agent runs itself. ctx neither installs nor configures it, and does not
+depend on it. Two things to know if you use both:
+
+- rtk's rewrite hook can change the output ctx's gate sees, so gate output may
+  already be filtered. `ctx doctor` prints an info line when `rtk` is on PATH.
+  rtk was **not tested** alongside ctx's own `Bash` hook.
+- ctx's gate output is already reduced (see [Failure policy](#failure-policy)),
+  and the raw log under `.ctx/runtime/verify/` is kept either way.
+
+rtk's published savings figures — like those of claude-token-optimizer and
+ponytail, whose ideas 1.2.0 also borrows — were not independently verified.
+
+Hooks need `python3` on PATH; `ctx doctor` warns when it is missing (most often
+on Windows).
 
 ## Exit codes
 

@@ -415,7 +415,11 @@ class SplitTests(unittest.TestCase):
     #
     # 303 since `ctx infer`: one CLI-table row and no slash-command counterpart
     # (it has none), so the cap moved by exactly that one line.
-    CAP = 303
+    #
+    # 305 since the README header image: a two-line, prose-free `<p><img>` block
+    # and its blank line, added without moving the cap. It carries no prose, so
+    # the cap moved by exactly those two lines.
+    CAP = 305
 
     def test_the_readme_stays_short_enough_to_read(self):
         lines = len(read(README).splitlines())

@@ -49,6 +49,15 @@ before `reproduce` has a run that genuinely failed. That refusal is the
 mechanism, not a suggestion: fix the missing prerequisite first, do not retype
 the same command hoping the gate relents.
 
+## Surgical change
+
+- Make the smallest change that satisfies the acceptance criteria; match the
+  surrounding style, and reuse what exists before writing new code.
+- Do not refactor or reformat adjacent code. Report unrelated dead code; remove
+  only what your own change orphaned.
+- Acceptance criteria and `owns` take precedence over "smaller": never skip
+  required behaviour to shrink the diff.
+
 ## Return
 
 Your final message is the report the orchestrator acts on. No preamble, no
@@ -64,6 +73,9 @@ criteria:
 verify: <verbatim output, or the failing command and its exit code>
 interface_changed: none | <what, and why it was unavoidable>
 notes: <only what the next unit must know; omit if nothing>
+assumptions: <what you assumed; omit if none>
+noticed: <unrelated things seen, not touched>
+skipped / unverified: <anything not done or not checked>
 ```
 
 `status: done` requires every criterion passing and every verify check green.

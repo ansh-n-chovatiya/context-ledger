@@ -1,5 +1,5 @@
 ---
-description: Review the shell commands the done-gate will run on this machine, and accept them
+description: Review and accept the shell commands the done-gate will run here
 allowed-tools: Bash, Read
 argument-hint: "[--yes] [--lock] [--verify-lock]"
 ---

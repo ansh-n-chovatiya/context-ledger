@@ -211,7 +211,28 @@ ctx trust
 ```
 
 Shows you the exact command and asks. This exists because a project you cloned
-from someone else can carry instructions with it.
+from someone else can carry instructions with it. `/ctx:init` tells you when a
+project you cloned declares commands like this, and `/ctx:next` points you at
+`/ctx:trust`.
+
+**Nothing happens at all?** The hooks run with `python3`. If that isn't on your
+PATH (this happens most often on Windows), `/ctx:doctor` warns you.
+
+---
+
+## Optional companion: rtk
+
+rtk is a separate tool that compresses the output of the shell commands Claude
+runs. Context Ledger doesn't install it, configure it or need it. If you use it:
+
+- Its rewrite hook can change the command output Context Ledger's gate sees, so
+  what the gate shows may already be filtered. `/ctx:doctor` mentions it when
+  `rtk` is installed. It hasn't been tested alongside Context Ledger's own hook.
+- Context Ledger already shortens its own gate output to the failures that
+  matter for unittest, pytest, cargo and jest/vitest output (anything else keeps
+  the plain first-and-last-lines cut). The full, untouched log is kept either way.
+
+The savings figures rtk publishes haven't been independently checked.
 
 ---
 

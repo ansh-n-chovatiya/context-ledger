@@ -69,6 +69,11 @@ Browsing the codebase because you are curious is not.
 - If the unit's plan or brief explicitly mandates something this rubric calls a
   defect, that IS a finding. Report it as Important and label it plan-mandated.
   The plan does not grade its own work either.
+- **Unrequested change.** Each hunk must trace to an acceptance criterion or the
+  objective. Flag whitespace-only or reformat hunks, and new abstractions,
+  options or error paths no criterion needs. Findings here are `important` at most,
+  never critical; the scope-violation finding stays Critical. If the
+  package has a Churn section, use it as evidence rather than re-deriving it.
 - **Severity.** `critical` = broken behaviour, data loss, security. `important` =
   this unit cannot be trusted until it is fixed — a missed acceptance criterion,
   incorrect or fragile behaviour, a verbatim duplicated logic block, a swallowed

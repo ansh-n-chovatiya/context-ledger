@@ -565,13 +565,123 @@ def _render(layout, config, unit, slug, delta, stray, base_key, head_key,
     else:
         out.append("None — every changed path is within the declared `owns`.")
 
+    uncapped = []
+    body = _diff_body(layout, delta, base_key, head_key, siblings, uncapped)
+    out += ["", "## Churn", ""]
+    out += render_churn(churn("\n".join(uncapped), unit.owns or None))
     out += ["", "## Diff", ""]
-    body = _diff_body(layout, delta, base_key, head_key, siblings)
     out.append(body)
     return redact.scrub("\n".join(out) + "\n", patterns)
 
 
-def _diff_body(layout, delta, base_key, head_key, siblings=()):
+_HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+CHURN_FILES_SHOWN = 10
+
+
+def churn(diff_text, owns=None):
+    """Mechanical churn measures over unified-diff text. Advisory only.
+
+    Returns `{files, whitespace_only_total, ratio}`; each file is
+    `{path, hunks, added, removed, whitespace_only_hunks}`. A hunk is
+    whitespace-only when its removed and added lines are equal once all
+    whitespace is stripped. Hunk line counts from the `@@` header decide where a
+    hunk ends, so a content line that happens to start with `---` is not
+    mistaken for a file header. Binary files (and any file with no stored text)
+    are not analysed: they have no diff text, so they do not appear at all.
+
+    Known limitations: whitespace-only is decided per hunk, so a re-indent
+    within DIFF_CONTEXT lines of a real edit merges into that hunk and is not
+    counted. A file lacking a trailing newline makes difflib glue its last -/+
+    lines together, so a re-indent of that line is missed (never raises).
+    """
+    files, current, hunk = [], None, None
+    left = right = 0
+
+    def close():
+        nonlocal hunk
+        if hunk is not None and current is not None:
+            if hunk["rem"] or hunk["add"]:
+                if "".join("".join(hunk["rem"]).split()) == \
+                        "".join("".join(hunk["add"]).split()):
+                    current["whitespace_only_hunks"] += 1
+        hunk = None
+
+    lines = diff_text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if hunk is not None and (left > 0 or right > 0):
+            if line.startswith("-"):
+                hunk["rem"].append(line[1:])
+                current["removed"] += 1
+                left -= 1
+            elif line.startswith("+"):
+                hunk["add"].append(line[1:])
+                current["added"] += 1
+                right -= 1
+            elif line.startswith("\\"):
+                pass
+            else:
+                left -= 1
+                right -= 1
+            i += 1
+            continue
+        close()
+        if line.startswith("+++ ") and i > 0 and lines[i - 1].startswith("--- "):
+            target = line[4:].strip()
+            source = lines[i - 1][4:].strip()
+            name = source if target == "/dev/null" else target
+            path = name.split("/", 1)[1] if "/" in name else name
+            current = {"path": path, "hunks": 0, "added": 0, "removed": 0,
+                       "whitespace_only_hunks": 0}
+            files.append(current)
+        else:
+            match = _HUNK.match(line)
+            if match and current is not None:
+                left = int(match.group(1)) if match.group(1) is not None else 1
+                right = int(match.group(2)) if match.group(2) is not None else 1
+                hunk = {"rem": [], "add": []}
+                current["hunks"] += 1
+        i += 1
+    close()
+
+    if owns:
+        files = [f for f in files if snapshot.covers(f["path"], list(owns))]
+    added = sum(f["added"] for f in files)
+    removed = sum(f["removed"] for f in files)
+    return {
+        "files": files,
+        "whitespace_only_total": sum(f["whitespace_only_hunks"] for f in files),
+        "ratio": round(added / max(removed, 1), 2),
+    }
+
+
+def render_churn(result):
+    """Lines for the Churn section: one line when clean, a bounded list if not."""
+    files = result["files"]
+    hunks = sum(f["hunks"] for f in files)
+    if not result["whitespace_only_total"]:
+        return [f"No whitespace-only hunks ({hunks} hunks in {len(files)} files, "
+                f"added/removed ratio {result['ratio']})."]
+    out = [
+        f"Advisory, severity important: {result['whitespace_only_total']} "
+        "whitespace-only hunk(s) - change nobody asked for. Overall "
+        f"added/removed ratio {result['ratio']}.",
+        "",
+    ]
+    ordered = sorted(files, key=lambda f: (-f["whitespace_only_hunks"], f["path"]))
+    for f in ordered[:CHURN_FILES_SHOWN]:
+        out.append(
+            f"- {f['path']}: {f['hunks']} hunks, +{f['added']}/-{f['removed']} "
+            f"(ratio {round(f['added'] / max(f['removed'], 1), 2)}), "
+            f"{f['whitespace_only_hunks']} whitespace-only"
+        )
+    if len(ordered) > CHURN_FILES_SHOWN:
+        out.append(f"… {len(ordered) - CHURN_FILES_SHOWN} more")
+    return out
+
+
+def _diff_body(layout, delta, base_key, head_key, siblings=(), uncapped=None):
     """Unified diffs for every changed path, bounded in total size.
 
     `siblings` is the wave's other running units as `[(name, owns)]`. A path one
@@ -581,6 +691,9 @@ def _diff_body(layout, delta, base_key, head_key, siblings=()):
     blamed on a size cap, which is false and sends a reviewer looking for a
     problem that is not there. It gets its own line, naming the unit whose work
     it is, so the reviewer knows to leave it to that unit's own package.
+
+    When `uncapped` is a list, every file's raw diff is appended to it before the
+    budget is applied, so churn can see files the package had to drop.
     """
     sibling_owns = [pattern for _name, owns in siblings for pattern in owns]
     chunks, used, omitted, elsewhere = [], 0, [], []
@@ -607,6 +720,8 @@ def _diff_body(layout, delta, base_key, head_key, siblings=()):
         ))
         if not chunk:
             continue
+        if uncapped is not None:
+            uncapped.append(chunk)
         if used + len(chunk) > MAX_PACKAGE_BYTES:
             omitted.append(path)
             continue

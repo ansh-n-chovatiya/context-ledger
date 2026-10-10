@@ -39,6 +39,12 @@ def wave_in_flight(layout, slug, wave):
             [unit.name for unit in members if unit.status == "pending"])
 
 
+def _just_initialised(level, current):
+    """L0 with no task, spec, plan or unit recorded — the state init leaves."""
+    return level == "0" and not any(
+        current.get(key) for key in ("task", "spec", "plan", "unit"))
+
+
 def next_action(layout, config, state=None):
     """(command, why). The one thing worth doing, from state alone.
 
@@ -60,6 +66,13 @@ def next_action(layout, config, state=None):
     accepted = trust_mod.load(layout)
     pending = [c for c, _s in trust_mod.declared(layout, config)
                if not trust_mod.is_accepted(c, accepted)]
+    if pending and _just_initialised(level, current):
+        # Straight after `ctx init` nothing else is recorded yet, so this is
+        # the first thing a new user meets: name the slash command they type.
+        return "/ctx:trust", (
+            f"{len(pending)} verify command(s) are waiting to be accepted and will "
+            "not run until you review and accept them — the done-gate needs them"
+        )
     if pending:
         return "ctx trust", (
             f"{len(pending)} verify command(s) will not run until this machine "

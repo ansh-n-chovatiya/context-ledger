@@ -37,6 +37,7 @@ from . import (
     preview, preview_page, spec as spec_mod,
     findings as findings_mod, review as review_mod, snapshot as snapshot_mod,
     state, telemetry, trust as trust_mod, verify, work, worktree,
+    footprint as footprint_mod,
 )
 
 
@@ -423,7 +424,10 @@ def cmd_init(args):
     # config's block came with the repository, and accepting it here silently
     # granted a cloned file the shell access `ctx trust` exists to gate — while
     # the report below listed something else entirely.
-    trust_mod.accept(layout, accepted)
+    # Only when there is something to record: an empty `accept` still wrote
+    # the store, so a run that accepted nothing left a trace it had no reason to.
+    if accepted:
+        trust_mod.accept(layout, accepted)
     journal.write_digest(layout, config)
     bundle.reindex(layout)
     if not layout.state.exists():
@@ -457,6 +461,18 @@ def cmd_init(args):
           f"(cap ~{round(measured['cap'] / 3.6)}).")
     _echo("`ctx budget` reports that as it changes. The plugin's own always-on")
     _echo("footprint is separate and larger: `claude plugin details ctx`.")
+    # Found but not accepted: commands this ledger declares that this machine
+    # has not agreed to run. The ledger's own candidates are listed above as
+    # "review" and not repeated here, because `ctx next` cannot name /ctx:trust
+    # for them. Init only points at the review; it never accepts for the user.
+    on_this_machine = trust_mod.load(layout)
+    unaccepted = [str(c.get("run") or "") for c, _s in trust_mod.declared(layout, config)
+                  if not trust_mod.is_accepted(c, on_this_machine)]
+    if unaccepted:
+        _echo("Found these verify commands; they will not run until you accept them:")
+        for command in unaccepted:
+            _echo(f"  {command}")
+        _echo("To let the done-gate run these, review and accept them with /ctx:trust")
     return 0
 
 
@@ -504,7 +520,8 @@ def cmd_status(args):
     if current.get("plan"):
         rows, problems = plan_mod.board(layout, current["plan"])
         say("")
-        say(f"wave board — plan {current['plan']}:")
+        say(f"wave board (groups of units that can run at the same time) "
+            f"— plan {current['plan']}:")
         wave = None
         unsealed = _unsealed_units(
             layout, current["plan"], plan_mod.load_units(layout, current["plan"])
@@ -919,11 +936,62 @@ def _verify_drift(layout, config):
         doc = frontmatter.read(path)
         if doc is None:
             continue
+        # Finished work is judged by the contract it was given, so its old block
+        # is expected and saying so is noise. Only work still to be gated by
+        # that block is worth a warning.
+        if str(doc.meta.get("status") or "").strip().lower() in _FINISHED_STATUSES:
+            continue
         theirs = [trust_mod.command_id(c) for c in (doc.meta.get("verify") or [])
                   if isinstance(c, dict) and c.get("kind") == "cmd"]
         if theirs != default:
             drifted.append(path)
     return drifted
+
+
+# Statuses a task or unit carries once nothing will gate it again.
+_FINISHED_STATUSES = frozenset({"done", "escalated"})
+
+
+def _footprint_threshold(config):
+    """`footprint.threshold_tokens` from ctx.yaml — optional, not in DEFAULTS.
+
+    The auto-loaded-context estimate above which `ctx doctor` warns. A missing,
+    non-integer, zero or negative value means `footprint.DEFAULT_THRESHOLD_TOKENS`
+    (6000).
+    """
+    section = config.get("footprint") if isinstance(config, dict) else None
+    value = section.get("threshold_tokens") if isinstance(section, dict) else None
+    return config_mod._positive_int(value, footprint_mod.DEFAULT_THRESHOLD_TOKENS)
+
+
+def _footprint_report(layout, config):
+    """`footprint.check` for this project and the user's own CLAUDE.md. Read-only."""
+    return footprint_mod.check(
+        layout.root.parent, home=os.path.expanduser("~"),
+        threshold_tokens=_footprint_threshold(config),
+    )
+
+
+def _footprint_lines(report):
+    """The item listing `doctor` and `budget` share — each file, then the total."""
+    lines = []
+    if not report.items:
+        lines.append("  no auto-loaded CLAUDE.md or .claude/rules files found")
+    for item in report.items:
+        note = f"  ({item.note})" if item.note else ""
+        lines.append(f"  {item.path}  {item.chars:,} chars  "
+                     f"~{item.tokens:,} tokens{note}")
+    lines.append(f"  total ~{report.total_tokens:,} tokens — estimate (chars/4)")
+    return lines
+
+
+def _positive_int_or_none(value):
+    """`value` when the loader would accept it as a positive int, else None.
+
+    Defers to `config._positive_int`, so doctor only says "the default is used"
+    for a value the loader really does replace ("500" and 2.5 it accepts).
+    """
+    return config_mod._positive_int(value, 0) or None
 
 
 def _home_relative(path):
@@ -1235,7 +1303,8 @@ def cmd_doctor(args):
             "longer matches ctx.yaml")
         for path in drifted[:4]:
             say(f"       {layout.rel(path)}")
-        say("       that is expected for finished work; re-scaffold if it is not")
+        say("       this work is not finished, so its gate will run the old commands;")
+        say("       re-scaffold it or update its `verify` block")
         check("warn", f"{len(drifted)} work file(s) drifted from ctx.yaml",
               paths=[layout.rel(p) for p in drifted])
 
@@ -1284,6 +1353,44 @@ def cmd_doctor(args):
     say("  the briefing above is the hook cost only; the plugin's own always-on")
     say("  context is separate — measure it with: claude plugin details ctx")
 
+    # Advisory, like every other `warn` here: being over the threshold is a
+    # cost, not a breakage, so it never adds to `problems`.
+    section = "context-footprint"
+    report = _footprint_report(layout, config)
+    say("## context footprint")
+    for line in _footprint_lines(report):
+        say(line)
+    check("warn" if report.over else "ok",
+          "estimate (chars/4)", total_tokens=report.total_tokens,
+          threshold_tokens=report.threshold_tokens,
+          items=[{"path": i.path, "chars": i.chars, "tokens": i.tokens}
+                 for i in report.items])
+    if report.over:
+        say(f"  warn auto-loaded context is over ~{report.threshold_tokens:,} "
+            "tokens (footprint.threshold_tokens); every session pays it")
+    if report.big_dirs:
+        say(f"  info {', '.join(report.big_dirs)} not covered by a `Read(...)` "
+            "permission deny rule in .claude/settings.json; add one to keep")
+        say("       them out of what the model reads")
+        check("note", "large directories without a deny rule",
+              big_dirs=list(report.big_dirs))
+    for note in report.notes:
+        say(f"  note {note}")
+
+    section = "hooks"
+    py_ok, py_message = footprint_mod.python3_status()
+    rtk = footprint_mod.rtk_on_path()
+    if not py_ok or rtk:
+        say("## hooks")
+    if not py_ok:
+        say(f"  warn {py_message}")
+        check("warn", py_message)
+    if rtk:
+        say("  info rtk is on PATH; ctx does not configure it. A rewrite hook can "
+            "change the command")
+        say("       output ctx sees, so gate output may already be filtered.")
+        check("note", "rtk is on PATH; gate output may already be filtered")
+
     policy_problems, policy_lines, policy_rows = _doctor_policy(layout)
     problems += policy_problems
     out.extend(policy_lines)
@@ -1302,6 +1409,16 @@ def cmd_doctor(args):
           max_attempts=(config.get("gate") or {}).get("max_attempts"),
           override=override.value if override.requested else None,
           refused=bool(override.refused))
+    gate_settings = config.get("gate") if isinstance(config.get("gate"), dict) else {}
+    for key in ("output_line_cap", "output_char_cap"):
+        # The loader already falls back on garbage; this only says so. A key
+        # that is absent is the default and needs no word.
+        if key in gate_settings and _positive_int_or_none(gate_settings[key]) is None:
+            default = config_mod.DEFAULTS["gate"][key]
+            say(f"  warn gate.{key} must be a positive integer; got "
+                f"{gate_settings[key]!r}, so the default {default} is used")
+            check("warn", f"gate.{key} is not a positive integer", key=f"gate.{key}",
+                  default=default)
     if verify.sharing(layout, config) is not None:
         # Said out loud, and only when it is on: a gate that may answer a `cmd`
         # check from a result a sibling's gate produced is a thing an operator
@@ -3173,6 +3290,13 @@ def cmd_budget(args):
             flag = "OVER" if cap and total > cap else "ok  "
             _echo(f"  {flag} wave {level}: {total:,} of {cap:,} tokens"
                   if cap else f"  wave {level}: {total:,} tokens (no cap set)")
+
+    # Read-only, like everything above: `footprint` opens files to count them
+    # and never writes.
+    _echo("")
+    _echo("## auto-loaded context (estimate)")
+    for line in _footprint_lines(_footprint_report(layout, config)):
+        _echo(line)
     return 0
 
 
