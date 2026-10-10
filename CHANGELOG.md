@@ -46,7 +46,9 @@ independently verified**, so this release claims none of them.
 - Agent prompts. The unit-runner gained a short surgical-change block and
   `assumptions:`, `noticed:` and `skipped / unverified:` return lines. The
   reviewer and re-reviewer gained an "Unrequested change" check (`important` at
-  most).
+  most). The unit-runner also lists every place inside `owns` a change must reach
+  before editing, and the reviewers drop quality findings that name no concrete
+  input and wrong result.
 
 ### Changed
 

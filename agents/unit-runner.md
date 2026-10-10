@@ -55,6 +55,9 @@ the same command hoping the gate relents.
   surrounding style, and reuse what exists before writing new code.
 - Do not refactor or reformat adjacent code. Report unrelated dead code; remove
   only what your own change orphaned.
+- Before editing, list every place inside `owns` your change must reach
+  (callers, tests, fixtures, config, exports). Anything that needs changing
+  outside `owns` goes under `noticed:`; do not touch it.
 - Acceptance criteria and `owns` take precedence over "smaller": never skip
   required behaviour to shrink the diff.
 

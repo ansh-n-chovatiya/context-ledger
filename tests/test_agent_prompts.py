@@ -8,8 +8,10 @@ AGENTS = ROOT / "agents"
 BASE = {"unit-runner": 3226, "reviewer": 4787, "re-reviewer": 5040}
 LIMIT = {"unit-runner": 900, "reviewer": 700, "re-reviewer": 700}
 RUNNER_STRINGS = ["assumptions:", "noticed:", "skipped / unverified:",
-                  "take precedence over \"smaller\""]
-REVIEW_STRINGS = ["Unrequested change", "`important` at most", "never critical"]
+                  "take precedence over \"smaller\"",
+                  "list every place inside `owns`"]
+REVIEW_STRINGS = ["Unrequested change", "`important` at most", "never critical",
+                  "Concrete case", "needs no case"]
 # Front matter as it was before this unit.
 FRONT = {
     "unit-runner": ["name", "description", "tools"],

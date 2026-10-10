@@ -69,6 +69,9 @@ Browsing the codebase because you are curious is not.
   options or error paths no criterion needs. Findings here are `important` at most,
   never critical; the scope-violation finding stays Critical. If the
   package has a Churn section, use it as evidence rather than re-deriving it.
+- **Concrete case.** A quality finding names the input or situation and the wrong
+  result it leads to; with no concrete case, drop it. A missed acceptance
+  criterion needs no case.
 - **Severity.** `critical` = broken behaviour, data loss, security. `important` =
   this unit cannot be trusted until it is fixed — a missed acceptance criterion,
   incorrect or fragile behaviour, a verbatim duplicated logic block, a swallowed
