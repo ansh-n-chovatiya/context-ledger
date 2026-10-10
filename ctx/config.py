@@ -50,6 +50,13 @@ DEFAULTS = {
         "max_attempts": 3,
         "output_head": 40,
         "output_tail": 20,
+        # Bounds on the failure excerpt the gate hands the model, applied after
+        # `reduce` has kept the failing blocks: no line longer than
+        # `output_line_cap` characters, and the whole excerpt within
+        # `output_char_cap`. The raw log under `.ctx/runtime/` is never cut.
+        # A missing, non-integer, zero or negative value means the default.
+        "output_line_cap": 2000,
+        "output_char_cap": 6000,
         # Budget for the whole gate, not per command. Per-command it could not be
         # enforced: three commands at 240s each outlive the 300s Stop hook, and a
         # killed hook returns no decision, so the gate silently stopped applying.
@@ -743,6 +750,34 @@ def briefing_cap(config, level):
             except (TypeError, ValueError):
                 break
     return DEFAULTS["briefing_chars"][f"l{level}"]
+
+
+def _positive_int(value, default):
+    """`value` as a positive int, or `default` — never raises."""
+    if isinstance(value, bool):
+        return default
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number > 0 else default
+
+
+def gate_output_caps(config):
+    """`(line_cap, char_cap)` for the gate's failure excerpt.
+
+    Garbage falls back to the defaults rather than raising: this is read on the
+    gate's failure path, where an exception would lose the very failure it was
+    about to report. `ctx doctor` is where a bad value gets named.
+    """
+    gate = (config or {}).get("gate") or {}
+    if not isinstance(gate, dict):
+        gate = {}
+    defaults = DEFAULTS["gate"]
+    return (
+        _positive_int(gate.get("output_line_cap"), defaults["output_line_cap"]),
+        _positive_int(gate.get("output_char_cap"), defaults["output_char_cap"]),
+    )
 
 
 def tier_up(config, model):

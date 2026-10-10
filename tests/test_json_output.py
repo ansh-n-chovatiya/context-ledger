@@ -32,13 +32,16 @@ import json
 import os
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ctx import cli, frontmatter, plan as plan_mod  # noqa: E402
+from unittest import mock  # noqa: E402
+
+from ctx import cli, footprint, frontmatter, plan as plan_mod  # noqa: E402
 from support import OK, Fixture  # noqa: E402
 
 
@@ -65,7 +68,26 @@ class Scenario(Fixture):
 
     def setUp(self):
         super().setUp()
+        # `ctx doctor` lists ~/.claude/CLAUDE.md; the golden must not depend on
+        # whichever one the developer running the suite happens to have.
+        self._home = tempfile.TemporaryDirectory()
+        saved = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE")}
+        os.environ["HOME"] = os.environ["USERPROFILE"] = self._home.name
+        self.addCleanup(self._restore_home, saved)
+        # The doctor `## hooks` section depends on python3/rtk being on PATH.
+        for name, value in (("python3_status", (True, "")), ("rtk_on_path", False)):
+            patcher = mock.patch.object(footprint, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.build()
+
+    def _restore_home(self, saved):
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self._home.cleanup()
 
     def build(self):
         self.trust([{"kind": "cmd", "run": OK}])
@@ -177,7 +199,7 @@ task     —
 plan     auth   unit 02-logout
 briefing <N>/2600 chars (~<T> tokens)
 
-wave board — plan auth:
+wave board (groups of units that can run at the same time) — plan auth:
   wave 1
      01-login                 subagent  done
    → 02-logout                subagent  running (in flight)
@@ -215,15 +237,20 @@ next: /ctx:verify
 ## command trust
   ok   1 command(s) accepted on this machine
 ## verify drift
-  warn 2 work file(s) carry a `verify` block that no longer matches ctx.yaml
-       .ctx/plans/auth/units/01-login.md
+  warn 1 work file(s) carry a `verify` block that no longer matches ctx.yaml
        .ctx/plans/auth/units/02-logout.md
-       that is expected for finished work; re-scaffold if it is not
+       this work is not finished, so its gate will run the old commands;
+       re-scaffold it or update its `verify` block
 ## decisions
   ok   every ADR id is claimed by exactly one file
 ## plugin footprint
   the briefing above is the hook cost only; the plugin's own always-on
   context is separate — measure it with: claude plugin details ctx
+## context footprint
+  no auto-loaded CLAUDE.md or .claude/rules files found
+  total ~0 tokens — estimate (chars/4)
+  note token counts are chars/4 estimates
+  note could not verify that `.claudeignore` is honoured; use permission deny rules
 ## policy
   none system     <SYSTEM-POLICY>  (absent)
   none user       <GLOBAL>/global/policy.yaml  (absent)

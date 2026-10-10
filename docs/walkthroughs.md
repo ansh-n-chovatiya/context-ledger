@@ -385,7 +385,7 @@ ctx worktree remove 03-rotate --force   # discard a unit that went wrong
 ```
 
 ```
-wave board — plan billing-migration:
+wave board (groups of units that can run at the same time) — plan billing-migration:
   wave 1
      01-key-store             session   done
      02-clock                 subagent  done

@@ -1,5 +1,78 @@
 # Changelog
 
+## 1.2.0
+
+Shorter gate-failure output, a context-footprint check, and surgical-change
+rules for units and reviewers. The ideas are borrowed from rtk (failure-aware output
+reduction), claude-token-optimizer (measuring the whole auto-loaded context),
+and ponytail and the Karpathy rules (surgical-change wording). ctx does not
+install or depend on any of them. Their published savings figures were **not
+independently verified**, so this release claims none of them.
+
+### Added
+
+- Failure-aware gate output (`ctx/reduce.py`). Before a failing check's output
+  reaches the model, ANSI escapes and carriage-return redraws are stripped and
+  identical consecutive lines are collapsed to `line (×N)`. For unittest,
+  pytest, cargo and jest output, only the failure blocks and the summary are
+  kept. Anything else gets the old head+tail cut (`gate.output_head` /
+  `gate.output_tail`). Two new keys bound the result: `gate.output_line_cap`
+  (default 2000 characters per line) and `gate.output_char_cap` (default 6000
+  characters for the whole excerpt); `init` writes both. The whole
+  output is scrubbed by `redact` before capping and again after. The raw log
+  under `.ctx/runtime/verify/` stays unreduced and unredacted, as before.
+- `## context footprint` in `ctx doctor`. It lists `CLAUDE.md`,
+  `CLAUDE.local.md`, `.claude/CLAUDE.md`, `.claude/rules/**.md` and
+  `~/.claude/CLAUDE.md` with a chars/4 token estimate. It warns when the total
+  is over `footprint.threshold_tokens`, an optional key that is not written by
+  `init` (default 6000 estimated tokens; an invalid value falls back to the
+  default). It prints an info line for large directories (`node_modules`,
+  `dist`, `build`, …) that no `Read(...)` permission deny rule covers. It also
+  notes that `.claudeignore` support could not be verified. Warn-only: it never
+  adds to `problems`.
+- `## auto-loaded context (estimate)` at the end of `ctx budget`: the same
+  listing, read-only.
+- A `## Churn` section in review packages. It reports whitespace-only hunks,
+  hunks per file and the added/removed ratio. This is advisory: the severity
+  it suggests is `important`, never `critical`. It is computed from the
+  uncapped diff. Binary files are not analysed. A re-indent within 10 lines of
+  a real edit merges into that edit's hunk and is not counted.
+- `ctx doctor` `## hooks`: a warning when `python3` is not on PATH (the hooks
+  run as `python3 …`, which most often fails on Windows), and an info line when
+  `rtk` is on PATH (ctx does not configure it, and its rewrite hook may already
+  filter what the gate sees). rtk was not tested alongside ctx's Bash hook.
+- `ctx doctor` warns when `gate.output_line_cap` or `gate.output_char_cap` is
+  not a positive integer, and names the default it uses instead.
+- Agent prompts. The unit-runner gained a short surgical-change block and
+  `assumptions:`, `noticed:` and `skipped / unverified:` return lines. The
+  reviewer and re-reviewer gained an "Unrequested change" check (`important` at
+  most). The unit-runner also lists every place inside `owns` a change must reach
+  before editing, and the reviewers drop quality findings that name no concrete
+  input and wrong result.
+
+### Changed
+
+- `ctx init` still accepts the verify commands it detects from the toolchain.
+  For commands that `ctx.yaml` **declares** but this machine has not accepted
+  (a cloned repository's ledger, for example), init prints them and the line
+  "To let the done-gate run these, review and accept them with /ctx:trust".
+  `ctx next` right after init names `/ctx:trust`. `verify_candidates` are listed
+  once as `review <cmd>`, followed by "read them and run `ctx trust` to allow
+  them"; `ctx next` does not name them.
+- `ctx doctor`'s verify-drift warning fires only for unfinished work. It now
+  says that work's gate will run the old commands, and to re-scaffold it or
+  update its `verify` block.
+- `ctx status`'s wave-board heading has a plain-language label:
+  `wave board (groups of units that can run at the same time) — plan …`.
+- Shorter descriptions for `/ctx:phase` and `/ctx:trust`. `/ctx:status` no
+  longer asks for a second summarising pass after its output.
+
+### Fixed
+
+- The `PostToolUse` hook no longer journals shell-command targets that are
+  empty, `.`, absolute or outside the project, or contain `..`. These were
+  noise in the journal.
+
 ## 1.1.0
 
 An independent adversarial audit of everything between `v1.0.0` and this tag

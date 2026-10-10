@@ -1,5 +1,5 @@
 ---
-description: Advance or inspect a unit's phase gate (reproduce/locate/fix/guard for kind: bug, or a declared `phases:` list)
+description: Advance or inspect a unit's phase gate (bug phases or declared phases)
 allowed-tools: Bash, Read, Task
 argument-hint: «unit» [phase] [--plan slug] [--command "…"] [--exit-code N] [--evidence "…"] [--note "…"]
 ---

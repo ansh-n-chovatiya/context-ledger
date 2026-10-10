@@ -65,7 +65,7 @@ import time
 from pathlib import Path
 from types import MappingProxyType, ModuleType
 
-from . import atomic, paths, phases, redact, snapshot, trust
+from . import atomic, config as config_mod, paths, phases, redact, reduce, snapshot, trust
 
 PASS, FAIL, ERROR, PENDING = "pass", "fail", "error", "pending"
 
@@ -179,6 +179,7 @@ def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False,
     budget = max(1, int(gate.get("timeout_seconds", 240)))
     head = int(gate.get("output_head", 40))
     tail = int(gate.get("output_tail", 20))
+    line_cap, char_cap = config_mod.gate_output_caps(config)
     patterns = config.get("redact") or []
     deadline = time.monotonic() + budget
     # A committed ctx.yaml is executable shell run by a hook, which never sees a
@@ -192,6 +193,7 @@ def run(layout, config, checks, *, cwd, key, owns=(), recorded=(), judged=False,
         recorded=recorded, judged=judged, since=since, wave=wave,
         deadline=deadline, budget=budget, head=head, tail=tail,
         patterns=patterns, accepted=accepted, share=share,
+        line_cap=line_cap, char_cap=char_cap,
     )
     for check in ordered(checks):
         # `ordered` already dropped every kind the table does not know, so this
@@ -217,11 +219,12 @@ class _Run:
 
     __slots__ = ("layout", "config", "cwd", "key", "owns", "recorded",
                  "judged", "since", "wave", "deadline", "budget", "head",
-                 "tail", "patterns", "accepted", "share")
+                 "tail", "patterns", "accepted", "share", "line_cap",
+                 "char_cap")
 
     def __init__(self, *, layout, config, cwd, key, owns, recorded, judged,
                  since, wave, deadline, budget, head, tail, patterns, accepted,
-                 share=None):
+                 share=None, line_cap=None, char_cap=None):
         self.layout = layout
         self.config = config
         self.cwd = cwd
@@ -238,6 +241,14 @@ class _Run:
         self.patterns = patterns
         self.accepted = accepted
         self.share = share
+        self.line_cap, self.char_cap = _output_caps(line_cap, char_cap)
+
+
+def _output_caps(line_cap, char_cap):
+    """`None` means the configured default; `config.gate_output_caps` decides it."""
+    default_line, default_char = config_mod.gate_output_caps({})
+    return (default_line if line_cap is None else line_cap,
+            default_char if char_cap is None else char_cap)
 
 
 def verdict_of(results):
@@ -811,7 +822,7 @@ class _SharedCmd:
             pass
 
     @staticmethod
-    def entry_key(check, cwd, head, tail, patterns):
+    def entry_key(check, cwd, head, tail, patterns, line_cap=None, char_cap=None):
         """One identity for "this exact command, asked this exact way"."""
         shape = json.dumps(
             [
@@ -822,6 +833,7 @@ class _SharedCmd:
                 if isinstance(check.get("env"), dict) else {},
                 bool(check.get("optional") is True),
                 int(head), int(tail), [str(p) for p in (patterns or ())],
+                line_cap, char_cap,
             ],
             sort_keys=True,
         )
@@ -882,7 +894,8 @@ def _check_env(check):
     return merged
 
 
-def _check_cmd(layout, check, cwd, key, timeout, head, tail, patterns=()):
+def _check_cmd(layout, check, cwd, key, timeout, head, tail, patterns=(),
+               line_cap=None, char_cap=None):
     command = str(check.get("run") or "")
     if not command:
         return Result("cmd", "<none>", ERROR, "no command configured")
@@ -933,8 +946,23 @@ def _check_cmd(layout, check, cwd, key, timeout, head, tail, patterns=()):
     # hide the very line someone is debugging. The excerpt does not — it is
     # inlined into the model's context and from there into every transcript and
     # downstream log, which is exactly the path `redact` exists to guard.
+    #
+    # Scrub the whole output first, on whole lines, then reduce, then scrub
+    # again. `reduce` cuts lines at `line_cap` and the excerpt at `char_cap`
+    # mid-line; a cut that lands inside a fixed-length secret (`AKIA` + 16,
+    # `ghp_` + 36) leaves a prefix no pattern matches, so scrubbing only after
+    # the cut would hand that prefix to the model. The second pass catches
+    # anything reduction itself exposed (an ANSI escape or `\r` redraw that had
+    # split a secret). Every user pattern in both passes is time-bounded by
+    # `redact`, and a secret scrubbed identically in every copy of a repeated
+    # line still collapses as one run.
     log_path = _write_log(layout, key, command, output)
-    excerpt = redact.scrub(truncate(output, head, tail), patterns)
+    line_cap, char_cap = _output_caps(line_cap, char_cap)
+    excerpt = redact.scrub(
+        reduce.reduce_output(redact.scrub(reduce.strip_ansi(output), patterns), head, tail,
+                             line_cap, char_cap),
+        patterns,
+    )
     message = f"exit {completed.returncode}\n{excerpt}"
     if log_path is not None:
         message += f"\n(full output: {log_path})"
@@ -1180,7 +1208,8 @@ def _run_cmd(check, ctx):
     # shared, and only with a tree that is byte-identical to the one it ran on.
     share, entry, token = ctx.share, None, None
     if share is not None:
-        entry = share.entry_key(check, ctx.cwd, ctx.head, ctx.tail, ctx.patterns)
+        entry = share.entry_key(check, ctx.cwd, ctx.head, ctx.tail, ctx.patterns,
+                                ctx.line_cap, ctx.char_cap)
         token = share.token()
         hit = share.lookup(entry, token)
         if hit is not None:
@@ -1188,6 +1217,7 @@ def _run_cmd(check, ctx):
     result = _check_cmd(
         ctx.layout, check, ctx.cwd, ctx.key, remaining,
         ctx.head, ctx.tail, ctx.patterns,
+        line_cap=ctx.line_cap, char_cap=ctx.char_cap,
     )
     if share is not None:
         share.store(entry, token, result)
@@ -1367,14 +1397,13 @@ def _within(path, scope):
 
 
 def truncate(text, head, tail):
-    """Head + tail lines. Gate failures retry up to 3×, so this is load-bearing."""
-    lines = (text or "").strip().splitlines()
-    if len(lines) <= head + tail:
-        return "\n".join(lines)
-    omitted = len(lines) - head - tail
-    return "\n".join(
-        lines[:head] + [f"… {omitted} lines omitted …"] + (lines[-tail:] if tail else [])
-    )
+    """Head + tail lines. Gate failures retry up to 3×, so this is load-bearing.
+
+    The gate's own excerpt now goes through `reduce.reduce_output`, which falls
+    back to this exact cut for output it does not recognise. Kept, delegating,
+    because other code and tests import it by this name.
+    """
+    return reduce.truncate_lines(text, head, tail)
 
 
 def _write_log(layout, key, command, output):
@@ -1888,6 +1917,7 @@ def gate_before_done(layout, config, slug, unit):
             findings_mod.load(layout, slug, unit.name),
         )
         return None
-    journal.append(layout, config, "unit", unit.name, f"done refused ({reason})")
+    journal.append(layout, config, "unit", unit.name,
+                   f"done refused ({journal.excerpt(config, reason)})")
     return 1
 

@@ -251,8 +251,15 @@ def on_post_tool_use(layout, config, payload):
     kind = "write" if name == "Write" else ("shell" if name == "Bash" else "edit")
     marker = work.claim()[0] or current.get("unit") or current.get("task")
     note = f"unit={marker}" if marker else ""
-    for target in targets[:4]:  # a one-liner can touch several; cap the noise
-        journal.append(layout, config, kind, _relative(layout, target), note)
+    journalled = 0
+    for target in targets:
+        relative = _relative(layout, target)
+        if kind == "shell" and _is_shell_noise(relative):
+            continue  # journal line only; sign-off clearing below is unaffected
+        if journalled >= 4:  # a one-liner can touch several; cap the noise
+            break
+        journal.append(layout, config, kind, relative, note)
+        journalled += 1
     # A judged sign-off must not outlive the code it signed off on.
     item = work.active(layout, current)
     if item is not None and item.clear_recorded():
@@ -469,6 +476,19 @@ def _edit_targets(payload):
 
 def _relative(layout, target):
     return layout.rel(target)
+
+
+def _is_shell_noise(relative):
+    """A shell target that names no file: empty, the project root, or outside it.
+
+    `rel` returns "." for the root and the unchanged path for anything it cannot
+    place under the project, so `shell | .` was a directory argument, not a write.
+    """
+    if not relative or relative == ".":
+        return True
+    if relative.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", relative):
+        return True
+    return ".." in relative.replace("\\", "/").split("/")
 
 
 def _scope(layout, current):
